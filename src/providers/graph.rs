@@ -597,11 +597,16 @@ impl super::EmailProvider for GraphEmailProvider {
         let token = self.get_token().await?;
         let client = reqwest::Client::new();
         let call = |method: reqwest::Method, path: String, body: Option<serde_json::Value>| {
+            let is_post = method == reqwest::Method::POST;
             let mut req = client
                 .request(method, format!("https://graph.microsoft.com/v1.0{}", path))
                 .header("Authorization", format!("Bearer {}", token));
-            if let Some(b) = body {
-                req = req.json(&b);
+            match body {
+                Some(b) => req = req.json(&b),
+                // A bodyless POST (/send) must still carry `Content-Length: 0`, or Graph answers 411.
+                // (reqwest sends no length header for an empty body unless it is set by hand.)
+                None if is_post => req = req.header("Content-Length", "0").body(""),
+                None => {}
             }
             async move {
                 let resp = req.send().await.map_err(|e| crate::errors::OmarchyError::HttpError(e.to_string()))?;
