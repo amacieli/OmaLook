@@ -53,16 +53,16 @@ impl GraphEmailProvider {
         Ok(text)
     }
 
-    /// `meetingMessageType` of one message: "meetingRequest" | "meetingTentativelyAccepted" |
-    /// "meetingAccepted" | "meetingDeclined" | "meetingCancelled" | "none" (or "" when Graph
-    /// does not say). Only messages that carry a calendar item have a value other than "none".
-    pub async fn fetch_meeting_type(&self, id: &str) -> Result<String> {
+    /// What kind of calendar message `id` is, with its event (answer, time, place) in the same
+    /// request. Ordinary mail comes back as `InviteInfo::none()`.
+    pub async fn fetch_invite_info(&self, id: &str) -> Result<crate::invites::InviteInfo> {
         let token = self.get_token().await?;
         let client = reqwest::Client::new();
         let response = client
             .get(format!(
-                "https://graph.microsoft.com/v1.0/me/messages/{}?$select=id,meetingMessageType",
-                urlencoding::encode(id)
+                "https://graph.microsoft.com/v1.0/me/messages/{}?{}",
+                urlencoding::encode(id),
+                crate::invites::INFO_QUERY
             ))
             .header("Authorization", format!("Bearer {}", token))
             .send()
@@ -71,19 +71,19 @@ impl GraphEmailProvider {
         let body = Self::check_response(response).await?;
         let json: serde_json::Value = serde_json::from_str(&body)
             .map_err(|e| crate::errors::OmarchyError::HttpError(e.to_string()))?;
-        Ok(json["meetingMessageType"].as_str().unwrap_or("").to_string())
+        Ok(crate::invites::InviteInfo::from_graph(&json))
     }
 
-    /// Answer a meeting request: `op` is "accept" | "tentativelyAccept" | "decline". Graph adds
-    /// the event to (or removes it from) the mailbox calendar and sends the organizer a reply.
-    /// The reply is sent silently (no comment), as the user chose.
-    pub async fn respond_to_invite(&self, id: &str, op: &str) -> Result<()> {
+    /// Answer a meeting request on its calendar event: `op` is "accept" | "tentativelyAccept" |
+    /// "decline". Exchange updates the calendar and sends the organizer a reply (silently, no
+    /// comment, as the user chose). Graph answers 202 with no body.
+    pub async fn respond_to_event(&self, event_id: &str, op: &str) -> Result<()> {
         let token = self.get_token().await?;
         let client = reqwest::Client::new();
         let response = client
             .post(format!(
-                "https://graph.microsoft.com/v1.0/me/messages/{}/{}",
-                urlencoding::encode(id),
+                "https://graph.microsoft.com/v1.0/me/events/{}/{}",
+                urlencoding::encode(event_id),
                 op
             ))
             .header("Authorization", format!("Bearer {}", token))

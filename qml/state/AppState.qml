@@ -197,39 +197,56 @@ Item {
     var id = currentMessageId
     if (id === "" || _bodyCache[id]) { _bodyDebounce.stop(); loadBody(id); loadInvite(id); return }
     currentBody = { id: id, state: "loading", type: "", content: "" }
-    invite = { id: id, type: "", actionable: false, state: "idle", error: "" }
+    invite = _emptyInvite(id, "idle")
     _bodyDebounce.restart()
   }
   // The invite lookup waits the same 120 ms as the body, so holding j/k never queues Graph calls.
   Timer { id: _bodyDebounce; interval: 120; onTriggered: { root.loadBody(root.currentMessageId); root.loadInvite(root.currentMessageId) } }
 
   // ---- meeting invitations ---------------------------------------------------
-  // invite: { id, type, actionable, state: "idle"|"loading"|"ready"|"sending"|"error", error }.
-  // `type` is the Graph meetingMessageType ("meetingRequest", "meetingAccepted", ...) or "none".
-  property var invite: ({ id: "", type: "", actionable: false, state: "idle", error: "" })
+  // invite: { id, state: "idle"|"loading"|"ready"|"sending"|"error", error, type, actionable,
+  //           response, organizer, isOrganizer, cancelled, hasEvent, when, location }.
+  // `type` is the Graph meetingMessageType ("meetingRequest", "meetingCancelled", ...) or "none".
+  // `response` is the user's own answer on the event ("notResponded", "accepted", ...).
+  function _emptyInvite(id, state, error) {
+    return { id: id, state: state, error: error || "", type: "", actionable: false, response: "",
+             organizer: "", isOrganizer: false, cancelled: false, hasEvent: false, when: "", location: "" }
+  }
+  property var invite: _emptyInvite("", "idle")
   property var _inviteCache: ({})
-  // Bumped after accept/tentative so the calendar view reloads its events.
+  // Bumped after an answer so the calendar view reloads its events.
   property int calendarRev: 0
 
-  function _setInvite(id, type, actionable, state, error) {
-    if (id !== currentMessageId) return
-    invite = { id: id, type: type, actionable: actionable, state: state, error: error || "" }
+  // Everything the backend said about the message, as the reader shows it.
+  function _inviteFrom(id, r, state) {
+    var o = _emptyInvite(id, state)
+    o.type = r.type || ""; o.actionable = !!r.actionable; o.response = r.response || ""
+    o.organizer = r.organizer || ""; o.isOrganizer = !!r.isOrganizer; o.cancelled = !!r.cancelled
+    o.hasEvent = !!r.hasEvent; o.when = r.when || ""; o.location = r.location || ""
+    return o
   }
 
+  function _setInvite(id, o) {
+    if (id !== currentMessageId) return
+    invite = o
+  }
+
+  // Ordinary mail ("none") never changes; invitations can be answered or cancelled elsewhere,
+  // so they are looked up again after a minute (the backend keeps its own five-minute cache).
   function loadInvite(id) {
-    if (id === "") { invite = { id: "", type: "", actionable: false, state: "idle", error: "" }; return }
+    if (id === "") { invite = _emptyInvite("", "idle"); return }
     var hit = _inviteCache[id]
-    if (hit) { _setInvite(id, hit.type, hit.actionable, "ready"); return }
-    _setInvite(id, "", false, "loading")
+    if (hit && (hit.r.type === "none" || Date.now() - hit.at < 60000)) { _setInvite(id, _inviteFrom(id, hit.r, "ready")); return }
+    _setInvite(id, _emptyInvite(id, "loading"))
     request("GET", "/messages/invite?id=" + encodeURIComponent(id), function(xhr) {
       var r = null
       try { r = JSON.parse(xhr.responseText) } catch (e) { r = null }
       if (!r || r.error !== undefined || r.type === undefined) {
-        _setInvite(id, "", false, "error", r && r.error ? String(r.error) : "")
+        _setInvite(id, _emptyInvite(id, "error", r && r.error ? String(r.error) : ""))
         return
       }
-      _inviteCache[id] = { type: r.type, actionable: !!r.actionable }
-      _setInvite(id, r.type, !!r.actionable, "ready")
+      _inviteCache[id] = { r: r, at: Date.now() }
+      _setInvite(id, _inviteFrom(id, r, "ready"))
     })
   }
 
@@ -237,20 +254,29 @@ Item {
   function respondInvite(choice) {
     var id = invite.id
     if (!invite.actionable || invite.state === "sending" || id !== currentMessageId) return
-    _setInvite(id, invite.type, true, "sending")
+    var before = invite
+    var sending = _inviteFrom(id, { type: before.type, actionable: true, response: before.response, organizer: before.organizer,
+                                    isOrganizer: before.isOrganizer, cancelled: before.cancelled, hasEvent: true,
+                                    when: before.when, location: before.location }, "sending")
+    _setInvite(id, sending)
     request("POST", "/messages/invite?id=" + encodeURIComponent(id) + "&choice=" + choice, function(xhr) {
       var r = null
       try { r = JSON.parse(xhr.responseText) } catch (e) { r = null }
       if (!r || r.error !== undefined || r.ok !== true) {
-        _setInvite(id, invite.type, true, "error", r && r.error ? String(r.error) : "could not reach the backend")
-        notify(r && r.error ? String(r.error) : "invitation response failed")
+        var msg = r && r.error ? String(r.error) : "could not reach the backend"
+        var back = _inviteFrom(id, { type: before.type, actionable: true, response: before.response, organizer: before.organizer,
+                                     isOrganizer: before.isOrganizer, cancelled: before.cancelled, hasEvent: true,
+                                     when: before.when, location: before.location }, "error")
+        back.error = msg
+        _setInvite(id, back)
+        notify(msg)
         return
       }
-      _inviteCache[id] = { type: r.type, actionable: true }
-      _setInvite(id, r.type, true, "ready")
+      _inviteCache[id] = { r: r, at: Date.now() }
+      _setInvite(id, _inviteFrom(id, r, "ready"))
       if (r.calendar === "refreshed") calendarRev++
       var label = choice === "accept" ? "Accepted" : choice === "tentative" ? "Tentatively accepted" : "Declined"
-      notify(label + (choice !== "decline" && r.calendar !== "refreshed" ? " (calendar not refreshed: " + (r.calendar || "") + ")" : ""))
+      notify(label + (r.calendar !== "refreshed" ? " (calendar not refreshed: " + (r.calendar || "") + ")" : ""))
     })
   }
 

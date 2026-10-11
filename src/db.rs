@@ -409,13 +409,15 @@ impl Database {
     /// as JSON arrays: they are only ever read back whole, never queried per element.
     fn init_contacts_schema(&self) -> Result<()> {
         self.conn.execute(
-            "CREATE TABLE IF NOT EXISTS invite_state (
+            "CREATE TABLE IF NOT EXISTS invite_info (
                 message_id TEXT PRIMARY KEY,
-                meeting_type TEXT NOT NULL,
+                info TEXT NOT NULL,
                 checked_at INTEGER NOT NULL
             )",
             [],
         )?;
+        // Replaced by invite_info (the old table held only a meeting type, never refreshed).
+        self.conn.execute("DROP TABLE IF EXISTS invite_state", [])?;
         self.conn.execute(
             "CREATE TABLE IF NOT EXISTS contact_folders (
                 id TEXT PRIMARY KEY,
@@ -894,30 +896,30 @@ impl Database {
             .ok()
     }
 
-    /// The account a cached message belongs to.
-    /// Cached `meetingMessageType` of a message ("none" for ordinary mail), if it was looked up.
-    pub fn invite_type(&self, message_id: &str) -> Result<Option<String>> {
+    /// Cached invitation lookup of a message: (info JSON, unix seconds it was fetched), if any.
+    pub fn invite_info(&self, message_id: &str) -> Result<Option<(String, i64)>> {
         Ok(self.conn.query_row(
-            "SELECT meeting_type FROM invite_state WHERE message_id = :id",
+            "SELECT info, checked_at FROM invite_info WHERE message_id = :id",
             rusqlite::named_params! { ":id": message_id },
-            |r| r.get::<_, String>(0),
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)),
         ).optional()?)
     }
 
-    /// Store the meeting type of a message (upsert, keyed by message id).
-    pub fn set_invite_type(&self, message_id: &str, meeting_type: &str) -> Result<()> {
+    /// Store the invitation lookup of a message (upsert, keyed by message id).
+    pub fn set_invite_info(&self, message_id: &str, info_json: &str) -> Result<()> {
         self.conn.execute(
-            "INSERT INTO invite_state (message_id, meeting_type, checked_at) VALUES (:id, :t, :now)
-             ON CONFLICT(message_id) DO UPDATE SET meeting_type = excluded.meeting_type, checked_at = excluded.checked_at",
+            "INSERT INTO invite_info (message_id, info, checked_at) VALUES (:id, :i, :now)
+             ON CONFLICT(message_id) DO UPDATE SET info = excluded.info, checked_at = excluded.checked_at",
             rusqlite::named_params! {
                 ":id": message_id,
-                ":t": meeting_type,
+                ":i": info_json,
                 ":now": Utc::now().timestamp(),
             },
         )?;
         Ok(())
     }
 
+    /// The account a cached message belongs to.
     pub fn message_account(&self, id: &str) -> Result<Option<String>> {
         match self.conn.query_row(
             "SELECT account_id FROM messages WHERE id = ?1",

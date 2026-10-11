@@ -163,6 +163,12 @@ impl CalendarDaemon {
         self.sync_occurrences(today - Days::days(NEAR_BACK_DAYS), today + Days::days(NEAR_AHEAD_DAYS)).await
     }
 
+    /// Re-expand the few days around `date` (an event answered far outside the near window
+    /// would otherwise stay stale until the next full-window sync).
+    pub async fn refresh_around(&self, date: NaiveDate) -> Result<usize> {
+        self.sync_occurrences(date - Days::days(1), date + Days::days(2)).await
+    }
+
     /// Expand the whole configured window, then drop stored occurrences outside it (they exist
     /// when the window was narrowed). Nothing is purged unless the whole window was fetched.
     pub(crate) async fn sync_full_window(&self, today: NaiveDate, years_back: i32, years_ahead: i32) -> Result<usize> {

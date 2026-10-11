@@ -287,60 +287,12 @@ fn watch_for_device_flow_trigger(config_dir: &PathBuf) {
     }
 }
 
-/// JSON for GET /messages/invite: `{"type":"meetingRequest"|...,"actionable":bool}`, or
-/// `{"error":"..."}`. The type is cached per message, so only the first look hits Graph.
+/// Invitation lookup of a message as JSON (see `InviteInfo::to_json`), or `{"error":"..."}`.
+/// Ordinary mail is cached for good; calendar mail for a few minutes, because the answer can
+/// change elsewhere (Outlook, phone) and the event can be cancelled or deleted.
 fn invite_info_json(config_dir: &PathBuf, id: &str) -> String {
+    use omarchylook::invites::{cache_ttl_secs, InviteInfo};
     let err = |m: &str| format!("{{\"error\":{}}}", serde_json::to_string(m).unwrap());
-    if id.is_empty() {
-        return err("missing id");
-    }
-    let db = match Database::open(config_dir.join("messages.db").to_str().unwrap_or("messages.db")) {
-        Ok(db) => db,
-        Err(e) => return err(&format!("database: {}", e)),
-    };
-    let kind = match db.invite_type(id) {
-        Ok(Some(k)) => k,
-        _ => {
-            let account = match db.message_account(id) {
-                Ok(Some(a)) => a,
-                _ => return err("unknown message"),
-            };
-            if omarchylook::accounts::provider_of(&account) != "graph" {
-                return format!("{{\"type\":\"none\",\"actionable\":false}}");
-            }
-            let rt = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
-                Ok(rt) => rt,
-                Err(e) => return err(&format!("runtime: {}", e)),
-            };
-            match rt.block_on(GraphEmailProvider::new(AuthManager::for_account(&account)).fetch_meeting_type(id)) {
-                Ok(k) => {
-                    let k = if k.is_empty() { "none".to_string() } else { k };
-                    if let Err(e) = db.set_invite_type(id, &k) {
-                        warn!("Could not cache invite type of {}: {}", id, e);
-                    }
-                    k
-                }
-                Err(e) => {
-                    warn!("Invite lookup failed for {}: {}", id, e);
-                    return err("could not read this message from the server");
-                }
-            }
-        }
-    };
-    format!("{{\"type\":{},\"actionable\":{}}}",
-        serde_json::to_string(&kind).unwrap(),
-        omarchylook::invites::is_actionable(&kind))
-}
-
-/// Answer an invitation (choice = accept | tentative | decline) on Graph, record the new state
-/// and, for accept/tentative, re-expand the calendar window so the event shows at once.
-/// Returns JSON `{"ok":true,"type":...}` or `{"error":...}`. A 403 means the account has not
-/// granted Calendars.ReadWrite yet, so the caller can explain it instead of failing silently.
-fn respond_invite_json(config_dir: &PathBuf, id: &str, choice: &str) -> String {
-    let err = |m: &str| format!("{{\"error\":{}}}", serde_json::to_string(m).unwrap());
-    let Some((op, new_type)) = omarchylook::invites::response_op(choice) else {
-        return err("unknown response");
-    };
     if id.is_empty() {
         return err("missing id");
     }
@@ -352,44 +304,118 @@ fn respond_invite_json(config_dir: &PathBuf, id: &str, choice: &str) -> String {
         Ok(Some(a)) => a,
         _ => return err("unknown message"),
     };
-    if omarchylook::accounts::provider_of(&account) != "graph" {
-        return err("responding to invitations is only supported for Microsoft accounts");
+    if omarchylook::accounts::provider_of(&account) != "exchange" {
+        return InviteInfo::none().to_json().to_string();
     }
-    match db.invite_type(id) {
-        Ok(Some(k)) if !omarchylook::invites::is_actionable(&k) => {
-            return err("this message is not an open invitation");
+    let cached = db.invite_info(id).ok().flatten();
+    if let Some((json, at)) = &cached {
+        let kind = serde_json::from_str::<serde_json::Value>(json)
+            .ok().and_then(|v| v["type"].as_str().map(str::to_string)).unwrap_or_default();
+        if !kind.is_empty() && chrono::Utc::now().timestamp() - at < cache_ttl_secs(&kind) {
+            return json.clone();
         }
-        _ => {}
+    }
+    let rt = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+        Ok(rt) => rt,
+        Err(e) => return err(&format!("runtime: {}", e)),
+    };
+    match rt.block_on(GraphEmailProvider::new(AuthManager::for_account(&account)).fetch_invite_info(id)) {
+        Ok(info) => {
+            let json = info.to_json().to_string();
+            if let Err(e) = db.set_invite_info(id, &json) {
+                warn!("Could not cache invite info of {}: {}", id, e);
+            }
+            json
+        }
+        Err(e) => {
+            warn!("Invite lookup failed for {}: {}", id, e);
+            // A stale answer beats none (offline, token trouble).
+            match cached {
+                Some((json, _)) => json,
+                None => err("could not read this message from the server"),
+            }
+        }
+    }
+}
+
+/// Answer an invitation (choice = accept | tentative | decline) on its Graph event, then
+/// refresh the calendar so the change shows at once. Returns the new `InviteInfo` JSON plus
+/// `"ok":true` and `"calendar":"refreshed"|"not refreshed: ..."`, or `{"error":...}`.
+/// A 403 means the account has not granted Calendars.ReadWrite yet.
+fn respond_invite_json(config_dir: &PathBuf, id: &str, choice: &str) -> String {
+    use omarchylook::invites::{response_op, status_of};
+    let err = |m: &str| format!("{{\"error\":{}}}", serde_json::to_string(m).unwrap());
+    let Some((op, new_response)) = response_op(choice) else {
+        return err("unknown response");
+    };
+    if id.is_empty() {
+        return err("missing id");
+    }
+    let db_path = config_dir.join("messages.db");
+    let db = match Database::open(db_path.to_str().unwrap_or("messages.db")) {
+        Ok(db) => db,
+        Err(e) => return err(&format!("database: {}", e)),
+    };
+    let account = match db.message_account(id) {
+        Ok(Some(a)) => a,
+        _ => return err("unknown message"),
+    };
+    if omarchylook::accounts::provider_of(&account) != "exchange" {
+        return err("responding to invitations is only supported for Microsoft accounts");
     }
     let rt = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
         Ok(rt) => rt,
         Err(e) => return err(&format!("runtime: {}", e)),
     };
     let graph = GraphEmailProvider::new(AuthManager::for_account(&account));
-    if let Err(e) = rt.block_on(graph.respond_to_invite(id, op)) {
+    // Always look the invitation up afresh: the cache may predate a cancellation.
+    let mut info = match rt.block_on(graph.fetch_invite_info(id)) {
+        Ok(i) => i,
+        Err(e) => {
+            warn!("Invite lookup before responding failed for {}: {}", id, e);
+            return err("could not read this message from the server");
+        }
+    };
+    let Some(event_id) = info.event_id.clone().filter(|_| info.actionable()) else {
+        let why = if info.is_organizer { "you are the organizer of this meeting" }
+            else if info.is_cancelled || info.kind == "meetingCancelled" { "this meeting was cancelled" }
+            else if info.kind == "meetingRequest" { "the meeting is no longer on your calendar" }
+            else { "this message is not an open invitation" };
+        return err(&format!("cannot respond: {}", why));
+    };
+    if let Err(e) = rt.block_on(graph.respond_to_event(&event_id, op)) {
         warn!("Respond {} to {} failed: {}", op, id, e);
-        let msg = e.to_string();
-        return if msg.contains("403") {
-            err("not allowed: grant Calendars.ReadWrite to this account (sign in again after the Azure consent)")
-        } else {
-            err("the server rejected the response")
+        return match status_of(&e.to_string()) {
+            Some(403) => err("not allowed: grant Calendars.ReadWrite to this account (sign in again after the Azure consent)"),
+            Some(404) => err("the meeting no longer exists on the server"),
+            _ => err("the server rejected the response"),
         };
     }
-    let _ = db.set_invite_type(id, new_type);
-    if omarchylook::invites::adds_to_calendar(choice) {
-        let provider = Arc::new(omarchylook::providers::GraphCalendarProvider::new(AuthManager::for_account(&account)));
-        let cal_db = match Database::open_for_account(config_dir.join("messages.db").to_str().unwrap_or("messages.db"), &account) {
-            Ok(d) => Arc::new(d),
-            Err(e) => return format!("{{\"ok\":true,\"type\":{},\"calendar\":{}}}", serde_json::to_string(new_type).unwrap(), serde_json::to_string(&format!("not refreshed: {}", e)).unwrap()),
-        };
-        let cal = omarchylook::calendar_daemon::CalendarDaemon::new(Default::default(), cal_db, provider);
-        let note = match rt.block_on(cal.refresh_near_window()) {
-            Ok(_) => "refreshed".to_string(),
-            Err(e) => { warn!("Calendar refresh after RSVP failed: {}", e); format!("not refreshed: {}", e) }
-        };
-        return format!("{{\"ok\":true,\"type\":{},\"calendar\":{}}}", serde_json::to_string(new_type).unwrap(), serde_json::to_string(&note).unwrap());
+    info.response = new_response.to_string();
+    let mut out = info.to_json();
+    if let Err(e) = db.set_invite_info(id, &out.to_string()) {
+        warn!("Could not cache invite info of {}: {}", id, e);
     }
-    format!("{{\"ok\":true,\"type\":{}}}", serde_json::to_string(new_type).unwrap())
+    // Every answer changes the calendar: accept/tentative add or update the event, decline removes it.
+    let note = match Database::open_for_account(db_path.to_str().unwrap_or("messages.db"), &account) {
+        Err(e) => format!("not refreshed: {}", e),
+        Ok(cal_db) => {
+            let provider = Arc::new(omarchylook::providers::GraphCalendarProvider::new(AuthManager::for_account(&account)));
+            let cal = omarchylook::calendar_daemon::CalendarDaemon::new(Default::default(), Arc::new(cal_db), provider);
+            let near = rt.block_on(cal.refresh_near_window());
+            let around = match info.start_date() {
+                Some(d) => rt.block_on(cal.refresh_around(d)).map(|_| ()),
+                None => Ok(()),
+            };
+            match near.map(|_| ()).and(around) {
+                Ok(()) => "refreshed".to_string(),
+                Err(e) => { warn!("Calendar refresh after RSVP failed: {}", e); format!("not refreshed: {}", e) }
+            }
+        }
+    };
+    out["ok"] = serde_json::json!(true);
+    out["calendar"] = serde_json::json!(note);
+    out.to_string()
 }
 
 /// JSON for GET /messages/body: `{"type":"html"|"text","content":"..."}`, or

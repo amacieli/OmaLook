@@ -32,15 +32,22 @@ Ctrl-Q read/unread, Ctrl-Shift-V move, Ctrl-Z undo, F9 sync, Ctrl-1..4 Mail / Ca
 
 ## Meeting invitations (Microsoft accounts)
 
-When the selected message is a meeting invitation, the reading pane shows its state and these keys apply:
+Any calendar message shows a banner at the top of the reading pane: a meeting invitation (with time, place and
+organizer), a cancellation, or someone's answer to your own meeting. On an invitation from someone else the banner
+also shows your current answer, and these keys apply:
 
-| Key | Action | Calendar |
-|-----|--------|----------|
-| `y` | Accept | adds the event; the calendar view reloads |
-| `m` | Tentatively accept | adds the event; the calendar view reloads |
-| `n` | Decline | removes it from the calendar |
+| Key | Action |
+|-----|--------|
+| `y` | Accept |
+| `m` | Tentatively accept |
+| `n` | Decline |
 
-The reply goes to the organizer silently (no comment). The keys are active only on an open invitation, so `m` still
-means move to folder on ordinary mail. Commands: `invite.accept`, `invite.tentative`, `invite.decline`
-(also `:accept`, `:tentative`, `:decline` in the command list). Responding needs the `Calendars.ReadWrite` permission; if the
-account has not granted it, the reading pane reports that instead of failing silently.
+Every answer updates your calendar (accept and tentative add the event, decline removes it) and the calendar view
+reloads. The reply goes to the organizer silently (no comment). You can change your answer later with the same keys;
+the banner re-checks the server after a few minutes, so an answer given in Outlook or on a phone shows up too.
+Not answerable: your own meetings, cancelled meetings, and messages that are only someone's reply.
+
+The keys are active only on an answerable invitation, so `m` still means move to folder on ordinary mail. Commands:
+`invite.accept`, `invite.tentative`, `invite.decline` (also `:accept`, `:tentative`, `:decline`). Responding needs the
+`Calendars.ReadWrite` permission; without it the banner says so instead of failing silently. Gmail accounts are not
+supported yet.

@@ -16,19 +16,47 @@ Item {
 
   property var message: null
   property bool paneFocused: false
-  // Meeting invitation state from AppState.invite (type, actionable, state).
-  property var invite: ({ id: "", type: "", actionable: false, state: "idle", error: "" })
-  readonly property bool inviteShown: !!root.message && root.invite.id === String(root.message.id || "")
-    && (root.invite.actionable || root.invite.state === "loading" || root.invite.state === "sending")
-  readonly property string inviteText: {
-    var t = root.invite.type
-    if (root.invite.state === "sending") return "sending response…"
-    if (root.invite.state === "loading") return "checking invitation…"
-    if (t === "meetingRequest") return "Meeting invitation   y accept · m tentative · n decline"
-    if (t === "meetingAccepted") return "Accepted   y accept · m tentative · n decline to change"
-    if (t === "meetingTentativelyAccepted") return "Tentatively accepted   y accept · m tentative · n decline to change"
-    if (t === "meetingDeclined") return "Declined   y accept · m tentative · n decline to change"
-    return ""
+  // Meeting invitation state from AppState.invite (see AppState: type, response, when, ...).
+  property var invite: ({ id: "", state: "idle", type: "none", actionable: false, response: "", error: "" })
+  readonly property bool inviteForThis: !!root.message && root.invite.id === String(root.message.id || "")
+  // Shown for every calendar message (request, cancellation, someone's answer), not just answerable ones.
+  readonly property bool inviteShown: root.inviteForThis && root.invite.type !== "none" && root.invite.type !== ""
+  readonly property string inviteKeys: "y accept · m tentative · n decline"
+  readonly property color inviteHue: {
+    var i = root.invite
+    if (i.cancelled || i.response === "declined" || i.type === "meetingDeclined") return Hues.red
+    if (i.response === "accepted" || i.type === "meetingAccepted") return Hues.green
+    if (i.response === "tentativelyAccepted" || i.type === "meetingTentativelyAccepted") return Hues.yellow
+    return Hues.cyan
+  }
+  // Two lines: what it is (and when/where), then what you can do or have done.
+  readonly property string inviteTitle: {
+    var i = root.invite
+    var what = i.cancelled ? "Meeting cancelled"
+      : i.type === "meetingRequest" ? "Meeting invitation"
+      : i.type === "meetingAccepted" ? "Meeting update: " + (i.organizer || "attendee") + " accepted"
+      : i.type === "meetingTentativelyAccepted" ? "Meeting update: attendee tentatively accepted"
+      : i.type === "meetingDeclined" ? "Meeting update: attendee declined"
+      : "Calendar message"
+    var extra = []
+    if (i.when) extra.push(i.when)
+    if (i.location) extra.push(i.location)
+    if (i.type === "meetingRequest" && i.organizer && !i.isOrganizer) extra.push("from " + i.organizer)
+    return "\u25A6 " + what + (extra.length ? "   " + extra.join(" · ") : "")
+  }
+  readonly property string inviteStatus: {
+    var i = root.invite
+    if (i.state === "sending") return "sending response…"
+    if (i.state === "loading") return "checking invitation…"
+    if (i.state === "error" && i.error !== "") return i.error
+    if (i.cancelled) return i.hasEvent ? "No response needed" : "Removed from your calendar"
+    if (i.type !== "meetingRequest") return "Informational, no response needed"
+    if (i.isOrganizer) return "You are the organizer"
+    if (!i.hasEvent) return "This meeting is no longer on your calendar"
+    var now = i.response === "accepted" ? "You accepted"
+      : i.response === "tentativelyAccepted" ? "You tentatively accepted"
+      : i.response === "declined" ? "You declined" : "Not answered yet"
+    return now + "   " + root.inviteKeys
   }
   property string hotkey: "\u2074"
 
@@ -269,12 +297,35 @@ Item {
         font.bold: true
       }
 
-      UiText {
+      BorderSurface {
         visible: root.inviteShown
-        text: root.inviteText
         Layout.fillWidth: true
-        foreground: Hues.brightForeground
-        font.pixelSize: Style.font.bodySmall
+        implicitHeight: inviteCol.implicitHeight + Style.spacing.md * 2
+        radius: Style.cornerRadius
+        color: Style.selectedFillFor(root.inviteHue, root.inviteHue)
+        borderSpec: Border.flat(root.inviteHue, Style.normalBorderWidth)
+
+        ColumnLayout {
+          id: inviteCol
+          anchors.fill: parent
+          anchors.margins: Style.spacing.md
+          spacing: 2
+          UiText {
+            text: root.inviteTitle
+            Layout.fillWidth: true
+            foreground: root.inviteHue
+            wrapMode: Text.WordWrap
+            font.pixelSize: Style.font.bodySmall
+            font.bold: true
+          }
+          UiText {
+            text: root.inviteStatus
+            Layout.fillWidth: true
+            foreground: Hues.brightForeground
+            wrapMode: Text.WordWrap
+            font.pixelSize: Style.font.bodySmall
+          }
+        }
       }
 
       RowLayout {
