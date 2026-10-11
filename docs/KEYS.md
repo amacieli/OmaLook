@@ -42,7 +42,7 @@ also shows your current answer, and these keys apply:
 | `m` | Tentatively accept |
 | `n` | Decline |
 
-Every answer updates your calendar (accept and tentative add the event, decline removes it) and the calendar view
+Every answer also marks the invitation read, and updates your calendar (accept and tentative add the event, decline removes it); the calendar view
 reloads. The reply goes to the organizer silently (no comment). You can change your answer later with the same keys;
 the banner re-checks the server after a few minutes, so an answer given in Outlook or on a phone shows up too.
 Not answerable: your own meetings, cancelled meetings, and messages that are only someone's reply.

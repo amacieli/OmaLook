@@ -275,6 +275,7 @@ Item {
       _inviteCache[id] = { r: r, at: Date.now() }
       _setInvite(id, _inviteFrom(id, r, "ready"))
       if (r.calendar === "refreshed") calendarRev++
+      markRead(id)   // answering an invitation deals with it: it no longer counts as unread
       var label = choice === "accept" ? "Accepted" : choice === "tentative" ? "Tentatively accepted" : "Declined"
       notify(label + (r.calendar !== "refreshed" ? " (calendar not refreshed: " + (r.calendar || "") + ")" : ""))
     })
@@ -783,6 +784,31 @@ Item {
         if (messageModelObj.get(j).id === id) { root._setRead(j, wasRead); break }
       }
       root._bumpFolderUnread(fid, -delta)
+    })
+  }
+
+  // Mark the message with this id read (no-op when it already is). Same optimistic update and
+  // rollback as toggleRead, but addressed by id: used after answering an invitation, when the
+  // cursor may have moved on by the time the backend replies.
+  function markRead(id) {
+    var row = -1, fid = selectedFolderId
+    for (var j = 0; j < messageModelObj.count; j++) {
+      if (messageModelObj.get(j).id === id) { row = j; break }
+    }
+    if (row >= 0) {
+      var m = messageModelObj.get(row)
+      if (m.is_read) return
+      fid = m.folder_id || selectedFolderId
+      _setRead(row, true)
+      _bumpFolderUnread(fid, -1)
+    }
+    request("POST", "/messages/read?id=" + encodeURIComponent(id) + "&read=true", function(xhr) {
+      if (xhr.status === 200 && xhr.responseText === "ok") return
+      if (row < 0) return
+      for (var k = 0; k < messageModelObj.count; k++) {
+        if (messageModelObj.get(k).id === id) { root._setRead(k, false); break }
+      }
+      root._bumpFolderUnread(fid, 1)
     })
   }
 
