@@ -332,8 +332,11 @@ impl TokenBroker {
 
     /// Record tokens from a completed login (device flow).
     pub fn store_tokens(&self, resp: &TokenResponse) -> Result<()> {
-        self.refresher.reset();
+        // Reset the refresher's remembered scope tier only once the lock is held: a refresh that
+        // is still running with the OLD credentials holds it, and may record "not consented" when
+        // it finishes. Resetting before waiting for it let that stale verdict outlive the login.
         let mut st = self.lock();
+        self.refresher.reset();
         self.ensure_loaded(&mut st);
         st.retry_after = None;
         st.needs_reauth = false;
@@ -350,8 +353,9 @@ impl TokenBroker {
 
     /// Take over credentials obtained under another id (re-login of an existing account).
     pub fn adopt(&self, token: &CachedToken) -> Result<()> {
-        self.refresher.reset();
+        // Lock first, then reset (see `store_tokens`).
         let mut st = self.lock();
+        self.refresher.reset();
         self.store.save(&self.account_id, token)?;
         st.stored = Some(token.clone());
         st.loaded = true;
@@ -541,6 +545,29 @@ mod tests {
         assert!(!b.needs_reauth());
         assert_eq!(store.load("a").unwrap().unwrap().refresh_token.as_deref(), Some("rn"));
         assert_eq!(b.snapshot().unwrap().refresh_token.as_deref(), Some("rn"));
+    }
+
+    /// A refresh running on the old credentials finishes AFTER a re-login starts; what it
+    /// learned (here: "not consented") must not survive the new sign-in.
+    #[test]
+    fn relogin_clears_scope_verdict_of_a_refresh_still_running_on_old_credentials() {
+        struct Marking { marked: std::sync::atomic::AtomicBool }
+        impl Refresher for Marking {
+            fn reset(&self) { self.marked.store(false, Ordering::SeqCst); }
+            fn refresh(&self, _rt: &str) -> RefreshOutcome {
+                std::thread::sleep(Duration::from_millis(300));
+                self.marked.store(true, Ordering::SeqCst); // like writing token_scope_<id>
+                RefreshOutcome::Ok(resp("x", Some("r1")))
+            }
+        }
+        let r = Arc::new(Marking { marked: std::sync::atomic::AtomicBool::new(false) });
+        let b = Arc::new(TokenBroker::new("a", seeded(), r.clone()));
+        let b2 = b.clone();
+        let h = std::thread::spawn(move || { let _ = b2.get_token(); });
+        std::thread::sleep(Duration::from_millis(80)); // refresh now in flight, holding the lock
+        b.adopt(&CachedToken { access_token: "n".into(), refresh_token: Some("rn".into()), expires_at: None }).unwrap();
+        h.join().unwrap();
+        assert!(!r.marked.load(Ordering::SeqCst), "stale verdict must be cleared by the re-login");
     }
 
     // ── launch fast path: reuse a still-valid stored access token ─────────
