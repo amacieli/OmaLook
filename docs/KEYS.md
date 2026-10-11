@@ -29,3 +29,18 @@ preset = "outlook"                      # optional: adds a family of extra bindi
 
 `outlook` keeps the vim keys and adds: Ctrl-R reply, Ctrl-Shift-R reply all, Ctrl-F forward, Delete delete, Backspace archive,
 Ctrl-Q read/unread, Ctrl-Shift-V move, Ctrl-Z undo, F9 sync, Ctrl-1..4 Mail / Calendar / People / Tasks.
+
+## Meeting invitations (Microsoft accounts)
+
+When the selected message is a meeting invitation, the reading pane shows its state and these keys apply:
+
+| Key | Action | Calendar |
+|-----|--------|----------|
+| `y` | Accept | adds the event; the calendar view reloads |
+| `m` | Tentatively accept | adds the event; the calendar view reloads |
+| `n` | Decline | removes it from the calendar |
+
+The reply goes to the organizer silently (no comment). The keys are active only on an open invitation, so `m` still
+means move to folder on ordinary mail. Commands: `invite.accept`, `invite.tentative`, `invite.decline`
+(also `:accept`, `:tentative`, `:decline` in the command list). Responding needs the `Calendars.ReadWrite` permission; if the
+account has not granted it, the reading pane reports that instead of failing silently.

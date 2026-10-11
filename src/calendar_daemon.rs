@@ -156,6 +156,13 @@ impl CalendarDaemon {
         (cs.recurrence_years_back, cs.recurrence_years_ahead)
     }
 
+    /// Re-expand the near window now (used right after accepting or tentatively accepting an
+    /// invitation, so the event shows in the calendar without waiting for the next poll).
+    pub async fn refresh_near_window(&self) -> Result<usize> {
+        let today = chrono::Local::now().date_naive();
+        self.sync_occurrences(today - Days::days(NEAR_BACK_DAYS), today + Days::days(NEAR_AHEAD_DAYS)).await
+    }
+
     /// Expand the whole configured window, then drop stored occurrences outside it (they exist
     /// when the window was narrowed). Nothing is purged unless the whole window was fetched.
     pub(crate) async fn sync_full_window(&self, today: NaiveDate, years_back: i32, years_ahead: i32) -> Result<usize> {

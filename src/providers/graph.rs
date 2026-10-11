@@ -53,6 +53,48 @@ impl GraphEmailProvider {
         Ok(text)
     }
 
+    /// `meetingMessageType` of one message: "meetingRequest" | "meetingTentativelyAccepted" |
+    /// "meetingAccepted" | "meetingDeclined" | "meetingCancelled" | "none" (or "" when Graph
+    /// does not say). Only messages that carry a calendar item have a value other than "none".
+    pub async fn fetch_meeting_type(&self, id: &str) -> Result<String> {
+        let token = self.get_token().await?;
+        let client = reqwest::Client::new();
+        let response = client
+            .get(format!(
+                "https://graph.microsoft.com/v1.0/me/messages/{}?$select=id,meetingMessageType",
+                urlencoding::encode(id)
+            ))
+            .header("Authorization", format!("Bearer {}", token))
+            .send()
+            .await
+            .map_err(|e| crate::errors::OmarchyError::HttpError(e.to_string()))?;
+        let body = Self::check_response(response).await?;
+        let json: serde_json::Value = serde_json::from_str(&body)
+            .map_err(|e| crate::errors::OmarchyError::HttpError(e.to_string()))?;
+        Ok(json["meetingMessageType"].as_str().unwrap_or("").to_string())
+    }
+
+    /// Answer a meeting request: `op` is "accept" | "tentativelyAccept" | "decline". Graph adds
+    /// the event to (or removes it from) the mailbox calendar and sends the organizer a reply.
+    /// The reply is sent silently (no comment), as the user chose.
+    pub async fn respond_to_invite(&self, id: &str, op: &str) -> Result<()> {
+        let token = self.get_token().await?;
+        let client = reqwest::Client::new();
+        let response = client
+            .post(format!(
+                "https://graph.microsoft.com/v1.0/me/messages/{}/{}",
+                urlencoding::encode(id),
+                op
+            ))
+            .header("Authorization", format!("Bearer {}", token))
+            .header("Content-Type", "application/json")
+            .body(r#"{"sendResponse": true}"#)
+            .send()
+            .await
+            .map_err(|e| crate::errors::OmarchyError::HttpError(e.to_string()))?;
+        Self::check_response(response).await.map(|_| ())
+    }
+
     /// Full body of one message: (content type "html"|"text", content).
     pub async fn fetch_message_body(&self, id: &str) -> Result<(String, String)> {
         let token = self.get_token().await?;

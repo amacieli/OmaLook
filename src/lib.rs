@@ -26,6 +26,7 @@ pub mod email_daemon;
 pub mod compose;
 pub mod outbox;
 pub mod calendar_daemon;
+pub mod invites;
 pub mod contacts_daemon;
 pub mod providers;
 

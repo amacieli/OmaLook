@@ -16,6 +16,20 @@ Item {
 
   property var message: null
   property bool paneFocused: false
+  // Meeting invitation state from AppState.invite (type, actionable, state).
+  property var invite: ({ id: "", type: "", actionable: false, state: "idle", error: "" })
+  readonly property bool inviteShown: !!root.message && root.invite.id === String(root.message.id || "")
+    && (root.invite.actionable || root.invite.state === "loading" || root.invite.state === "sending")
+  readonly property string inviteText: {
+    var t = root.invite.type
+    if (root.invite.state === "sending") return "sending response…"
+    if (root.invite.state === "loading") return "checking invitation…"
+    if (t === "meetingRequest") return "Meeting invitation   y accept · m tentative · n decline"
+    if (t === "meetingAccepted") return "Accepted   y accept · m tentative · n decline to change"
+    if (t === "meetingTentativelyAccepted") return "Tentatively accepted   y accept · m tentative · n decline to change"
+    if (t === "meetingDeclined") return "Declined   y accept · m tentative · n decline to change"
+    return ""
+  }
   property string hotkey: "\u2074"
 
   // Keyboard scrolling of the body (the reader pane). Whichever view is showing.
@@ -253,6 +267,14 @@ Item {
         wrapMode: Text.WordWrap
         font.pixelSize: Style.font.heading
         font.bold: true
+      }
+
+      UiText {
+        visible: root.inviteShown
+        text: root.inviteText
+        Layout.fillWidth: true
+        foreground: Hues.brightForeground
+        font.pixelSize: Style.font.bodySmall
       }
 
       RowLayout {

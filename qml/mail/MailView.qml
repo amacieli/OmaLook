@@ -88,6 +88,7 @@ RowLayout {
     onReplyAllRequested: root.app.openCompose("replyAll")
     onForwardRequested: root.app.openCompose("forward")
     message: root.app.currentMessage
+    invite: root.app.invite
     onToggleReadRequested: root.app.toggleRead()
     onToggleHtmlRequested: root.app.toggleHtml()
     htmlMode: root.app.currentHtmlMode

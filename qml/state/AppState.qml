@@ -195,11 +195,64 @@ Item {
   // show at once; everything else waits until the cursor has rested for 120 ms.
   onCurrentMessageIdChanged: {
     var id = currentMessageId
-    if (id === "" || _bodyCache[id]) { _bodyDebounce.stop(); loadBody(id); return }
+    if (id === "" || _bodyCache[id]) { _bodyDebounce.stop(); loadBody(id); loadInvite(id); return }
     currentBody = { id: id, state: "loading", type: "", content: "" }
+    invite = { id: id, type: "", actionable: false, state: "idle", error: "" }
     _bodyDebounce.restart()
   }
-  Timer { id: _bodyDebounce; interval: 120; onTriggered: root.loadBody(root.currentMessageId) }
+  // The invite lookup waits the same 120 ms as the body, so holding j/k never queues Graph calls.
+  Timer { id: _bodyDebounce; interval: 120; onTriggered: { root.loadBody(root.currentMessageId); root.loadInvite(root.currentMessageId) } }
+
+  // ---- meeting invitations ---------------------------------------------------
+  // invite: { id, type, actionable, state: "idle"|"loading"|"ready"|"sending"|"error", error }.
+  // `type` is the Graph meetingMessageType ("meetingRequest", "meetingAccepted", ...) or "none".
+  property var invite: ({ id: "", type: "", actionable: false, state: "idle", error: "" })
+  property var _inviteCache: ({})
+  // Bumped after accept/tentative so the calendar view reloads its events.
+  property int calendarRev: 0
+
+  function _setInvite(id, type, actionable, state, error) {
+    if (id !== currentMessageId) return
+    invite = { id: id, type: type, actionable: actionable, state: state, error: error || "" }
+  }
+
+  function loadInvite(id) {
+    if (id === "") { invite = { id: "", type: "", actionable: false, state: "idle", error: "" }; return }
+    var hit = _inviteCache[id]
+    if (hit) { _setInvite(id, hit.type, hit.actionable, "ready"); return }
+    _setInvite(id, "", false, "loading")
+    request("GET", "/messages/invite?id=" + encodeURIComponent(id), function(xhr) {
+      var r = null
+      try { r = JSON.parse(xhr.responseText) } catch (e) { r = null }
+      if (!r || r.error !== undefined || r.type === undefined) {
+        _setInvite(id, "", false, "error", r && r.error ? String(r.error) : "")
+        return
+      }
+      _inviteCache[id] = { type: r.type, actionable: !!r.actionable }
+      _setInvite(id, r.type, !!r.actionable, "ready")
+    })
+  }
+
+  // choice: "accept" | "tentative" | "decline". Sent silently to the organizer.
+  function respondInvite(choice) {
+    var id = invite.id
+    if (!invite.actionable || invite.state === "sending" || id !== currentMessageId) return
+    _setInvite(id, invite.type, true, "sending")
+    request("POST", "/messages/invite?id=" + encodeURIComponent(id) + "&choice=" + choice, function(xhr) {
+      var r = null
+      try { r = JSON.parse(xhr.responseText) } catch (e) { r = null }
+      if (!r || r.error !== undefined || r.ok !== true) {
+        _setInvite(id, invite.type, true, "error", r && r.error ? String(r.error) : "could not reach the backend")
+        notify(r && r.error ? String(r.error) : "invitation response failed")
+        return
+      }
+      _inviteCache[id] = { type: r.type, actionable: true }
+      _setInvite(id, r.type, true, "ready")
+      if (r.calendar === "refreshed") calendarRev++
+      var label = choice === "accept" ? "Accepted" : choice === "tentative" ? "Tentatively accepted" : "Declined"
+      notify(label + (choice !== "decline" && r.calendar !== "refreshed" ? " (calendar not refreshed: " + (r.calendar || "") + ")" : ""))
+    })
+  }
 
   function loadBody(id) {
     if (id === "") { currentBody = { id: "", state: "idle", type: "", content: "" }; return }

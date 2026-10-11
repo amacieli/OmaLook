@@ -252,6 +252,11 @@ Item {
     { id: "mail.read",     title: "Mark read / unread", scope: "mail", keys: ["z"], run: function() { app.toggleRead() } },
     { id: "mail.archive",  title: "Archive",       scope: "mail", keys: ["a"], when: function() { return onMessages }, run: function() { app.archiveSelected() } },
     { id: "mail.trash",    title: "Delete (Trash; permanent in Trash)", scope: "mail", keys: [], ex: ["delete", "trash"], when: function() { return onMessages }, run: function() { app.deleteSelected() } },
+    // Invitation answers. Listed before mail.move (which also uses `m`): these only apply while an
+    // open invitation is selected, so `m` keeps moving mail everywhere else.
+    { id: "invite.accept",    title: "Accept invitation",           scope: "mail", keys: ["y"], ex: ["accept"], when: function() { return onMessages && app.invite.actionable }, run: function() { app.respondInvite("accept") } },
+    { id: "invite.tentative", title: "Tentatively accept invitation", scope: "mail", keys: ["m"], ex: ["tentative"], when: function() { return onMessages && app.invite.actionable }, run: function() { app.respondInvite("tentative") } },
+    { id: "invite.decline",   title: "Decline invitation",          scope: "mail", keys: ["n"], ex: ["decline"], when: function() { return onMessages && app.invite.actionable }, run: function() { app.respondInvite("decline") } },
     { id: "mail.move",     title: "Move to folder…", scope: "mail", keys: ["m"], ex: ["move", "mv"], pick: pickMoveTargets, when: function() { return onMessages }, run: function() { root.paletteRequested("move ") } },
     { id: "mail.mark",     title: "Mark / unmark message", scope: "mail", keys: ["v"], when: function() { return app.focusPane === "msg" }, run: function() { app.toggleMark(); app.moveVertical(1) } },
     { id: "mail.markrange", title: "Mark range to cursor", scope: "mail", keys: ["V"], when: function() { return app.focusPane === "msg" }, run: function() { app.markRange() } },

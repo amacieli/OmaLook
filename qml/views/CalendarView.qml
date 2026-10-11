@@ -107,6 +107,11 @@ Rectangle {
         if (pending === 0) { loading = false; _merge() } else loading = true
     }
 
+    // Bumped by the app after an accepted / tentative invitation (the backend has just re-expanded
+    // the calendar), so the cache is dropped and the visible months are fetched again.
+    property int dataRev: 0
+    onDataRevChanged:    loadEvents(true)
+
     onModeChanged:       loadEvents(false)
     onAnchorDateChanged: loadEvents(false)
     Component.onCompleted: loadEvents(true)
