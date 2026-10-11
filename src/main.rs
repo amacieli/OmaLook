@@ -471,6 +471,96 @@ fn message_body_json(config_dir: &PathBuf, id: &str) -> String {
     }
 }
 
+/// The Graph provider for message `id`, or a user-facing reason it cannot be had.
+fn graph_for_message(db: &Database, id: &str) -> Result<GraphEmailProvider, String> {
+    let account = match db.message_account(id) {
+        Ok(Some(a)) => a,
+        _ => return Err("unknown message".into()),
+    };
+    if omarchylook::accounts::provider_of(&account) == "gmail" {
+        return Err("attachments are not supported for Gmail accounts yet".into());
+    }
+    Ok(GraphEmailProvider::new(AuthManager::for_account(&account)))
+}
+
+/// The attachment list of a message: cached, else fetched (and cached). The HTML body is
+/// consulted so pictures embedded in it are not listed as attachments.
+fn attachment_list(config_dir: &PathBuf, db: &Database, id: &str) -> Result<Vec<omarchylook::attachments::Attachment>, String> {
+    if let Ok(Some(list)) = db.cached_attachments(id) {
+        return Ok(list);
+    }
+    let provider = graph_for_message(db, id)?;
+    if !matches!(db.cached_body(id), Ok(Some(_))) {
+        let _ = message_body_json(config_dir, id); // fetches and caches the body
+    }
+    let body = match db.cached_body(id) { Ok(Some((t, c))) if t == "html" => Some(c), _ => None };
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e| format!("runtime: {}", e))?;
+    match rt.block_on(provider.fetch_attachments(id, body.as_deref())) {
+        Ok(list) => {
+            if let Err(e) = db.store_attachments(id, &list) {
+                warn!("Could not cache attachments of {}: {}", id, e);
+            }
+            Ok(list)
+        }
+        Err(e) => {
+            warn!("Attachment list failed for {}: {}", id, e);
+            Err(if e.to_string().contains("404") { "this message no longer exists on the server".into() } else { "could not fetch the attachment list".into() })
+        }
+    }
+}
+
+/// JSON for GET /messages/attachments?id=ID: `{"attachments":[...],"dir":"~/Downloads"}` or `{"error":"..."}`.
+fn message_attachments_json(config_dir: &PathBuf, id: &str) -> String {
+    let err = |m: &str| format!("{{\"error\":{}}}", serde_json::to_string(m).unwrap());
+    if id.is_empty() { return err("missing id"); }
+    let db = match Database::open(config_dir.join("messages.db").to_str().unwrap_or("messages.db")) {
+        Ok(db) => db,
+        Err(e) => return err(&format!("database: {}", e)),
+    };
+    match attachment_list(config_dir, &db, id) {
+        Ok(list) => {
+            let dir = omarchylook::attachments::download_dir(&config_dir.join("settings.toml"));
+            serde_json::json!({ "attachments": list, "dir": omarchylook::attachments::display_dir(&dir) }).to_string()
+        }
+        Err(e) => err(&e),
+    }
+}
+
+/// JSON for POST /messages/attachments/save?id=ID&att=ATT (one) or no `att` (every attachment
+/// that is not inline): `{"saved":[{"id","name","path"}],"failed":[{"id","name","error"}],"dir":"~/Downloads"}`.
+/// One failure never stops the others.
+fn save_attachments_json(config_dir: &PathBuf, id: &str, att: Option<&str>) -> String {
+    let err = |m: &str| format!("{{\"error\":{}}}", serde_json::to_string(m).unwrap());
+    if id.is_empty() { return err("missing id"); }
+    let db = match Database::open(config_dir.join("messages.db").to_str().unwrap_or("messages.db")) {
+        Ok(db) => db,
+        Err(e) => return err(&format!("database: {}", e)),
+    };
+    let list = match attachment_list(config_dir, &db, id) { Ok(l) => l, Err(e) => return err(&e) };
+    let wanted: Vec<_> = match att {
+        Some(a) => list.iter().filter(|x| x.id == a).cloned().collect(),
+        None => list.iter().filter(|x| !x.inline).cloned().collect(),
+    };
+    if wanted.is_empty() { return err("no such attachment"); }
+    let provider = match graph_for_message(&db, id) { Ok(p) => p, Err(e) => return err(&e) };
+    let rt = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+        Ok(rt) => rt,
+        Err(e) => return err(&format!("runtime: {}", e)),
+    };
+    let dir = omarchylook::attachments::download_dir(&config_dir.join("settings.toml"));
+    let (mut saved, mut failed) = (Vec::new(), Vec::new());
+    for a in &wanted {
+        match rt.block_on(provider.download_attachment(id, a, &dir)) {
+            Ok(path) => saved.push(serde_json::json!({ "id": a.id, "name": a.name, "path": path.display().to_string() })),
+            Err(e) => {
+                warn!("Attachment save failed ({}): {}", a.name, e);
+                failed.push(serde_json::json!({ "id": a.id, "name": a.name, "error": e.to_string() }));
+            }
+        }
+    }
+    serde_json::json!({ "saved": saved, "failed": failed, "dir": omarchylook::attachments::display_dir(&dir) }).to_string()
+}
+
 /// Read the body of a POST whose headers (and maybe part of the body) are already in `initial`.
 /// The server's first read is only 1 KiB, which is enough for every route that carries its data
 /// in the query string; the compose route carries a whole message.
@@ -1139,6 +1229,25 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                     continue;
                 }
 
+                // ── GET /messages/attachments?id=ID — the message's attachments (cached after the
+                // first fetch); POST /messages/attachments/save?id=ID[&att=ATT] — save one, or all
+                // non-inline ones, as individual files into the download folder. Own thread each. ──
+                if first_line.contains("GET /messages/attachments") || first_line.contains("POST /messages/attachments/save") {
+                    let saving = first_line.contains("POST /messages/attachments/save");
+                    let id = query_param(first_line, "id").unwrap_or_default();
+                    let att = query_param(first_line, "att");
+                    let dir = config_dir.clone();
+                    std::thread::spawn(move || {
+                        let body = if saving { save_attachments_json(&dir, &id, att.as_deref()) } else { message_attachments_json(&dir, &id) };
+                        let response = format!(
+                            "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                            body.len(), body
+                        );
+                        let _ = stream.write_all(response.as_bytes());
+                    });
+                    continue;
+                }
+
                 // ── GET /messages/body?id=ID — full body of one message: {"type","content"}.
                 // Served from the cache; otherwise fetched from the provider and cached.
                 // Runs on its own thread so a slow fetch never stalls the list requests. ──
@@ -1250,7 +1359,8 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                                 "SELECT m.id, m.subject, m.from_email, m.from_name, m.received_at, m.is_read, \
                                         COALESCE(m.account_id, ''), COALESCE(a.email, ''), \
                                         m.to_text, m.cc_text, m.bcc_text, m.sent_at, m.categories, m.importance, \
-                                        m.has_attachments, m.conversation_id, COALESCE(m.folder_id, '') \
+                                        COALESCE((SELECT c.has_real FROM attachment_cache c WHERE c.message_id = m.id), m.has_attachments), \
+                                        m.conversation_id, COALESCE(m.folder_id, '') \
                                  FROM messages m LEFT JOIN accounts a ON a.id = m.account_id{} \
                                  ORDER BY m.received_at DESC LIMIT ?{} OFFSET ?{}",
                                 where_sql, args.len() - 1, args.len()

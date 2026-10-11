@@ -283,6 +283,14 @@ impl Database {
         }
         self.conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_messages_meta ON messages(meta_ok)", [])?;
+        // Attachment lists (JSON of `attachments::Attachment`), fetched when a message is opened.
+        self.conn.execute(
+            "CREATE TABLE IF NOT EXISTS attachment_cache (
+                message_id TEXT PRIMARY KEY,
+                json TEXT NOT NULL,
+                has_real INTEGER NOT NULL DEFAULT 0,
+                fetched_at INTEGER NOT NULL
+            )", [])?;
         // Categories (Exchange) / user labels (Gmail) per account, with their colours.
         // `pending` = created here, not yet on the provider.
         self.conn.execute(
@@ -915,6 +923,27 @@ impl Database {
                 ":i": info_json,
                 ":now": Utc::now().timestamp(),
             },
+        )?;
+        Ok(())
+    }
+
+    /// The cached attachment list of a message, if it has been fetched.
+    pub fn cached_attachments(&self, id: &str) -> Result<Option<Vec<crate::attachments::Attachment>>> {
+        match self.conn.query_row("SELECT json FROM attachment_cache WHERE message_id = ?1", params![id], |r| r.get::<_, String>(0)) {
+            Ok(j) => Ok(serde_json::from_str(&j).ok()),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// Remember a message's attachment list. `has_real` (any non-inline attachment) overrides the
+    /// list view's coarse server hint, which counts signature logos; it lives here, not in
+    /// `messages`, so a later sync cannot overwrite the correction.
+    pub fn store_attachments(&self, id: &str, list: &[crate::attachments::Attachment]) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO attachment_cache (message_id, json, has_real, fetched_at) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(message_id) DO UPDATE SET json = excluded.json, has_real = excluded.has_real, fetched_at = excluded.fetched_at",
+            params![id, serde_json::to_string(list).unwrap_or_else(|_| "[]".into()), crate::attachments::any_real(list) as i32, Utc::now().timestamp()],
         )?;
         Ok(())
     }
@@ -1986,6 +2015,21 @@ mod calendar_tests {
             start: start.into(), end: end.into(), is_all_day: false, time_zone: "America/New_York".into(),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn attachment_cache_round_trips_and_tracks_real_attachments() {
+        use crate::attachments::Attachment;
+        let db = Database::open(":memory:").unwrap();
+        assert!(db.cached_attachments("m1").unwrap().is_none());
+        let a = |id: &str, inline: bool| Attachment { id: id.into(), name: format!("{}.png", id), size: 1, content_type: "image/png".into(), inline, kind: "file".into() };
+        db.store_attachments("m1", &[a("logo", true)]).unwrap();
+        assert_eq!(db.cached_attachments("m1").unwrap().unwrap().len(), 1);
+        let has_real = |db: &Database| db.conn.query_row("SELECT has_real FROM attachment_cache WHERE message_id='m1'", [], |r| r.get::<_, i32>(0)).unwrap();
+        assert_eq!(has_real(&db), 0, "an inline logo is not an attachment");
+        db.store_attachments("m1", &[a("logo", true), a("scan", false)]).unwrap();
+        assert_eq!(has_real(&db), 1);
+        assert_eq!(db.cached_attachments("m1").unwrap().unwrap().len(), 2);
     }
 
     #[test]

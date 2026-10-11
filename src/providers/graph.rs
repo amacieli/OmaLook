@@ -119,6 +119,73 @@ impl GraphEmailProvider {
         Ok((content_type.to_string(), json["body"]["content"].as_str().unwrap_or("").to_string()))
     }
 
+    /// Attachments of one message (no file contents). `body` is the message HTML when known,
+    /// so pictures the HTML shows by `cid:` count as inline even if the server did not say so.
+    /// Only base properties are selected: Graph rejects `contentId` in `$select` on this
+    /// collection (400), and `isInline` is reliable in practice.
+    pub async fn fetch_attachments(&self, id: &str, body: Option<&str>) -> Result<Vec<crate::attachments::Attachment>> {
+        let token = self.get_token().await?;
+        let client = reqwest::Client::new();
+        let response = client
+            .get(format!(
+                "https://graph.microsoft.com/v1.0/me/messages/{}/attachments?$select=id,name,size,contentType,isInline&$top=200",
+                urlencoding::encode(id)
+            ))
+            .header("Authorization", format!("Bearer {}", token))
+            .send()
+            .await
+            .map_err(|e| crate::errors::OmarchyError::HttpError(e.to_string()))?;
+        let text = Self::check_response(response).await?;
+        let json: serde_json::Value = serde_json::from_str(&text)
+            .map_err(|e| crate::errors::OmarchyError::HttpError(e.to_string()))?;
+        Ok(crate::attachments::from_graph(&json, body))
+    }
+
+    /// Download one attachment into `dir` under its (sanitised, collision-free) name and return
+    /// the path. Streams to a `.part` file and renames on success, so a failed download leaves
+    /// nothing behind.
+    pub async fn download_attachment(&self, msg_id: &str, att: &crate::attachments::Attachment, dir: &std::path::Path) -> Result<std::path::PathBuf> {
+        use std::io::Write;
+        let err = |m: String| crate::errors::OmarchyError::HttpError(m);
+        if !att.saveable() {
+            return Err(err(format!("{} is a cloud link; there is no file to download", att.name)));
+        }
+        let token = self.get_token().await?;
+        let client = reqwest::Client::new();
+        let mut response = client
+            .get(format!(
+                "https://graph.microsoft.com/v1.0/me/messages/{}/attachments/{}/$value",
+                urlencoding::encode(msg_id), urlencoding::encode(&att.id)
+            ))
+            .header("Authorization", format!("Bearer {}", token))
+            .send()
+            .await
+            .map_err(|e| err(e.to_string()))?;
+        if !response.status().is_success() {
+            let status = response.status();
+            return Err(err(format!("Graph API error: {}", status)));
+        }
+        let (final_path, reserved) = crate::attachments::create_unique(dir, &att.name).map_err(|e| err(format!("cannot write to {}: {}", dir.display(), e)))?;
+        drop(reserved);
+        let part = final_path.with_extension(format!("{}part", final_path.extension().map(|e| format!("{}.", e.to_string_lossy())).unwrap_or_default()));
+        let result: std::result::Result<(), String> = async {
+            let mut f = std::fs::File::create(&part).map_err(|e| e.to_string())?;
+            while let Some(chunk) = response.chunk().await.map_err(|e| e.to_string())? {
+                f.write_all(&chunk).map_err(|e| e.to_string())?;
+            }
+            f.flush().map_err(|e| e.to_string())?;
+            std::fs::rename(&part, &final_path).map_err(|e| e.to_string())
+        }.await;
+        match result {
+            Ok(()) => Ok(final_path),
+            Err(e) => {
+                let _ = std::fs::remove_file(&part);
+                let _ = std::fs::remove_file(&final_path);
+                Err(err(format!("download of {} failed: {}", att.name, e)))
+            }
+        }
+    }
+
     /// `Name <addr>, addr2` from a Graph recipient list; None when there are none.
     pub(crate) fn recipients_text(list: &serde_json::Value) -> Option<String> {
         let parts: Vec<String> = list.as_array()?.iter().filter_map(|r| {

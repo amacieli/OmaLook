@@ -1,5 +1,6 @@
 import QtQuick
 import "Commands.js" as Cmd
+import "../mail/format.js" as Fmt
 
 // The command registry: every key binding in the app, in one place. The router,
 // the palette and the status-bar hints all read `list`, so they cannot drift from
@@ -171,6 +172,31 @@ Item {
     app.loadCategories(acct, function() { root.paletteRequested("tag ") })
   }
 
+  // ---- attachments -----------------------------------------------------------
+  // Picker for the selected message's attachments: Enter saves the highlighted file (the list stays
+  // up, saved ones get a check mark), the first row saves them all. Typing filters by name.
+  function pickAttachments(q) {
+    var a = app.attachments
+    var none = function(id, t) { return [{ id: id, title: t, keys: [], run: function() {} }] }
+    if (a.id !== app.currentMessageId || a.state === "idle") return none("att.none", "this message has no attachments")
+    if (a.state === "loading") return none("att.loading", "loading attachments\u2026")
+    if (a.state === "error") return none("att.error", "\u26a0 " + a.error)
+    var items = app.realAttachments(), query = q.trim(), out = []
+    if (items.length === 0) return none("att.none", "this message has no attachments")
+    if (items.length > 1 && query === "")
+      out.push({ id: "att.all", title: "Save all " + items.length + " attachments", keys: [], run: function() { app.saveAttachments("") } })
+    items.forEach(function(it) {
+      if (query !== "" && !_fz(query, it.name)) return
+      var link = it.kind === "reference"
+      out.push({ id: "att." + it.id, keepOpen: !link,
+                 title: (app.attachmentSaved(it.id) ? "\u2713 " : "   ") + it.name + "   " + (link ? "(cloud link, nothing to save)" : Fmt.bytes(it.size)),
+                 keys: [], run: link ? function() { say("a cloud link has no file to save") } : (function(i) { return function() { app.saveAttachments(i) } })(it.id) })
+    })
+    if (out.length === 0) return none("att.nomatch", "no attachment matches \u201c" + query + "\u201d")
+    out.push({ id: "att.dir", title: "   \u2192 saves to " + (a.dir || "Downloads"), keys: [], run: function() {} })
+    return out
+  }
+
   function sync() { app.loadFolders(); app.loadMessages(); say("syncing…") }
 
   function soon(what) { return function() { say(what + ": not implemented yet") } }
@@ -261,6 +287,8 @@ Item {
     { id: "mail.mark",     title: "Mark / unmark message", scope: "mail", keys: ["v"], when: function() { return app.focusPane === "msg" }, run: function() { app.toggleMark(); app.moveVertical(1) } },
     { id: "mail.markrange", title: "Mark range to cursor", scope: "mail", keys: ["V"], when: function() { return app.focusPane === "msg" }, run: function() { app.markRange() } },
     { id: "mail.markall",  title: "Mark all in list", scope: "mail", keys: ["*"], when: function() { return app.focusPane === "msg" }, run: function() { app.markAll() } },
+    { id: "mail.attachments", title: "Attachments\u2026", scope: "mail", keys: ["A"], ex: ["attachments", "att"], pick: pickAttachments, when: function() { return onMessages && app.realAttachments().length > 0 }, run: function() { root.paletteRequested("attachments ") } },
+    { id: "mail.attachments.saveall", title: "Save all attachments", scope: "mail", keys: ["S"], ex: ["saveattachments", "saveatt"], when: function() { return onMessages && app.realAttachments().length > 0 }, run: function() { app.saveAttachments("") } },
     { id: "mail.tag",      title: "Set category / tag\u2026", scope: "mail", keys: ["t"], ex: ["tag", "category", "cat"], pick: pickTags, when: function() { return onMessages }, run: function() { openTagPicker() } },
     { id: "mail.tagcolor", title: "Colour for the new category\u2026", scope: "mail", keys: [], hidden: true, ex: ["tagcolor"], pick: pickColors, run: function() {} },
     { id: "mail.undo",     title: "Undo last archive / delete / move, or unsend", scope: "mail", keys: ["u"], run: function() { if (!app.undoAction()) app.undoLatest() } },

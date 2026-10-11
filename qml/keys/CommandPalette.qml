@@ -17,6 +17,16 @@ Item {
 
   signal closed()
 
+  // After a keepOpen row ran, the list rebuilds (a saved attachment gets its check mark) and a
+  // rebuilt ListView starts at row 0; put the highlight back where it was.
+  property int _restore: -1
+  onEntriesChanged: {
+    if (_restore < 0) return
+    var r = _restore
+    _restore = -1
+    Qt.callLater(function() { list.currentIndex = Math.min(r, Math.max(0, root.entries.length - 1)) })
+  }
+
   visible: open
   function show(prefill) {
     input.text = prefill || ""
@@ -50,6 +60,8 @@ Item {
       input.cursorPosition = input.text.length
       return
     }
+    // A picker row marked keepOpen (saving an attachment) leaves the list up for the next choice.
+    if (c.keepOpen) { root._restore = list.currentIndex; c.run(); return }
     hide()
     c.run()
   }
@@ -80,7 +92,7 @@ Item {
         id: input
         Layout.fillWidth: true
         placeholderText: "Type a command, or: goto <view>   folder <name>   sync   q"
-        onTextChanged: list.currentIndex = 0
+        onTextChanged: { root._restore = -1; list.currentIndex = 0 }
         Keys.priority: Keys.BeforeItem
         Keys.onPressed: function(e) {
           var ctrl = e.modifiers & Qt.ControlModifier

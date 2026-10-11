@@ -175,3 +175,11 @@ function textToHtml(text) {
   s = s.replace(/(https?:\/\/[^\s<]+)/g, "<a href=\"$1\">$1</a>")
   return s.replace(/\r?\n/g, "<br>")
 }
+
+// "2.1 MB", "340 KB", "12 B"
+function bytes(n) {
+  n = Number(n) || 0
+  if (n < 1024) return n + " B"
+  if (n < 1048576) return (n / 1024).toFixed(n < 10240 ? 1 : 0) + " KB"
+  return (n / 1048576).toFixed(n < 10485760 ? 1 : 0) + " MB"
+}

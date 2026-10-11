@@ -195,13 +195,70 @@ Item {
   // show at once; everything else waits until the cursor has rested for 120 ms.
   onCurrentMessageIdChanged: {
     var id = currentMessageId
-    if (id === "" || _bodyCache[id]) { _bodyDebounce.stop(); loadBody(id); loadInvite(id); return }
+    if (id === "" || _bodyCache[id]) { _bodyDebounce.stop(); loadBody(id); loadInvite(id); loadAttachments(id); return }
     currentBody = { id: id, state: "loading", type: "", content: "" }
     invite = _emptyInvite(id, "idle")
+    attachments = _emptyAttachments(id, "idle")
     _bodyDebounce.restart()
   }
   // The invite lookup waits the same 120 ms as the body, so holding j/k never queues Graph calls.
-  Timer { id: _bodyDebounce; interval: 120; onTriggered: { root.loadBody(root.currentMessageId); root.loadInvite(root.currentMessageId) } }
+  Timer { id: _bodyDebounce; interval: 120; onTriggered: { root.loadBody(root.currentMessageId); root.loadInvite(root.currentMessageId); root.loadAttachments(root.currentMessageId) } }
+
+  // ---- attachments -----------------------------------------------------------
+  // attachments: { id, state: "idle"|"loading"|"ready"|"error", error, dir, items: [{ id, name, size,
+  // content_type, inline, kind }] } for the selected message. Inline items (pictures that are part
+  // of the HTML) come back too; everything the UI shows goes through realAttachments().
+  function _emptyAttachments(id, state, error) { return { id: id, state: state, error: error || "", dir: "", items: [] } }
+  property var attachments: _emptyAttachments("", "idle")
+  property var _attCache: ({})
+  // "messageId|attachmentId" -> true once saved this session (shown as a check mark).
+  property var savedAttachments: ({})
+  property bool savingAttachments: false
+
+  // What the user would call attachments of the selected message (inline pictures excluded).
+  function realAttachments() {
+    return attachments.id === currentMessageId ? attachments.items.filter(function(i) { return !i.inline }) : []
+  }
+  function attachmentSaved(attId) { return savedAttachments[attachments.id + "|" + attId] === true }
+
+  // Only messages the list says have attachments are looked up. Like the invite lookup it runs
+  // after the selection has rested, so holding j/k never queues Graph calls.
+  function loadAttachments(id) {
+    if (id === "" || !currentMessage || currentMessage.has_attachments !== true) { attachments = _emptyAttachments(id, "idle"); return }
+    var hit = _attCache[id]
+    if (hit) { attachments = hit; return }
+    attachments = _emptyAttachments(id, "loading")
+    request("GET", "/messages/attachments?id=" + encodeURIComponent(id), function(xhr) {
+      var r = null
+      try { r = JSON.parse(xhr.responseText) } catch (e) { r = null }
+      var o
+      if (!r || r.error !== undefined || r.attachments === undefined)
+        o = _emptyAttachments(id, "error", r && r.error ? String(r.error) : "could not reach the backend")
+      else { o = _emptyAttachments(id, "ready"); o.items = r.attachments; o.dir = r.dir || ""; _attCache[id] = o }
+      if (id === currentMessageId) attachments = o
+    })
+  }
+
+  // Save one attachment (attId) or every non-inline one ("") into the download folder, as
+  // individual files. The result is one line in the status bar.
+  function saveAttachments(attId) {
+    var id = attachments.id
+    if (id === "" || id !== currentMessageId || savingAttachments || attachments.state !== "ready") return
+    savingAttachments = true
+    var q = "/messages/attachments/save?id=" + encodeURIComponent(id) + (attId !== "" ? "&att=" + encodeURIComponent(attId) : "")
+    request("POST", q, function(xhr) {
+      savingAttachments = false
+      var r = null
+      try { r = JSON.parse(xhr.responseText) } catch (e) { r = null }
+      if (!r || r.error !== undefined) { notify("Could not save: " + (r && r.error ? r.error : "backend did not answer")); return }
+      var marks = savedAttachments
+      r.saved.forEach(function(s) { marks[id + "|" + s.id] = true })
+      savedAttachments = Object.assign({}, marks)
+      var n = r.saved.length, f = r.failed.length
+      if (f === 0) notify(n === 1 ? "Saved " + r.saved[0].name + " to " + r.dir : "Saved " + n + " files to " + r.dir)
+      else notify((n > 0 ? "Saved " + n + ", " : "") + f + " failed: " + r.failed[0].name + " (" + r.failed[0].error + ")")
+    })
+  }
 
   // ---- meeting invitations ---------------------------------------------------
   // invite: { id, state: "idle"|"loading"|"ready"|"sending"|"error", error, type, actionable,

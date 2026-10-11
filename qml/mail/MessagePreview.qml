@@ -16,6 +16,22 @@ Item {
 
   property var message: null
   property bool paneFocused: false
+  // Attachment list of this message from AppState.attachments ({ id, state, items, dir, ... }).
+  property var attachments: ({ id: "", state: "idle", items: [], dir: "" })
+  signal attachmentsRequested()
+  readonly property var realAttachments: (!!root.message && root.attachments.id === String(root.message.id || "") && root.attachments.state === "ready")
+    ? root.attachments.items.filter(function(i) { return !i.inline }) : null
+  // One line however many there are: the name when there is one, else the count. Hidden when the
+  // list said "attachments" but they all turned out to be pictures inside the message.
+  readonly property bool showAttach: !!root.message && root.message.has_attachments === true
+    && (root.realAttachments === null || root.realAttachments.length > 0)
+  readonly property bool showImportance: !!root.message && root.message.importance === "high"
+  readonly property string attachText: {
+    var l = root.realAttachments
+    if (l === null) return "\uf0c6  attachments  \u00b7  A"
+    if (l.length === 1) return "\uf0c6  " + l[0].name + "  (" + Fmt.bytes(l[0].size) + ")  \u00b7  A to save"
+    return "\uf0c6  " + l.length + " attachments  \u00b7  A to choose, S to save all"
+  }
   // Meeting invitation state from AppState.invite (see AppState: type, response, when, ...).
   property var invite: ({ id: "", state: "idle", type: "none", actionable: false, response: "", error: "" })
   readonly property bool inviteForThis: !!root.message && root.invite.id === String(root.message.id || "")
@@ -387,21 +403,22 @@ Item {
       Flow {
         Layout.fillWidth: true
         spacing: Style.spacing.md
-        visible: importanceMark.visible || attachMark.visible || cats.count > 0
+        visible: root.showImportance || root.showAttach || cats.count > 0
 
         UiText {
           id: importanceMark
-          visible: !!root.message && root.message.importance === "high"
+          visible: root.showImportance
           text: "\uf06a  high importance"
           foreground: Color.urgent
           font.pixelSize: Style.font.caption
         }
         UiText {
           id: attachMark
-          visible: !!root.message && root.message.has_attachments === true
-          text: "\uf0c6  attachments"
+          visible: root.showAttach
+          text: root.attachText
           dim: true
           font.pixelSize: Style.font.caption
+          MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.attachmentsRequested() }
         }
         Repeater {
           id: cats

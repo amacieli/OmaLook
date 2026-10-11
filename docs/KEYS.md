@@ -51,3 +51,20 @@ The keys are active only on an answerable invitation, so `m` still means move to
 `invite.accept`, `invite.tentative`, `invite.decline` (also `:accept`, `:tentative`, `:decline`). Responding needs the
 `Calendars.ReadWrite` permission; without it the banner says so instead of failing silently. Gmail accounts are not
 supported yet.
+
+## Attachments (Microsoft accounts)
+
+A message with real attachments shows one line under its header: `📎 report.pdf (2.1 MB) · A to save`, or
+`📎 3 attachments · A to choose, S to save all`. Pictures that are part of the HTML body (signature logos, embedded
+images) are not attachments and are never listed.
+
+| Key | Action |
+|-----|--------|
+| `A` | Open the attachment list: `Enter` saves the highlighted file (the list stays open, saved files get a check mark), the first row saves all; type to filter, Up/Down to move, `Esc` closes |
+| `S` | Save every attachment of the selected message |
+
+Files are saved individually, never zipped, into your Downloads folder (XDG user dirs, else `~/Downloads`), flat, with no
+subfolder. A name that already exists becomes `name (1).ext`; nothing is overwritten. The status bar says where they went.
+Change the folder with `[attachments] download_dir = "~/Documents/mail"` in `settings.toml`. There is no preview: open a saved
+file with your desktop's default application. Commands: `mail.attachments`, `mail.attachments.saveall` (also `:attachments`,
+`:saveattachments`). Gmail accounts are not supported yet.

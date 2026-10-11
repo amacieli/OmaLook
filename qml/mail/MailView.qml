@@ -89,6 +89,8 @@ RowLayout {
     onForwardRequested: root.app.openCompose("forward")
     message: root.app.currentMessage
     invite: root.app.invite
+    attachments: root.app.attachments
+    onAttachmentsRequested: root.app.focusPaletteRequested("attachments ")
     onToggleReadRequested: root.app.toggleRead()
     onToggleHtmlRequested: root.app.toggleHtml()
     htmlMode: root.app.currentHtmlMode
