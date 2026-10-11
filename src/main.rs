@@ -613,6 +613,9 @@ fn compose_send_response(config_dir: &PathBuf, stream: &mut std::net::TcpStream,
     if let Err(e) = msg.validate() {
         return err(&e);
     }
+    if !msg.attachments.is_empty() && omarchylook::accounts::provider_of(&msg.account_id) == "gmail" {
+        return err("attachments are not supported for Gmail accounts yet");
+    }
     // A signed-out account has no worker, so the message would sit unsent without anyone knowing.
     if !SCHEDULER.get().map(|s| s.is_running(&msg.account_id)).unwrap_or(false) {
         return err("that account is not signed in, so it cannot send");
@@ -1036,6 +1039,22 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                             }
                         }
                         Err(e) => serde_json::json!({ "error": format!("database: {}", e) }).to_string(),
+                    };
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                        body.len(), body
+                    );
+                    let _ = stream.write_all(response.as_bytes());
+                    continue;
+                }
+
+                // ── GET /fs/list?path=DIR[&hidden=1] — one directory for the compose file picker ──
+                if first_line.contains("GET /fs/list") {
+                    let path = query_param(first_line, "path").unwrap_or_default();
+                    let hidden = query_param(first_line, "hidden").as_deref() == Some("1");
+                    let body = match omarchylook::fs_browse::list(&path, hidden) {
+                        Ok(l) => serde_json::to_string(&l).unwrap_or_else(|_| "{\"error\":\"could not list\"}".into()),
+                        Err(e) => serde_json::json!({ "error": e }).to_string(),
                     };
                     let response = format!(
                         "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",

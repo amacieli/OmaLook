@@ -658,6 +658,18 @@ Item {
     if (composeContacts.length === 0) loadComposeContacts()
   }
 
+  // File browser for attachments: the daemon lists one folder at a time; the last folder used is
+  // where the browser opens next time (this session).
+  property string attachBrowseDir: ""
+
+  function listDir(path, hidden, cb) {
+    request("GET", "/fs/list?path=" + encodeURIComponent(path) + (hidden ? "&hidden=1" : ""), function(xhr) {
+      var r = null
+      try { r = JSON.parse(xhr.responseText) } catch (e) {}
+      cb(xhr.status === 200 && r ? r : { error: "could not reach the backend" })
+    })
+  }
+
   function closeCompose() { composing = false; composeStatus = ""; focusRequested() }
 
   // ---- sending ---------------------------------------------------------------------------
@@ -807,7 +819,7 @@ Item {
     composeInitial = {
       kind: m.kind, accountId: m.account_id, inReplyTo: m.in_reply_to || "",
       to: _addrText(m.to), cc: _addrText(m.cc), bcc: _addrText(m.bcc),
-      subject: m.subject, quote: null, restore: m.body, mode: m.mode
+      subject: m.subject, quote: null, restore: m.body, mode: m.mode, attachments: m.attachments || []
     }
     composing = true
     if (composeContacts.length === 0) loadComposeContacts()

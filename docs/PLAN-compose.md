@@ -86,6 +86,16 @@ Part of Phase B was pulled in (outbox, undo window, retry/no-retry rules, crash 
 - [ ] Tests: request-body builder unit tests (no network); one manual send to self.
 - Done when: `curl -X POST localhost:PORT/compose/send -d @msg.json` delivers to Adam's own address.
 
+### Attachments while composing (Graph) — built 2026-10-11, live send still to be run by hand
+Attach (title-row button or Ctrl+Shift+A) opens `qml/compose/AttachBrowser.qml`, a keyboard-driven file browser
+fed by `GET /fs/list?path=&hidden=` (`src/fs_browse.rs`). Chips show name, size and a remove button; Ctrl+Shift+Backspace removes the last.
+Only the file *path* travels in `OutgoingMessage.attachments`; sizes are re-read from disk at queue time and the
+file is read again when the message goes out (a file deleted inside the undo window fails the send with a clear error).
+Graph: any message with files is built as a draft (`POST /me/messages`, or `createReply|createForward`), files under
+3 MB go to `/attachments` as base64, larger ones through `createUploadSession` in 3.75 MB chunks, then `/send`; a failed
+attempt deletes the draft. Limit 150 MB total. Gmail accounts are refused with a message (MIME attachments still open).
+Not done: drafts persistence (B2), inline images (cid), Gmail.
+
 ### Phase B — Outbox and reliability
 - [ ] `db.rs`: `outbox(id, account_id, payload_json, state, attempts, last_error, created_at)`.
 - [ ] `scheduler.rs`: drain outbox; retry with backoff on network or 5xx; never retry 4xx (surface the error).

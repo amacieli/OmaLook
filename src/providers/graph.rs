@@ -36,6 +36,43 @@ impl GraphEmailProvider {
         Ok(token)
     }
 
+    /// Attach one file to draft `did`: under 3 MB in one request, otherwise through an upload
+    /// session in chunks (read from disk one at a time, so a large file is never held whole).
+    async fn add_attachment(client: &reqwest::Client, token: &str, did: &str, a: &crate::compose::OutgoingAttachment) -> Result<()> {
+        use crate::compose::{content_range, graph_file_attachment_json, graph_upload_session_json, upload_ranges, SMALL_ATTACHMENT_LIMIT, UPLOAD_CHUNK};
+        use std::io::{Read, Seek, SeekFrom};
+        let http = |e: reqwest::Error| crate::errors::OmarchyError::HttpError(e.to_string());
+        let base = format!("https://graph.microsoft.com/v1.0/me/messages/{}/attachments", did);
+        let size = std::fs::metadata(&a.path)?.len();
+
+        if size < SMALL_ATTACHMENT_LIMIT {
+            let bytes = std::fs::read(&a.path)?;
+            let resp = client.post(&base).header("Authorization", format!("Bearer {}", token))
+                .json(&graph_file_attachment_json(a, &bytes)).send().await.map_err(http)?;
+            return Self::check_response(resp).await.map(|_| ());
+        }
+
+        let resp = client.post(format!("{}/createUploadSession", base)).header("Authorization", format!("Bearer {}", token))
+            .json(&graph_upload_session_json(a, size)).send().await.map_err(http)?;
+        let text = Self::check_response(resp).await?;
+        let url = serde_json::from_str::<serde_json::Value>(&text).ok()
+            .and_then(|j| j["uploadUrl"].as_str().map(str::to_string))
+            .ok_or_else(|| crate::errors::OmarchyError::HttpError("Graph did not return an upload URL".into()))?;
+        let mut file = std::fs::File::open(&a.path)?;
+        for (first, last) in upload_ranges(size, UPLOAD_CHUNK) {
+            let mut buf = vec![0u8; (last - first + 1) as usize];
+            file.seek(SeekFrom::Start(first))?;
+            file.read_exact(&mut buf)?;
+            // The upload URL is pre-authorised: sending the bearer token to it is refused.
+            let resp = client.put(&url)
+                .header("Content-Type", "application/octet-stream")
+                .header("Content-Range", content_range(first, last, size))
+                .body(buf).send().await.map_err(http)?;
+            Self::check_response(resp).await?;
+        }
+        Ok(())
+    }
+
     /// Internal: handle non-2xx responses with full body logging
     async fn check_response(response: reqwest::Response) -> Result<String> {
         if !response.status().is_success() {
@@ -573,35 +610,56 @@ impl super::EmailProvider for GraphEmailProvider {
         };
         let send_new = || call(reqwest::Method::POST, "/me/sendMail".into(), Some(graph_send_mail_json(msg)));
 
-        if !(msg.is_reply() || msg.is_forward()) {
+        let has_files = !msg.attachments.is_empty();
+        let threaded = msg.is_reply() || msg.is_forward();
+        if !threaded && !has_files {
             return send_new().await.map(|_| ());
         }
+        let draft_id_of = |text: &str| {
+            serde_json::from_str::<serde_json::Value>(text)
+                .ok()
+                .and_then(|j| j["id"].as_str().map(str::to_string))
+                .ok_or_else(|| crate::errors::OmarchyError::HttpError("Graph did not return a draft id".into()))
+        };
 
         // Reply / forward: let Graph build the draft so the conversation stays threaded, then
         // replace its body and recipients with what the user wrote, and send it.
-        let action = match msg.kind.as_str() {
-            "replyAll" => "createReplyAll",
-            "forward" => "createForward",
-            _ => "createReply",
-        };
-        let orig = urlencoding::encode(&msg.in_reply_to).into_owned();
-        let draft = match call(reqwest::Method::POST, format!("/me/messages/{}/{}", orig, action), Some(serde_json::json!({}))).await {
-            Ok(text) => text,
-            // The original is gone: send what was written as a new message rather than lose it.
-            Err(crate::errors::OmarchyError::HttpError(m)) if m.contains("Graph API error: 404") => {
-                warn!("Graph: message {} no longer exists; sending as a new message", msg.in_reply_to);
-                return send_new().await.map(|_| ());
+        let mut existing: Option<String> = None;
+        if threaded {
+            let action = match msg.kind.as_str() {
+                "replyAll" => "createReplyAll",
+                "forward" => "createForward",
+                _ => "createReply",
+            };
+            let orig = urlencoding::encode(&msg.in_reply_to).into_owned();
+            match call(reqwest::Method::POST, format!("/me/messages/{}/{}", orig, action), Some(serde_json::json!({}))).await {
+                Ok(text) => existing = Some(draft_id_of(&text)?),
+                // The original is gone: send what was written as a new message rather than lose it.
+                Err(crate::errors::OmarchyError::HttpError(m)) if m.contains("Graph API error: 404") => {
+                    warn!("Graph: message {} no longer exists; sending as a new message", msg.in_reply_to);
+                    if !has_files {
+                        return send_new().await.map(|_| ());
+                    }
+                }
+                Err(e) => return Err(e),
             }
-            Err(e) => return Err(e),
+        }
+        // A new message with files is built as a draft too: attachments can only be added to a
+        // message that exists (sendMail's inline list is capped at a few MB).
+        let fresh = existing.is_none();
+        let draft_id = match existing {
+            Some(id) => id,
+            None => draft_id_of(&call(reqwest::Method::POST, "/me/messages".into(), Some(graph_message_json(msg))).await?)?,
         };
-        let draft_id = serde_json::from_str::<serde_json::Value>(&draft)
-            .ok()
-            .and_then(|j| j["id"].as_str().map(str::to_string))
-            .ok_or_else(|| crate::errors::OmarchyError::HttpError("Graph did not return a draft id".into()))?;
         let did = urlencoding::encode(&draft_id).into_owned();
 
         let finish = async {
-            call(reqwest::Method::PATCH, format!("/me/messages/{}", did), Some(graph_message_json(msg))).await?;
+            if !fresh {
+                call(reqwest::Method::PATCH, format!("/me/messages/{}", did), Some(graph_message_json(msg))).await?;
+            }
+            for a in &msg.attachments {
+                Self::add_attachment(&client, &token, &did, a).await?;
+            }
             call(reqwest::Method::POST, format!("/me/messages/{}/send", did), None).await
         };
         match finish.await {

@@ -63,6 +63,8 @@ RowLayout {
       item.accounts = Qt.binding(function() { return root.app.accounts })
       item.contacts = Qt.binding(function() { return root.app.composeContacts })
       item.status = Qt.binding(function() { return root.app.composeStatus })
+      item.listDir = function(path, hidden, cb) { root.app.listDir(path, hidden, cb) }
+      item.browseDir = Qt.binding(function() { return root.app.attachBrowseDir })
       item.forceActiveFocus()
     }
     Connections {
@@ -70,6 +72,7 @@ RowLayout {
       ignoreUnknownSignals: true
       function onSendRequested(message) { root.app.submitCompose(message) }
       function onDiscardRequested() { root.app.closeCompose() }
+      function onBrowsed(dir) { root.app.attachBrowseDir = dir }
     }
     onStatusChanged: if (status === Loader.Error) {
       root.app.composeStatus = "Could not load the editor (is the OmarchyLook.Compose plugin on QML_IMPORT_PATH?)"

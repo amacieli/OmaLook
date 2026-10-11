@@ -50,6 +50,7 @@ IDs are stable (never reused). Status: `open` | `investigating` | `planned` | `i
 | Mail list views / field chooser | `notes/PLAN-mail-list-views.md` (gitignored `notes/`) | not started |
 | Keyboard model: vim nav, `g` modules, palette, mail actions | `docs/PLAN-keyboard.md` | planned (plan written 2026-10-09; decisions Q1-Q6 settled) |
 | Mail details (sender name, To/Cc/Bcc, categories, sent, importance, attachments) + categories key `t` | `docs/PLAN-mail-fields.md` | built 2026-10-09 (branch `feature/mail-fields`) |
+| Compose attachments: in-app file browser, chips, Graph small + upload-session (Gmail refused) | `docs/PLAN-compose.md` | built 2026-10-11 (branch `feature/attachments`); live send untested |
 | Received-mail attachments: list, picker (`A`), save one / all (`S`) into Downloads (Graph only) | `docs/PLAN-attachments.md` | built 2026-10-11 (branch `feature/attachments`) |
 
 ## Done

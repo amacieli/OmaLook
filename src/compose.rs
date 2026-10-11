@@ -29,6 +29,41 @@ pub struct Body {
     pub content: String,
 }
 
+/// A file the user attached while composing. Only the path travels from the UI; the daemon
+/// reads the file when the message goes out (the sizes below are re-checked from disk, never
+/// trusted from the client).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct OutgoingAttachment {
+    pub path: String,
+    /// Shown to the recipient. Empty means the file's own name.
+    #[serde(default)]
+    pub name: String,
+    /// What the UI saw when the file was picked (display only).
+    #[serde(default)]
+    pub size: u64,
+    /// Empty means guessed from the file name.
+    #[serde(default)]
+    pub content_type: String,
+}
+
+impl OutgoingAttachment {
+    /// The name the recipient sees: the given one, else the file's own, with path separators and
+    /// control characters made harmless.
+    pub fn display_name(&self) -> String {
+        let raw = if self.name.trim().is_empty() {
+            std::path::Path::new(&self.path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+        } else {
+            self.name.trim().to_string()
+        };
+        let clean: String = raw.chars().map(|c| if c == '/' || c == '\\' || c.is_control() { '_' } else { c }).collect();
+        if clean.trim().is_empty() { "attachment".into() } else { clean }
+    }
+
+    pub fn mime_type(&self) -> String {
+        if self.content_type.trim().is_empty() { guess_content_type(&self.display_name()) } else { self.content_type.trim().to_string() }
+    }
+}
+
 /// One message as composed in the UI.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct OutgoingMessage {
@@ -51,10 +86,22 @@ pub struct OutgoingMessage {
     #[serde(default)]
     pub mode: String,
     pub body: Body,
+    #[serde(default)]
+    pub attachments: Vec<OutgoingAttachment>,
 }
 
 /// Largest body accepted (the HTTP layer reads at most this much anyway).
 pub const MAX_BODY_BYTES: usize = 8 * 1024 * 1024;
+
+/// Graph accepts at most 150 MB of attachments on one message.
+pub const MAX_ATTACHMENT_TOTAL: u64 = 150 * 1024 * 1024;
+
+/// Graph's limit for adding a file in one request; anything this big or bigger goes through an
+/// upload session.
+pub const SMALL_ATTACHMENT_LIMIT: u64 = 3_000_000;
+
+/// Upload-session chunk: Graph wants a multiple of 320 KiB and no more than 4 MB.
+pub const UPLOAD_CHUNK: u64 = 12 * 327_680;
 
 fn email_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
@@ -89,6 +136,27 @@ impl OutgoingMessage {
         }
         if !matches!(self.body.format.as_str(), "text" | "html") {
             return Err(format!("unknown body format: {:?}", self.body.format));
+        }
+        self.validate_attachments()
+    }
+
+    /// Every attached file must still exist as a readable regular file, and together they must
+    /// fit what the provider accepts. Sizes come from the disk.
+    pub fn validate_attachments(&self) -> Result<(), String> {
+        let mut total: u64 = 0;
+        for a in &self.attachments {
+            let name = a.display_name();
+            let meta = std::fs::metadata(&a.path).map_err(|_| format!("{} is no longer there", name))?;
+            if !meta.is_file() {
+                return Err(format!("{} is not a file", name));
+            }
+            if std::fs::File::open(&a.path).is_err() {
+                return Err(format!("{} cannot be read", name));
+            }
+            total += meta.len();
+        }
+        if total > MAX_ATTACHMENT_TOTAL {
+            return Err(format!("attachments total {} MB; the limit is {} MB", total / (1024 * 1024), MAX_ATTACHMENT_TOTAL / (1024 * 1024)));
         }
         Ok(())
     }
@@ -269,6 +337,80 @@ pub fn graph_message_json(msg: &OutgoingMessage) -> serde_json::Value {
 /// Body of `POST /me/sendMail`.
 pub fn graph_send_mail_json(msg: &OutgoingMessage) -> serde_json::Value {
     serde_json::json!({ "message": graph_message_json(msg), "saveToSentItems": true })
+}
+
+/// Content type from the file name; `application/octet-stream` when unknown.
+pub fn guess_content_type(name: &str) -> String {
+    let ext = name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase()).unwrap_or_default();
+    match ext.as_str() {
+        "pdf" => "application/pdf",
+        "txt" | "log" | "md" => "text/plain",
+        "csv" => "text/csv",
+        "html" | "htm" => "text/html",
+        "json" => "application/json",
+        "xml" => "application/xml",
+        "zip" => "application/zip",
+        "gz" | "tgz" => "application/gzip",
+        "7z" => "application/x-7z-compressed",
+        "tar" => "application/x-tar",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "svg" => "image/svg+xml",
+        "mp3" => "audio/mpeg",
+        "wav" => "audio/wav",
+        "mp4" => "video/mp4",
+        "mov" => "video/quicktime",
+        "doc" => "application/msword",
+        "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "xls" => "application/vnd.ms-excel",
+        "xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "ppt" => "application/vnd.ms-powerpoint",
+        "pptx" => "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "ics" => "text/calendar",
+        "eml" => "message/rfc822",
+        _ => "application/octet-stream",
+    }
+    .to_string()
+}
+
+/// Body of `POST /me/messages/{id}/attachments` (a file under 3 MB, sent inline as base64).
+pub fn graph_file_attachment_json(a: &OutgoingAttachment, bytes: &[u8]) -> serde_json::Value {
+    serde_json::json!({
+        "@odata.type": "#microsoft.graph.fileAttachment",
+        "name": a.display_name(),
+        "contentType": a.mime_type(),
+        "contentBytes": b64(bytes),
+    })
+}
+
+/// Body of `POST /me/messages/{id}/attachments/createUploadSession` (a file of 3 MB or more).
+pub fn graph_upload_session_json(a: &OutgoingAttachment, size: u64) -> serde_json::Value {
+    serde_json::json!({
+        "AttachmentItem": {
+            "attachmentType": "file",
+            "name": a.display_name(),
+            "size": size,
+            "contentType": a.mime_type(),
+        }
+    })
+}
+
+/// Inclusive `(first, last)` byte ranges covering `total` bytes in pieces of `chunk`.
+pub fn upload_ranges(total: u64, chunk: u64) -> Vec<(u64, u64)> {
+    let mut out = Vec::new();
+    let mut start = 0;
+    while start < total {
+        let end = (start + chunk).min(total) - 1;
+        out.push((start, end));
+        start = end + 1;
+    }
+    out
+}
+
+pub fn content_range(first: u64, last: u64, total: u64) -> String {
+    format!("bytes {}-{}/{}", first, last, total)
 }
 
 // ───────────────────────────────────────────────────────────────── MIME
@@ -592,5 +734,83 @@ mod tests {
         assert!(!is_transient(&HttpError("error sending request: operation timed out".into())));
         assert_eq!(retry_delay_secs(1), 5);
         assert!(retry_delay_secs(3) >= retry_delay_secs(2));
+    }
+
+    // ---- attachments
+
+    fn file_in(dir: &std::path::Path, name: &str, bytes: &[u8]) -> OutgoingAttachment {
+        let p = dir.join(name);
+        std::fs::write(&p, bytes).unwrap();
+        OutgoingAttachment { path: p.to_string_lossy().into(), ..Default::default() }
+    }
+
+    fn tmpdir(tag: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("olook-att-{}-{}", tag, std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn attachment_names_are_safe_and_types_are_guessed() {
+        let a = OutgoingAttachment { path: "/home/x/Q3 report.PDF".into(), ..Default::default() };
+        assert_eq!(a.display_name(), "Q3 report.PDF");
+        assert_eq!(a.mime_type(), "application/pdf");
+        let b = OutgoingAttachment { path: "/x/y".into(), name: "../../etc/pa\nsswd".into(), content_type: "text/x-custom".into(), ..Default::default() };
+        assert_eq!(b.display_name(), ".._.._etc_pa_sswd");
+        assert_eq!(b.mime_type(), "text/x-custom");
+        assert_eq!(guess_content_type("noext"), "application/octet-stream");
+        assert_eq!(guess_content_type("a.b.JPG"), "image/jpeg");
+        assert_eq!(OutgoingAttachment { path: "/".into(), ..Default::default() }.display_name(), "attachment");
+    }
+
+    #[test]
+    fn attachments_are_checked_against_the_disk() {
+        let d = tmpdir("val");
+        let mut m = msg("text", "hi", "system");
+        m.to = vec![addr("p@example.com", "")];
+        m.account_id = "a1".into();
+        m.attachments = vec![file_in(&d, "ok.txt", b"hello")];
+        assert!(m.validate().is_ok());
+        // gone before sending
+        std::fs::remove_file(&m.attachments[0].path).unwrap();
+        assert_eq!(m.validate().unwrap_err(), "ok.txt is no longer there");
+        // a folder is not a file
+        m.attachments = vec![OutgoingAttachment { path: d.to_string_lossy().into(), ..Default::default() }];
+        assert!(m.validate().unwrap_err().contains("is not a file"));
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn old_payloads_without_attachments_still_load() {
+        let m: OutgoingMessage = serde_json::from_str(r#"{"account_id":"a","body":{"format":"text","content":"x"}}"#).unwrap();
+        assert!(m.attachments.is_empty());
+    }
+
+    #[test]
+    fn graph_attachment_bodies() {
+        let a = OutgoingAttachment { path: "/x/n.txt".into(), ..Default::default() };
+        let j = graph_file_attachment_json(&a, b"hi");
+        assert_eq!(j["@odata.type"], "#microsoft.graph.fileAttachment");
+        assert_eq!(j["name"], "n.txt");
+        assert_eq!(j["contentType"], "text/plain");
+        assert_eq!(j["contentBytes"], "aGk=");
+        let s = graph_upload_session_json(&a, 5_000_000);
+        assert_eq!(s["AttachmentItem"]["attachmentType"], "file");
+        assert_eq!(s["AttachmentItem"]["size"], 5_000_000);
+    }
+
+    #[test]
+    fn upload_ranges_tile_the_file_exactly() {
+        assert_eq!(upload_ranges(0, 10), vec![]);
+        assert_eq!(upload_ranges(10, 10), vec![(0, 9)]);
+        assert_eq!(upload_ranges(25, 10), vec![(0, 9), (10, 19), (20, 24)]);
+        assert_eq!(content_range(10, 19, 25), "bytes 10-19/25");
+        let r = upload_ranges(10_000_000, UPLOAD_CHUNK);
+        assert_eq!(r.first().unwrap().0, 0);
+        assert_eq!(r.last().unwrap().1, 9_999_999);
+        assert!(r.windows(2).all(|w| w[1].0 == w[0].1 + 1));
+        assert_eq!(UPLOAD_CHUNK % 327_680, 0);
+        assert!(UPLOAD_CHUNK <= 4 * 1024 * 1024);
     }
 }

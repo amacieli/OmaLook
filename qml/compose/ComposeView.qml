@@ -25,7 +25,13 @@ FocusScope {
   property string defaultMode: "system"
   // Result line from the owner: "" | "sending…" | an error.
   property string status: ""
+  // Attachments: [{ path, name, size }]. `listDir(path, hidden, cb)` and `browseDir` come from the
+  // owner (the daemon lists folders for the file browser; the last folder used is remembered).
+  property var attachments: []
+  property var listDir: null
+  property string browseDir: ""
 
+  signal browsed(string dir)
   signal sendRequested(var message)
   signal discardRequested()
   signal focusRequested()
@@ -48,7 +54,7 @@ FocusScope {
   property string _seedText: ""
   readonly property bool dirty: header.to.recipients.length > 0 || header.cc.recipients.length > 0
     || header.bcc.recipients.length > 0 || header.subject.text !== (initial.subject || "")
-    || editor.text.length > 0 && handler.plainText().trim() !== _seedText.trim()
+    || attachments.length > 0 || editor.text.length > 0 && handler.plainText().trim() !== _seedText.trim()
 
   function _quoteHtml(q) {
     if (!q) return ""
@@ -64,6 +70,39 @@ FocusScope {
     return { format: "html", content: handler.html() }
   }
 
+  readonly property var _account: {
+    var a = accounts.filter(function(x) { return x.id === root.accountId })
+    return a.length > 0 ? a[0] : null
+  }
+  readonly property bool canAttach: !_account || _account.provider !== "gmail"
+  readonly property real attachedBytes: attachments.reduce(function(t, a) { return t + (a.size || 0) }, 0)
+  readonly property real maxAttachedBytes: 150 * 1024 * 1024
+
+  function openAttach() {
+    if (!root.canAttach) { root.status = "Attachments are not supported for Gmail accounts yet."; return }
+    root.status = ""
+    browser.open()
+  }
+
+  function addAttachments(files) {
+    var have = root.attachments.map(function(a) { return a.path })
+    var next = root.attachments.slice(), total = root.attachedBytes
+    for (var i = 0; i < files.length; i++) {
+      if (have.indexOf(files[i].path) >= 0) continue
+      if (total + (files[i].size || 0) > root.maxAttachedBytes) { root.status = "Attachments are limited to 150 MB in total; " + files[i].name + " was not added."; continue }
+      total += files[i].size || 0
+      next.push({ path: files[i].path, name: files[i].name, size: files[i].size || 0 })
+    }
+    root.attachments = next
+    editor.forceActiveFocus()
+  }
+
+  function removeAttachment(i) {
+    var next = root.attachments.slice()
+    next.splice(i, 1)
+    root.attachments = next
+  }
+
   function buildMessage() {
     return {
       kind: initial.kind,
@@ -72,7 +111,8 @@ FocusScope {
       to: _recipientsOf(header.to), cc: _recipientsOf(header.cc), bcc: _recipientsOf(header.bcc),
       subject: header.subject.text,
       mode: root.mode,
-      body: _body()
+      body: _body(),
+      attachments: root.attachments.map(function(a) { return { path: a.path, name: a.name, size: a.size } })
     }
   }
 
@@ -84,6 +124,7 @@ FocusScope {
     if (all.length === 0) { root.status = "Add at least one recipient."; header.to.input.forceActiveFocus(); return }
     var bad = all.filter(function(r) { return !r.valid })
     if (bad.length > 0) { root.status = "Not a valid address: " + bad[0].email; return }
+    if (root.attachments.length > 0 && !root.canAttach) { root.status = "Attachments are not supported for Gmail accounts yet."; return }
     if (header.subject.text.trim() === "") { root.confirming = "nosubject"; return }
     root.sendRequested(root.buildMessage())
   }
@@ -108,6 +149,7 @@ FocusScope {
     header.showBcc = header.bcc.recipients.length > 0
     header.subject.text = initial.subject || ""
     if (initial.mode) root.mode = initial.mode
+    if (initial.attachments) root.attachments = initial.attachments
     if (initial.quote) handler.setHtml(_quoteHtml(initial.quote))
     // A message taken back (Undo) or that failed to send comes back exactly as written.
     if (initial.restore) {
@@ -122,6 +164,7 @@ FocusScope {
   }
 
   Keys.onPressed: function(e) {
+    if (browser.opened) return
     if (root.confirming !== "") {
       if (confirmDialog.handleKey(e)) e.accepted = true
       return
@@ -136,6 +179,8 @@ FocusScope {
     else if (ctrl && e.key === Qt.Key_B) { handler.toggleBold(); e.accepted = true }
     else if (ctrl && e.key === Qt.Key_I) { handler.toggleItalic(); e.accepted = true }
     else if (ctrl && e.key === Qt.Key_U) { handler.toggleUnderline(); e.accepted = true }
+    else if (ctrl && shift && e.key === Qt.Key_A) { root.openAttach(); e.accepted = true }
+    else if (ctrl && shift && e.key === Qt.Key_Backspace && root.attachments.length > 0) { root.removeAttachment(root.attachments.length - 1); e.accepted = true }
     else if (ctrl && e.key === Qt.Key_K) { root.linkOpen = true; linkUrl.forceActiveFocus(); e.accepted = true }
     else if (ctrl && shift && (e.key === Qt.Key_7 || e.key === Qt.Key_Ampersand)) { handler.toggleNumberedList(); e.accepted = true }
     else if (ctrl && shift && (e.key === Qt.Key_8 || e.key === Qt.Key_Asterisk)) { handler.toggleBulletList(); e.accepted = true }
@@ -181,6 +226,14 @@ FocusScope {
       }
 
       Item { Layout.preferredWidth: Style.spacing.lg }
+
+      Button {
+        bordered: true
+        text: root.attachments.length > 0 ? "Attach (" + root.attachments.length + ")" : "Attach"
+        iconText: "\uf0c6"
+        tooltipText: "Ctrl+Shift+A"
+        onClicked: root.openAttach()
+      }
 
       Button {
         bordered: true
@@ -258,6 +311,46 @@ FocusScope {
       Button { bordered: true; text: "Cancel"; onClicked: { root.linkOpen = false; editor.forceActiveFocus() } }
     }
 
+    // ---- attachments bar
+    Flow {
+      id: attachBar
+      visible: root.attachments.length > 0
+      Layout.fillWidth: true
+      Layout.leftMargin: Style.spacing.lg
+      Layout.rightMargin: Style.spacing.lg
+      Layout.topMargin: Style.spacing.sm
+      Layout.bottomMargin: Style.spacing.sm
+      spacing: Style.spacing.sm
+
+      Repeater {
+        model: root.attachments
+        delegate: Rectangle {
+          id: chip
+          required property var modelData
+          required property int index
+          width: Math.min(chipRow.implicitWidth + Style.spacing.md * 2, attachBar.width)
+          height: Style.spacing.popupRowHeight
+          radius: Style.cornerRadius
+          color: Style.selectedFill
+          RowLayout {
+            id: chipRow
+            anchors.fill: parent
+            anchors.leftMargin: Style.spacing.md
+            anchors.rightMargin: Style.spacing.md
+            spacing: Style.spacing.sm
+            UiText { text: "\uf0c6"; dim: true }
+            UiText { Layout.fillWidth: true; text: chip.modelData.name; elide: Text.ElideMiddle; font.pixelSize: Style.font.caption }
+            UiText { text: Fmt.bytes(chip.modelData.size); dim: true; font.pixelSize: Style.font.caption }
+            UiText {
+              text: "\uf00d"
+              foreground: Color.urgent
+              MouseArea { anchors.fill: parent; anchors.margins: -Style.spacing.xs; cursorShape: Qt.PointingHandCursor; onClicked: root.removeAttachment(chip.index) }
+            }
+          }
+        }
+      }
+    }
+
     PanelSeparator { Layout.fillWidth: true }
 
     // ---- editor. System mode sits on the theme; HTML mode on a white page, the way the
@@ -331,9 +424,21 @@ FocusScope {
       UiText {
         dim: true
         font.pixelSize: Style.font.caption
-        text: "Ctrl+Enter send · Esc discard · Ctrl+K link"
+        text: "Ctrl+Enter send · Esc discard · Ctrl+K link · Ctrl+Shift+A attach"
       }
     }
+  }
+
+  AttachBrowser {
+    id: browser
+    anchors.fill: parent
+    z: 900
+    listDir: root.listDir
+    startDir: root.browseDir
+    attached: root.attachments.map(function(a) { return a.path })
+    onPicked: function(files) { root.addAttachments(files) }
+    onCanceled: editor.forceActiveFocus()
+    onNavigated: function(d) { root.browsed(d) }
   }
 
   ConfirmDialog {
