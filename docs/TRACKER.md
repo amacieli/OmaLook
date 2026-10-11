@@ -50,8 +50,26 @@ IDs are stable (never reused). Status: `open` | `investigating` | `planned` | `i
 | Mail list views / field chooser | `notes/PLAN-mail-list-views.md` (gitignored `notes/`) | not started |
 | Keyboard model: vim nav, `g` modules, palette, mail actions | `docs/PLAN-keyboard.md` | planned (plan written 2026-10-09; decisions Q1-Q6 settled) |
 | Mail details (sender name, To/Cc/Bcc, categories, sent, importance, attachments) + categories key `t` | `docs/PLAN-mail-fields.md` | built 2026-10-09 (branch `feature/mail-fields`) |
-| Compose attachments: in-app file browser, chips, Graph small + upload-session (Gmail refused) | `docs/PLAN-compose.md` | built 2026-10-11 (branch `feature/attachments`); live send untested |
-| Received-mail attachments: list, picker (`A`), save one / all (`S`) into Downloads (Graph only) | `docs/PLAN-attachments.md` | built 2026-10-11 (branch `feature/attachments`) |
+| Compose attachments: in-app file browser, chips, Graph small + upload-session (Gmail refused) | `docs/PLAN-compose.md` | built 2026-10-11; live Graph send confirmed working (small file); large-file upload session and reply/forward with attachments still unchecked |
+| Received-mail attachments: list, picker (`A`), save one / all (`S`) into Downloads (Graph only) | `docs/PLAN-attachments.md` | built 2026-10-11 (merged to main) |
+
+## Backlog — mutt-parity gaps (compared 2026-10-11; tackle in this order)
+
+Where OmarchyLook already leads mutt: native Graph + OAuth, calendar and invitations, contacts, SMS, HTML mail via the
+WebKit helper, undo-send, rebindable keys with which-key and a palette. Mutt's edge is mail handling:
+
+1. [ ] **Search and filtering**: pattern-style search (from, subject, date, flags), limit view. Today `/` and `:search` are stubs.
+2. [ ] **Threading**: thread view, collapse/expand, thread-wide actions.
+3. [ ] **Archive / delete / move**: queued today but never checked against Graph or Gmail. Verify live, then fix what breaks.
+4. [ ] **Bulk operations**: act on all marked messages, mark by pattern.
+5. [ ] **Drafts** (PLAN-compose.md Phase B2): save, resume, sync to the provider, crash recovery.
+6. [ ] **Gmail attachments** (send): MIME multipart in `build_mime`; the UI currently refuses them for Gmail.
+7. [ ] **Compose extras**: signatures, external `$EDITOR`, forward-as-attachment, bounce, reply-to-list, aliases.
+8. [ ] **Security**: GPG / S/MIME sign and encrypt.
+9. [ ] **Offline**: test and harden use without a network (SQLite cache exists, untested offline).
+10. [ ] **Automation**: per-account / per-folder hooks and macros.
+11. [ ] Unchecked live paths for compose attachments: file of 3 MB or more (upload session), reply and forward with attachments.
+12. [ ] Inline images (cid) in HTML compose.
 
 ## Done
 - (none yet)
