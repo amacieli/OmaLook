@@ -108,9 +108,11 @@ impl Query {
                     format!("COALESCE(m.bcc_text,'') LIKE ?{n} ESCAPE '\\'")
                 }
                 Kind::Cat(t) => {
-                    // categories is a JSON array of names: ["Red","Blue"]
-                    let n = bind(format!("%\"{}\"%", escape_like(&t.to_lowercase())));
-                    format!("lower(COALESCE(m.categories,'')) LIKE ?{n} ESCAPE '\\'")
+                    // categories is a JSON array of names: ["Saint Lucia","Family"]. Substring,
+                    // ignoring case and spaces, so `cat:lucia` and `cat:saintlucia` both find "Saint Lucia".
+                    let squeezed: String = t.to_lowercase().chars().filter(|c| !c.is_whitespace()).collect();
+                    let n = bind(format!("%{}%", escape_like(&squeezed)));
+                    format!("replace(lower(COALESCE(m.categories,'')), ' ', '') LIKE ?{n} ESCAPE '\\'")
                 }
                 Kind::Unread => "COALESCE(m.is_read,0) = 0".to_string(),
                 Kind::Read => "COALESCE(m.is_read,0) = 1".to_string(),
@@ -163,8 +165,13 @@ pub fn parse_at(input: &str, now: DateTime<Utc>) -> Result<Query, String> {
             j += 1;
         }
         if j > i && j < chars.len() && chars[j] == ':' {
-            field = Some(chars[i..j].iter().collect::<String>().to_lowercase());
+            let name = chars[i..j].iter().collect::<String>().to_lowercase();
             i = j + 1;
+            if FIELDS.split(", ").any(|f| f == name) {
+                // `cat: lucia` (space after the colon) reads the same as `cat:lucia`
+                while i < chars.len() && chars[i].is_whitespace() { i += 1; }
+            }
+            field = Some(name);
         }
         // value: "quoted" or a run up to whitespace
         let (value, quoted) = if i < chars.len() && chars[i] == '"' {
@@ -359,6 +366,14 @@ mod tests {
     }
 
     #[test]
+    fn space_after_colon() {
+        assert_eq!(p("cat: lucia").clauses[0].kind, Kind::Cat("lucia".into()));
+        assert_eq!(p("from: bob is: unread").clauses.len(), 2);
+        assert!(parse_at("from:", now()).is_err());
+        assert!(parse_at("from:   ", now()).is_err());
+    }
+
+    #[test]
     fn lone_dash_and_empty_input() {
         assert!(p("").is_empty());
         assert!(p("   ").is_empty());
@@ -424,7 +439,7 @@ mod tests {
         let rows: &[(&str, &str, &str, &str, &str, &str, bool, &str, &str, i32, &str)] = &[
             // id, subject, from_email, from_name, body, received_at, is_read, to, categories, attach, importance
             ("1", "Your Stripe receipt", "receipts@stripe.com", "Stripe", "Thanks for your payment of $20", "2026-10-10T12:00:00Z", false, "Adam <adam@x.net>", "[\"Billing\"]", 1, "normal"),
-            ("2", "Lunch on Friday?", "bob@example.com", "Bob Smith", "Want to grab lunch", "2026-10-11T12:00:00Z", true, "Adam <adam@x.net>, Cara <cara@x.net>", "[]", 0, "high"),
+            ("2", "Lunch on Friday?", "bob@example.com", "Bob Smith", "Want to grab lunch", "2026-10-11T12:00:00Z", true, "Adam <adam@x.net>, Cara <cara@x.net>", "[\"Saint Lucia\"]", 0, "high"),
             ("3", "Weekly newsletter", "news@example.org", "The Newsletter", "Invoices explained, 100% free", "2026-09-01T12:00:00Z", false, "Adam <adam@x.net>", "[\"Reading\"]", 0, "normal"),
             ("4", "Re: budget", "cara@x.net", "Cara", "the 50%_off thing", "2025-01-15T12:00:00Z", true, "Adam <adam@x.net>", "[]", 1, "normal"),
         ];
@@ -469,7 +484,11 @@ mod tests {
         assert_eq!(run(&c, "subject:lunch"), ["2"]);
         assert_eq!(run(&c, "body:payment"), ["1"]);
         assert_eq!(run(&c, "cat:billing"), ["1"]);
-        assert_eq!(run(&c, "cat:bill"), Vec::<String>::new()); // exact name
+        assert_eq!(run(&c, "cat:bill"), ["1"]); // substring
+        assert_eq!(run(&c, "cat:lucia"), ["2"]);
+        assert_eq!(run(&c, "cat:saintlucia"), ["2"]); // spaces in the name don't matter
+        assert_eq!(run(&c, "cat:\"saint lucia\""), ["2"]);
+        assert_eq!(run(&c, "cat: BILL"), ["1"]); // space after the colon, any case
         // flags
         assert_eq!(run(&c, "is:unread"), ["1", "3"]);
         assert_eq!(run(&c, "is:read"), ["2", "4"]);
