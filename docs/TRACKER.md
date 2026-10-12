@@ -51,6 +51,7 @@ IDs are stable (never reused). Status: `open` | `investigating` | `planned` | `i
 | Keyboard model: vim nav, `g` modules, palette, mail actions | `docs/PLAN-keyboard.md` | planned (plan written 2026-10-09; decisions Q1-Q6 settled) |
 | Mail details (sender name, To/Cc/Bcc, categories, sent, importance, attachments) + categories key `t` | `docs/PLAN-mail-fields.md` | built 2026-10-09 (branch `feature/mail-fields`) |
 | Compose attachments: in-app file browser, chips, Graph small + upload-session (Gmail refused) | `docs/PLAN-compose.md` | built 2026-10-11; live Graph send confirmed working (small file); large-file upload session and reply/forward with attachments still unchecked |
+| Search and filtering: `/` prompt, keyword patterns, quick filters, history, `fullbody:` via Graph / Gmail | `docs/PLAN-search.md` | built 2026-10-12 (branch `feature/search-filter`); Gmail `fullbody:` not yet tried live |
 | Received-mail attachments: list, picker (`A`), save one / all (`S`) into Downloads (Graph only) | `docs/PLAN-attachments.md` | built 2026-10-11 (merged to main) |
 
 ## Backlog — mutt-parity gaps (compared 2026-10-11; tackle in this order)
@@ -58,7 +59,7 @@ IDs are stable (never reused). Status: `open` | `investigating` | `planned` | `i
 Where OmaLook already leads mutt: native Graph + OAuth, calendar and invitations, contacts, SMS, HTML mail via the
 WebKit helper, undo-send, rebindable keys with which-key and a palette. Mutt's edge is mail handling:
 
-1. [ ] **Search and filtering**: pattern-style search (from, subject, date, flags), limit view. Today `/` and `:search` are stubs.
+1. [x] **Search and filtering**: done 2026-10-12, see `docs/PLAN-search.md` (the `l` limit view was dropped on purpose).
 2. [ ] **Threading**: thread view, collapse/expand, thread-wide actions.
 3. [ ] **Archive / delete / move**: queued today but never checked against Graph or Gmail. Verify live, then fix what breaks.
 4. [ ] **Bulk operations**: act on all marked messages, mark by pattern.
@@ -72,4 +73,4 @@ WebKit helper, undo-send, rebindable keys with which-key and a palette. Mutt's e
 12. [ ] Inline images (cid) in HTML compose.
 
 ## Done
-- (none yet)
+- Backlog 1, search and filtering (2026-10-12): `9f07565` pattern engine, `99bb981` prompt and list, `78db1be` cat fix, `6a7d613` quick filters + history, `7e13369` `fullbody:` via provider. Also fixed in this branch: the project rename had changed the keyring service name, which hid every saved sign-in.

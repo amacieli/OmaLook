@@ -99,10 +99,11 @@ Outlook IA). Status: **plan only, nothing built.** Decisions settled in §6.
       `x` = run queued/bulk only if the queued-action model in Q6 is chosen.
 - [ ] Folder picker (move) = palette in "folder" mode.
 
-### Phase 5 — Search (`/`, `n`, `N`) — DEFERRED; instead (2026-10-09) the top bar and its search box were removed
-- [ ] Backend `GET /messages/search?q=` (local SQLite FTS first; provider search later).
-- [ ] `/` focuses top-bar search; Enter → results become the list; `n/N` next/prev match; Esc clears.
-- [ ] Decide scope: current folder / all folders (palette option `:search -a`).
+### Phase 5 — Search (`/`) — DONE 2026-10-12; full write-up in `docs/PLAN-search.md`
+- [x] `/` and `:search <pattern>` open the palette in search mode; Enter runs it, results replace the list, `Esc` clears.
+- [x] Backend `GET /messages?q=` (keyword patterns over the local cache; `fullbody:` asks the provider).
+- [x] Scope is the open view (one folder, or an "all accounts" folder). No `:search -a`.
+- [x] Dropped: `n`/`N` stepping (the list is already only the matches) and the mutt `l` limit.
 
 ### Phase 6 — Keyboard support for other modules
 - [ ] Calendar: `h/l` day, `j/k` week, `t` today (Q: collides with tag → `T`?), `[`/`]` period, `1/2/3` day/week/month, `c` new event.
@@ -159,5 +160,5 @@ Outlook IA). Status: **plan only, nothing built.** Decisions settled in §6.
 ## 8. Phase 5 as done
 - Top bar removed (title, search box, backend icon, account button). Its jobs: view/folder and online/offline were already in the bottom
   status bar; the account button became `g a` / `:accounts` (Settings → Accounts) and the bottom bar shows `signed out (g a accounts)` when
-  not signed in; search stays the `:search` stub. No search was implemented (no `/` key, no endpoint). The 1 px rule under the bar went too.
-- Search, when it comes back: `/` opens a search prompt (not a permanent box), results replace the list, `n`/`N` step through, Esc clears.
+  not signed in; search was left out here and added later (2026-10-12). The 1 px rule under the bar went too.
+- Search came back as the `/` prompt (see Phase 5 above and `docs/PLAN-search.md`): results replace the list, `Esc` clears.

@@ -3,20 +3,17 @@
 /// This module provides bridging layers for:
 /// - AuthBridge: Microsoft Device Flow authentication
 /// - SettingsBridge: Font/UI settings exposed to QML
-/// - MailListBridge: Email list management
 /// - ComposeBridge: Email composition and send
 
 pub mod auth_bridge;
 pub mod settings_bridge;
-pub mod mail_list_bridge;
 pub mod compose_bridge;
 
 pub use auth_bridge::AuthBridge;
 pub use settings_bridge::SettingsBridge;
-pub use mail_list_bridge::MailListBridge;
 pub use compose_bridge::ComposeBridge;
 
 // Re-export for convenience in main.rs
 pub mod prelude {
-    pub use super::{AuthBridge, ComposeBridge, MailListBridge, SettingsBridge};
+    pub use super::{AuthBridge, ComposeBridge, SettingsBridge};
 }

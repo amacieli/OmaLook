@@ -760,37 +760,6 @@ impl Database {
         Ok(messages)
     }
     
-    /// Full-text search in cached messages
-    pub fn search(&self, query: &str, limit: usize) -> Result<Vec<CachedMessage>> {
-        debug!("FTS search: {}", query);
-        
-        let mut stmt = self.conn.prepare(
-            "SELECT m.id, m.subject, m.from_email, m.from_name, m.body, m.received_at, m.is_read, m.cached_at
-             FROM messages m
-             JOIN messages_fts f ON m.id = f.id
-             WHERE messages_fts MATCH ?1
-             ORDER BY rank
-             LIMIT ?2"
-        )?;
-        
-        let messages = stmt.query_map(params![query, limit as i32], |row| {
-            Ok(CachedMessage {
-                id: row.get(0)?,
-                subject: row.get(1)?,
-                from_email: row.get(2)?,
-                from_name: row.get(3)?,
-                body: row.get(4)?,
-                received_at: row.get(5)?,
-                is_read: row.get(6)?,
-                cached_at: row.get(7)?,
-            })
-        })?
-        .collect::<std::result::Result<Vec<_>, _>>()?;
-        
-        info!("FTS search returned {} results", messages.len());
-        Ok(messages)
-    }
-    
     /// Mark message as read
     pub fn mark_read(&self, id: &str, is_read: bool) -> Result<()> {
         self.conn.execute(
