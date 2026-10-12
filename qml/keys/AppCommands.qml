@@ -196,6 +196,29 @@ Item {
     return out
   }
 
+  // ---- search ----------------------------------------------------------------
+  // `/` or `:search <pattern>`. Typing a pattern gives one row that runs it; with nothing typed
+  // the rows teach the syntax (choosing one starts that term).
+  function pickSearch(q) {
+    var query = q.trim()
+    if (query !== "") {
+      return [{ id: "search.run", title: "Search " + app.selectedFolderName + ":  " + query, keys: [],
+                run: function() { app.applySearch(query, function(why) { say("search: " + why) }) } }]
+    }
+    var h = function(term, what) {
+      return { id: "search.h." + term, title: term + "   " + what, keys: [], run: function() { root.paletteRequested("search " + term) } }
+    }
+    var out = [
+      h("from:", "sender name or address"), h("to:", "recipient (also cc: bcc:)"), h("subject:", "words in the subject"),
+      h("body:", "words in the cached preview"), h("fullbody:", "full text, searched at the provider (not yet)"),
+      h("is:unread", "also is:read, is:important"), h("has:attachment", "files attached"),
+      h("after:7d", "also before:, date:2026-10-01, today, 2w, 3m"), h("cat:", "category name"),
+      { id: "search.h.tip", title: "   plain words match subject, sender and preview; \"quotes\" for phrases, -word to exclude", keys: [], run: function() {} }
+    ]
+    if (app.searchQuery !== "") out.unshift({ id: "search.h.clear", title: "Clear current search  (" + app.searchQuery + ")", keys: [], run: function() { app.clearSearch() } })
+    return out
+  }
+
   function sync() { app.loadFolders(); app.loadMessages(); say("syncing…") }
 
   function soon(what) { return function() { say(what + ": not implemented yet") } }
@@ -235,7 +258,11 @@ Item {
     { id: "pane.next",  title: "Next pane",           scope: "global", keys: ["Tab"],        run: function() { app.cyclePane(1) } },
     { id: "pane.prev",  title: "Previous pane",       scope: "global", keys: ["S-Tab"],      run: function() { app.cyclePane(-1) } },
     { id: "pane.cycle", title: "Cycle pane (old key)", scope: "global", keys: ["s"], hidden: true, run: function() { app.cycleFocus() } },
-    { id: "pane.back",  title: "Back / cancel",       scope: "global", keys: ["Esc"],        run: function() { if (app.markCount > 0) app.clearMarks(); else app.back() } },
+    { id: "pane.back",  title: "Back / cancel",       scope: "global", keys: ["Esc"],        run: function() {
+      if (app.markCount > 0) app.clearMarks()
+      else if (app.searchQuery !== "" && inMail && app.focusPane === "msg") app.clearSearch()
+      else app.back()
+    } },
     // Pane numbers follow what is on screen: with the folder pane hidden, list = 1, reader = 2.
     { id: "pane.folders", title: "Focus folders",     scope: "mail",   keys: ["1"], when: function() { return app.showFolderPane }, helpWhen: function() { return app.showFolderPane }, run: function() { app.focusPaneNamed("folder") } },
     { id: "pane.list",    title: "Focus list",        scope: "mail",   keys: ["2"], when: function() { return app.showFolderPane }, helpWhen: function() { return app.showFolderPane }, run: function() { app.focusPaneNamed("msg") } },
@@ -262,7 +289,8 @@ Item {
     { id: "palette",    title: "Show commands",   scope: "global", keys: [":", "C-p"], run: function() { root.paletteRequested("") } },
     { id: "help",       title: "Keyboard help",   scope: "global", keys: ["?"], ex: ["help"], run: function() { root.helpRequested() } },
     { id: "app.sync",   title: "Sync now",        scope: "global", keys: [], ex: ["sync", "refresh"], run: function() { sync() } },
-    { id: "app.search", title: "Search mail…",    scope: "global", keys: [], ex: ["search"], run: soon("search") },
+    { id: "app.search", title: "Search mail…",    scope: "global", keys: ["/"], ex: ["search"], pick: pickSearch, run: function() { if (!inMail) app.gotoView("mail"); root.paletteRequested("search ") } },
+    { id: "search.clear", title: "Clear search",   scope: "global", keys: [], ex: ["clear"], when: function() { return app.searchQuery !== "" }, run: function() { app.clearSearch() } },
 
     // reader
     { id: "reader.pagedown", title: "Scroll page down", scope: "reader", keys: ["Space"], run: function() { page(1, 1) } },

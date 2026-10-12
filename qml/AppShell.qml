@@ -153,6 +153,9 @@ FocusScope {
         viewLabel: appState.currentViewLabel
         folderName: appState.selectedFolderName
         messageCount: appState.messageTotal
+        searchQuery: appState.searchQuery
+        searchCount: appState.messageModel.count
+        searchMore: appState._hasMoreMessages
         unreadCount: appState.unreadCount
         focusPane: appState.focusPane
         currentView: appState.currentView

@@ -14,6 +14,9 @@ Item {
   property string folderName: ""
   property int messageCount: 0
   property int unreadCount: 0
+  property string searchQuery: ""   // active search pattern; replaces the folder counts
+  property int searchCount: 0
+  property bool searchMore: false
   property string focusPane: "msg"
   property string currentView: "mail"
 
@@ -35,7 +38,7 @@ Item {
     if (focusPane === "folder") return hintLine([k("move.down", "move"), k("move.right", "select"), k("move.left", "back"), k("pane.next", "next pane")])
     if (focusPane === "reader") return hintLine([k("move.down", "scroll"), k("reader.pagedown", "page"), k("mail.reply", "reply"), k("move.left", "back")])
     if (currentView === "settings") return hintLine([k("move.down", "category"), k("move.left", "back"), k("pane.next", "next pane")])
-    if (currentView === "mail") return hintLine([k("move.down", "move"), k("move.right", "read"), k("mail.reply", "reply"), k("mail.archive", "archive"), k("item.delete", "delete"), k("mail.move", "move"), k("mail.mark", "mark"), k("mail.read", "read/unread")])
+    if (currentView === "mail") return hintLine([k("move.down", "move"), k("move.right", "read"), k("mail.reply", "reply"), k("mail.archive", "archive"), k("item.delete", "delete"), k("mail.move", "move"), k("mail.mark", "mark"), k("mail.read", "read/unread"), k("app.search", "search")])
     if (currentView === "calendar") return hintLine([k("cal.next", "period"), k("cal.today", "today"), k("cal.month", "month"), k("pane.next", "next pane")])
     if (currentView === "tasks") return hintLine([k("move.down", "move"), k("item.activate", "done"), k("tasks.filter", "filter"), k("pane.next", "next pane")])
     return hintLine([k("move.down", "move"), k("move.left", "back"), k("pane.next", "next pane")])
@@ -83,7 +86,16 @@ Item {
     }
 
     UiText {
-      visible: root.currentView === "mail"
+      visible: root.currentView === "mail" && root.searchQuery !== ""
+      text: "\uf002 " + root.searchQuery + "  \u00b7  " + root.fmt(root.searchCount) + (root.searchMore ? "+" : "") + (root.searchCount === 1 ? " match" : " matches") + "  \u00b7  Esc clears"
+      foreground: Hues.cyan
+      font.bold: true
+      font.pixelSize: Style.font.caption
+      elide: Text.ElideRight
+    }
+
+    UiText {
+      visible: root.currentView === "mail" && root.searchQuery === ""
       text: root.fmt(root.messageCount) + (root.messageCount === 1 ? " message · " : " messages · ") + root.fmt(root.unreadCount) + " unread"
       dim: true
       font.pixelSize: Style.font.caption

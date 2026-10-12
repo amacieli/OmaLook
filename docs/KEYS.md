@@ -60,6 +60,7 @@ images) are not attachments and are never listed.
 
 | Key | Action |
 |-----|--------|
+| `/` | Search the open folder (or "all accounts" folder): `from:stripe is:unread after:7d "exact phrase" -word`. Enter runs it, `Esc` in the list clears it; also `:search <pattern>`, `:clear`. Switching folder clears the search |
 | `A` | Open the attachment list: `Enter` saves the highlighted file (the list stays open, saved files get a check mark), the first row saves all; type to filter, Up/Down to move, `Esc` closes |
 | `S` | Save every attachment of the selected message |
 

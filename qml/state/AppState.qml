@@ -83,6 +83,10 @@ Item {
 
   property string messagesStatus: ""
 
+  // Active search pattern ("from:stripe is:unread"); "" = the plain folder view. The scope is
+  // whatever the list shows (one folder, or an "all accounts" folder); switching folders clears it.
+  property string searchQuery: ""
+
   // _readRev is bumped whenever a row's read flag changes, so the reading pane's
   // button label re-evaluates (ListModel.get() hands back a snapshot).
   property int _readRev: 0
@@ -912,6 +916,7 @@ Item {
     var n = Math.min(messageModelObj.count, 1000)
     var path = "/messages?limit=" + n + "&offset=0"
     if (root.selectedFolderId !== "") path += "&folder_id=" + encodeURIComponent(root.selectedFolderId)
+    if (root.searchQuery !== "") path += "&q=" + encodeURIComponent(root.searchQuery)
     request("GET", path, function(xhr) {
       if (xhr.status !== 200 || gen !== root._messageGeneration || root._loadingMessages) return
       try {
@@ -970,18 +975,45 @@ Item {
   function _messagesPath(offset) {
     var path = "/messages?limit=" + messagePageSize + "&offset=" + offset
     if (root.selectedFolderId !== "") path += "&folder_id=" + encodeURIComponent(root.selectedFolderId)
+    if (root.searchQuery !== "") path += "&q=" + encodeURIComponent(root.searchQuery)
     return path
   }
 
+  // Run `text` as a search over the open folder. A pattern the backend rejects leaves the list
+  // and the previous search untouched and reports the reason through onError(message).
+  function applySearch(text, onError) {
+    var q = (text || "").trim()
+    if (q === "") { clearSearch(); return }
+    var prev = root.searchQuery
+    root.searchQuery = q
+    loadMessages(function(err) { root.searchQuery = prev; if (onError) onError(err) })
+  }
+
+  // Back to the plain folder view.
+  function clearSearch() {
+    if (root.searchQuery === "") return
+    root.searchQuery = ""
+    root.msgIndex = 0
+    loadMessages()
+  }
+
   property bool _perfFirstMessages: true
-  function loadMessages() {
+  function loadMessages(onRejected) {
     if (_perfFirstMessages) perfMark("first loadMessages request sent")
+    var priorStatus = root.messagesStatus
     root.messagesStatus = "…"
     var gen = ++root._messageGeneration
     root._loadingMessages = true
     request("GET", _messagesPath(0), function(xhr) {
       if (gen !== root._messageGeneration) return   // folder changed meanwhile
       root._loadingMessages = false
+      if (xhr.status === 400 && onRejected) {   // bad search pattern: keep what is on screen
+        var why = "bad pattern"
+        try { why = JSON.parse(xhr.responseText).error || why } catch (e) {}
+        root.messagesStatus = priorStatus
+        onRejected(why)
+        return
+      }
       if (xhr.status === 200) {
         try {
           var messages = JSON.parse(xhr.responseText)
@@ -990,7 +1022,9 @@ Item {
           if (root._perfFirstMessages && messages.length > 0) { root._perfFirstMessages = false; perfMark("EMAILS VISIBLE: model populated with " + messages.length + " rows") }
           else if (messages.length > 0) perfMark("mail list reloaded: " + messages.length + " rows")
           root._hasMoreMessages = messages.length >= root.messagePageSize
-          root.messagesStatus = root.messageTotal.toLocaleString(Qt.locale("en_US"), "f", 0)
+          root.messagesStatus = root.searchQuery !== ""
+            ? messages.length.toLocaleString(Qt.locale("en_US"), "f", 0) + (root._hasMoreMessages ? "+" : "") + " found"
+            : root.messageTotal.toLocaleString(Qt.locale("en_US"), "f", 0)
           if (root.msgIndex >= messageModelObj.count) root.msgIndex = Math.max(0, messageModelObj.count - 1)
         } catch (e) { root.messagesStatus = "err" }
       } else {
@@ -1044,7 +1078,7 @@ Item {
       request("POST", "/settings/sidebar_expanded", null, sidebarExpanded ? "true" : "false")
   }
 
-  onSelectedFolderIdChanged: { clearMarks(); loadMessages() }
+  onSelectedFolderIdChanged: { searchQuery = ""; clearMarks(); loadMessages() }
 
   // ---- keyboard bindings ([keys] in settings.toml) ---------------------------------------
   // Polled: the backend serves the table with the file's mtime as `serial`, so editing
