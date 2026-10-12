@@ -223,7 +223,7 @@ Item {
     })
     return out.concat([
       h("from:", "sender name or address"), h("to:", "recipient (also cc: bcc:)"), h("subject:", "words in the subject"),
-      h("body:", "words in the cached preview"), h("fullbody:", "full text, searched at the provider (not yet)"),
+      h("body:", "words in the cached preview"), h("fullbody:", "whole message text, asked of the mail server (takes a few seconds)"),
       h("is:unread", "also is:read, is:important"), h("has:attachment", "files attached"),
       h("after:7d", "also before:, date:2026-10-01, today, 2w, 3m"), h("cat:", "category name"),
       { id: "search.h.tip", title: "   plain words match subject, sender and preview; \"quotes\" for phrases, -word to exclude", keys: [], run: function() {} }

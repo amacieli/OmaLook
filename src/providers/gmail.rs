@@ -335,6 +335,35 @@ impl super::EmailProvider for GmailProvider {
         }
     }
 
+    async fn search_message_ids(&self, folder_id: Option<&str>, text: &str, limit: usize) -> Result<(Vec<String>, bool)> {
+        let q = crate::search::gmail_q(text);
+        if q.is_empty() {
+            return Ok((Vec::new(), false));
+        }
+        let mut base = format!("{}/messages?q={}&maxResults=500", BASE, urlencoding::encode(&q));
+        if let Some(f) = folder_id {
+            base.push_str(&format!("&labelIds={}", urlencoding::encode(&self.label_of(f))));
+        }
+        let (mut ids, mut token, mut more) = (Vec::<String>::new(), None::<String>, false);
+        loop {
+            let url = match &token {
+                Some(t) => format!("{}&pageToken={}", base, urlencoding::encode(t)),
+                None => base.clone(),
+            };
+            let json = self.api.get(&url).await?;
+            ids.extend(json["messages"].as_array().into_iter().flatten()
+                .filter_map(|m| m["id"].as_str().map(|r| scoped(&self.account_id, r))));
+            token = json["nextPageToken"].as_str().map(String::from);
+            if ids.len() >= limit {
+                more = token.is_some() || ids.len() > limit;
+                ids.truncate(limit);
+                break;
+            }
+            if token.is_none() { break; }
+        }
+        Ok((ids, more))
+    }
+
     async fn set_message_read(&self, id: &str, is_read: bool) -> Result<()> {
         let raw = unscoped(&self.account_id, id);
         let body = if is_read {

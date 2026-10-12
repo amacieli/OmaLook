@@ -17,6 +17,7 @@ Item {
   property string searchQuery: ""   // active search pattern; replaces the folder counts
   property int searchCount: 0
   property bool searchMore: false
+  property bool searchPartial: false   // provider search was capped: only the newest matches
   property string focusPane: "msg"
   property string currentView: "mail"
 
@@ -87,7 +88,7 @@ Item {
 
     UiText {
       visible: root.currentView === "mail" && root.searchQuery !== ""
-      text: "\uf002 " + root.searchQuery + "  \u00b7  " + root.fmt(root.searchCount) + (root.searchMore ? "+" : "") + (root.searchCount === 1 ? " match" : " matches") + "  \u00b7  Esc clears"
+      text: "\uf002 " + root.searchQuery + "  \u00b7  " + root.fmt(root.searchCount) + (root.searchMore ? "+" : "") + (root.searchCount === 1 ? " match" : " matches") + (root.searchPartial ? " (newest only)" : "") + "  \u00b7  Esc clears"
       foreground: Hues.cyan
       font.bold: true
       font.pixelSize: Style.font.caption

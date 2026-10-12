@@ -86,6 +86,7 @@ Item {
   // Active search pattern ("from:stripe is:unread"); "" = the plain folder view. The scope is
   // whatever the list shows (one folder, or an "all accounts" folder); switching folders clears it.
   property string searchQuery: ""
+  property bool searchPartial: false  // a fullbody: search hit the provider cap: newest matches only
   property var searchHistory: []      // recent patterns, newest first (kept by the backend)
 
   // _readRev is bumped whenever a row's read flag changes, so the reading pane's
@@ -1039,6 +1040,7 @@ Item {
           if (root._perfFirstMessages && messages.length > 0) { root._perfFirstMessages = false; perfMark("EMAILS VISIBLE: model populated with " + messages.length + " rows") }
           else if (messages.length > 0) perfMark("mail list reloaded: " + messages.length + " rows")
           root._hasMoreMessages = messages.length >= root.messagePageSize
+          root.searchPartial = root.searchQuery !== "" && xhr.getResponseHeader("X-Search-Truncated") === "1"
           root.messagesStatus = root.searchQuery !== ""
             ? messages.length.toLocaleString(Qt.locale("en_US"), "f", 0) + (root._hasMoreMessages ? "+" : "") + " found"
             : root.messageTotal.toLocaleString(Qt.locale("en_US"), "f", 0)

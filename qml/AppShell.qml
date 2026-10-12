@@ -156,6 +156,7 @@ FocusScope {
         searchQuery: appState.searchQuery
         searchCount: appState.messageModel.count
         searchMore: appState._hasMoreMessages
+        searchPartial: appState.searchPartial
         unreadCount: appState.unreadCount
         focusPane: appState.focusPane
         currentView: appState.currentView

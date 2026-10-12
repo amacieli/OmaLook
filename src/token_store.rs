@@ -10,7 +10,7 @@
 //!   the grant is dead (`invalid_grant`/consent/interaction required).
 //!   Transient failures (network, 5xx) keep the stored tokens and back off.
 //! - `migrate_legacy`: moves the pre-multi-account keyring entry
-//!   (`omalook/auth_cache`) to the per-account entry.
+//!   (`omarchylook/auth_cache`) to the per-account entry.
 //!
 //! Account ids are opaque strings. The migrated legacy account is
 //! `exchange-primary`; accounts added later use `<provider>-<random suffix>`.
@@ -36,7 +36,9 @@ pub trait TokenStore: Send + Sync {
 /// OS keyring (Secret Service), one entry per account.
 pub struct KeyringStore;
 
-const SERVICE_NAME: &str = "omalook";
+// Keyring entries are saved sign-ins: the service name is their identity and must keep its
+// pre-rename value, or every account looks signed out.
+const SERVICE_NAME: &str = "omarchylook";
 
 impl KeyringStore {
     fn entry(account_id: &str) -> Result<keyring::Entry> {

@@ -3,7 +3,9 @@
 use crate::errors::{OmarchyError, Result};
 use log::{debug, warn};
 
-const SERVICE_NAME: &str = "omalook";
+// Keyring entries are saved sign-ins: the service name is their identity and must keep its
+// pre-rename value, or every account looks signed out.
+const SERVICE_NAME: &str = "omarchylook";
 const ACCOUNT_NAME: &str = "auth_cache";
 
 /// Get cached token from keyring

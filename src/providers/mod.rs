@@ -31,6 +31,13 @@ pub trait EmailProvider: Send + Sync {
         Ok(count)
     }
 
+    /// Search message bodies at the provider: ids (in the form the local cache stores them) of
+    /// messages in `folder_id` (None = whole mailbox) whose full text matches `text`, at most
+    /// `limit`; the flag says there were more. Used by `fullbody:`.
+    async fn search_message_ids(&self, _folder_id: Option<&str>, _text: &str, _limit: usize) -> Result<(Vec<String>, bool)> {
+        Err(crate::errors::OmarchyError::HttpError("provider search not supported".into()))
+    }
+
     /// Ids of every unread message in a folder. Err if the list could not be read in full
     /// (callers must not treat a partial list as authoritative).
     async fn fetch_unread_ids(&self, _folder_id: &str) -> Result<Vec<String>> {

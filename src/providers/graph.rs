@@ -498,6 +498,74 @@ impl super::EmailProvider for GraphEmailProvider {
         Ok(ids)
     }
 
+    async fn search_message_ids(&self, folder_id: Option<&str>, text: &str, limit: usize) -> Result<(Vec<String>, bool)> {
+        let kql = crate::search::graph_kql(text);
+        if kql.is_empty() {
+            return Ok((Vec::new(), false));
+        }
+        let token = self.get_token().await?;
+        let client = reqwest::Client::new();
+        let base = match folder_id {
+            Some(f) => format!("https://graph.microsoft.com/v1.0/me/mailFolders/{}/messages", urlencoding::encode(f)),
+            None => "https://graph.microsoft.com/v1.0/me/messages".to_string(),
+        };
+        // Graph answers a $search with only the newest few hundred hits (no next page), however many
+        // match. So search in rounds: each round asks for hits received on or before the day of the
+        // oldest hit so far, until a round adds nothing new (or says it was not cut short).
+        let mut ids: Vec<String> = Vec::new();
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut until: Option<String> = None;
+        let mut more = false;
+        for _round in 0..crate::search::GRAPH_SEARCH_MAX_ROUNDS {
+            let expr = match &until {
+                Some(day) => format!("{} AND received<={}", kql, day),
+                None => kql.clone(),
+            };
+            let mut next = Some(format!("{}?$search={}&$select=id,receivedDateTime&$top=100", base, urlencoding::encode(&format!("\"{}\"", expr))));
+            let (mut fresh, mut oldest) = (0usize, None::<String>);
+            let mut got = 0usize;
+            while let Some(url) = next.take() {
+                let response = client
+                    .get(&url)
+                    .header("Authorization", format!("Bearer {}", token))
+                    .send()
+                    .await
+                    .map_err(|e| crate::errors::OmarchyError::HttpError(e.to_string()))?;
+                let body = Self::check_response(response).await?;
+                let json: serde_json::Value = serde_json::from_str(&body)
+                    .map_err(|e| crate::errors::OmarchyError::HttpError(e.to_string()))?;
+                for m in json["value"].as_array().into_iter().flatten() {
+                    got += 1;
+                    let Some(id) = m["id"].as_str() else { continue };
+                    if let Some(r) = m["receivedDateTime"].as_str() {
+                        if oldest.as_deref().map_or(true, |o| r < o) { oldest = Some(r.to_string()); }
+                    }
+                    if seen.insert(id.to_string()) {
+                        ids.push(id.to_string());
+                        fresh += 1;
+                    }
+                }
+                next = json["@odata.nextLink"].as_str().map(String::from);
+                if ids.len() >= limit { break; }
+            }
+            if ids.len() >= limit {
+                more = true;
+                ids.truncate(limit);
+                break;
+            }
+            // Fewer hits than a cut-short answer would carry: that was everything left.
+            if fresh == 0 || got < crate::search::GRAPH_SEARCH_SHORT_ROUND {
+                break;
+            }
+            match oldest.as_deref().and_then(|o| o.get(..10)) {
+                Some(day) => until = Some(day.to_string()),
+                None => break,
+            }
+            if _round + 1 == crate::search::GRAPH_SEARCH_MAX_ROUNDS { more = true; }
+        }
+        Ok((ids, more))
+    }
+
     async fn set_message_read(&self, id: &str, is_read: bool) -> Result<()> {
         let token = self.get_token().await?;
         let client = reqwest::Client::new();

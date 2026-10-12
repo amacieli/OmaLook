@@ -328,6 +328,39 @@ fn fts_term(t: &str, column: Option<&str>) -> String {
     }
 }
 
+// ---- provider-side search (`fullbody:`) ------------------------------------------------------
+
+/// Graph `$search` rounds at most (each round reaches further back in time).
+pub const GRAPH_SEARCH_MAX_ROUNDS: usize = 12;
+/// A round that returns fewer hits than this was not cut short, so nothing older matches.
+pub const GRAPH_SEARCH_SHORT_ROUND: usize = 100;
+
+/// Words of a `fullbody:` value with characters that mean something to the providers' query
+/// languages removed.
+fn provider_words(text: &str) -> Vec<String> {
+    text.split_whitespace()
+        .map(|w| w.chars().filter(|c| !matches!(c, '"' | '(' | ')' | ':' | '\\' | '\'')).collect::<String>())
+        .filter(|w| !w.is_empty())
+        .collect()
+}
+
+/// KQL for Graph's `$search` on messages: every word must appear in the body (`body:a AND body:b`).
+/// A trailing `*` stays (prefix match).
+pub fn graph_kql(text: &str) -> String {
+    provider_words(text).iter().map(|w| format!("body:{w}")).collect::<Vec<_>>().join(" AND ")
+}
+
+/// Gmail `q=`: all words, a multi-word value as one quoted phrase. Gmail has no body-only
+/// operator, so subject and sender hits count too.
+pub fn gmail_q(text: &str) -> String {
+    let words = provider_words(text);
+    match words.len() {
+        0 => String::new(),
+        1 => words[0].clone(),
+        _ => format!("\"{}\"", words.join(" ")),
+    }
+}
+
 // ---- search history -------------------------------------------------------------------------
 // A small JSON array of patterns (newest first) in the config dir; not part of settings.toml
 // because it is data the app writes, not configuration the user edits.
@@ -397,6 +430,17 @@ mod tests {
         assert!(load_history(&path).is_empty());
         assert_eq!(push_history(&path, "x"), ["x"]);
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn provider_query_builders() {
+        assert_eq!(graph_kql("budget"), "body:budget");
+        assert_eq!(graph_kql("grab lunch"), "body:grab AND body:lunch");
+        assert_eq!(graph_kql("inv* \"x\" (a:b)"), "body:inv* AND body:x AND body:ab");
+        assert_eq!(graph_kql("  "), "");
+        assert_eq!(gmail_q("budget"), "budget");
+        assert_eq!(gmail_q("grab lunch"), "\"grab lunch\"");
+        assert_eq!(gmail_q("\"\""), "");
     }
 
     // ---- parser ----

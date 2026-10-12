@@ -693,6 +693,256 @@ fn sender_prefs_response(config_dir: &PathBuf, first_line: &str) -> String {
     result.unwrap_or_else(|e| err(&e.to_string()))
 }
 
+fn json_error_response(status: &str, msg: &str) -> String {
+    let body = serde_json::json!({ "error": msg }).to_string();
+    format!(
+        "HTTP/1.1 {}\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+        status, body.len(), body
+    )
+}
+
+/// Most message ids taken from one provider search (per account); beyond it the result is partial.
+const REMOTE_SEARCH_CAP: usize = 1000;
+
+/// Provider search results are reused for a few minutes: the list re-asks on every page and
+/// refresh, and each ask would otherwise be a round trip to Graph / Gmail.
+static REMOTE_SEARCH_CACHE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, (std::time::Instant, Vec<String>, bool)>>> = std::sync::OnceLock::new();
+const REMOTE_SEARCH_TTL: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// Ids (as cached locally) of the messages whose full text matches `term`, asked of the provider
+/// of every account in scope: the folder (`all:<kind>` = that kind of folder in every account),
+/// or the whole mailbox when no folder is given; `account` (id or address) narrows it further.
+/// The flag is true when any account hit the cap.
+fn remote_body_ids(conn: &rusqlite::Connection, folder_id: Option<&str>, account: Option<&str>, term: &str) -> Result<(Vec<String>, bool), String> {
+    use omalook::providers::EmailProvider;
+    let db_err = |e: rusqlite::Error| format!("database: {e}");
+    // (account id, provider folder id)
+    let mut scopes: Vec<(String, Option<String>)> = Vec::new();
+    match folder_id {
+        Some(f) if f.starts_with("all:") => {
+            let mut st = conn.prepare("SELECT account_id, id FROM folders WHERE well_known_name = ?1 AND account_id IS NOT NULL").map_err(db_err)?;
+            let rows = st.query_map([&f[4..]], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))).map_err(db_err)?;
+            scopes.extend(rows.flatten().map(|(a, f)| (a, Some(f))));
+        }
+        Some(f) => {
+            let acct: Option<String> = conn.query_row("SELECT account_id FROM folders WHERE id = ?1", [f], |r| r.get(0)).map_err(db_err)?;
+            scopes.push((acct.ok_or("unknown folder")?, Some(f.to_string())));
+        }
+        None => {
+            let mut st = conn.prepare("SELECT id FROM accounts WHERE enabled = 1").map_err(db_err)?;
+            let rows = st.query_map([], |r| r.get::<_, String>(0)).map_err(db_err)?;
+            scopes.extend(rows.flatten().map(|a| (a, None)));
+        }
+    }
+    if let Some(acct) = account {
+        let wanted: Option<String> = conn
+            .query_row("SELECT id FROM accounts WHERE id = ?1 OR lower(email) = lower(?1)", [acct], |r| r.get(0))
+            .ok();
+        match wanted {
+            Some(id) => scopes.retain(|(a, _)| *a == id),
+            None => scopes.clear(),
+        }
+    }
+    if scopes.is_empty() {
+        return Err("no account to search".into());
+    }
+
+    let cache = REMOTE_SEARCH_CACHE.get_or_init(Default::default);
+    let (mut all, mut more) = (Vec::<String>::new(), false);
+    for (acct, folder) in scopes {
+        let key = format!("{}|{}|{}", acct, folder.as_deref().unwrap_or(""), term.to_lowercase());
+        let hit = cache.lock().ok().and_then(|c| c.get(&key).filter(|(t, _, _)| t.elapsed() < REMOTE_SEARCH_TTL).cloned());
+        let (ids, m) = match hit {
+            Some((_, ids, m)) => (ids, m),
+            None => {
+                let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e| format!("runtime: {e}"))?;
+                let found = if omalook::accounts::provider_of(&acct) == "gmail" {
+                    rt.block_on(omalook::providers::GmailProvider::new(&acct, None).search_message_ids(folder.as_deref(), term, REMOTE_SEARCH_CAP))
+                } else {
+                    rt.block_on(GraphEmailProvider::new(AuthManager::for_account(&acct)).search_message_ids(folder.as_deref(), term, REMOTE_SEARCH_CAP))
+                };
+                let (ids, m) = found.map_err(|e| {
+                    warn!("fullbody search failed for {}: {}", acct, e);
+                    format!("the search at {} failed ({})", acct, e.to_string().chars().take(160).collect::<String>())
+                })?;
+                info!("fullbody search {:?} at {} ({:?}): {} ids{}", term, acct, folder.as_deref().map(|f| f.chars().take(12).collect::<String>()), ids.len(), if m { " (capped)" } else { "" });
+                if let Ok(mut c) = cache.lock() {
+                    c.insert(key, (std::time::Instant::now(), ids.clone(), m));
+                }
+                (ids, m)
+            }
+        };
+        all.extend(ids);
+        more |= m;
+    }
+    Ok((all, more))
+}
+
+/// The whole HTTP response for `GET /messages` (list, paging, `?q=` search). Runs on its own
+/// thread: a `fullbody:` search waits on the mail provider and must not stall the server loop.
+fn messages_response(config_dir: &PathBuf, first_line: &str, req_t: std::time::Instant) -> String {
+                    // Optional ?q= keyword pattern (see src/search.rs). A bad pattern is a 400 with
+                    // {"error": "..."} so the UI can show why; `fullbody:` needs the provider, which
+                    // is not wired up yet, so it is refused rather than silently ignored.
+                    let search_q = match query_param(first_line, "q").map(|q| omalook::search::parse(&q)) {
+                        None => Ok(None),
+                        Some(Ok(q)) => Ok(Some(q)),
+                        Some(Err(e)) => Err(e),
+                    };
+                    let search_q = match search_q {
+                        Ok(q) => q,
+                        Err(e) => {
+                            let body = serde_json::json!({ "error": e }).to_string();
+                            let response = format!(
+                                "HTTP/1.1 400 Bad Request\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                                body.len(), body
+                            );
+                            return response;
+                        }
+                    };
+                    // Parse optional ?folder_id= query parameter
+                    let folder_id: Option<String> = first_line
+                        .split_once("folder_id=")
+                        .map(|(_, rest)| {
+                            let raw = rest.split(|c| c == ' ' || c == '&' || c == '\r' || c == '\n')
+                                .next()
+                                .unwrap_or("");
+                            // URL-decode: folder IDs contain = and / which QML encodeURIComponent encodes
+                            url_decode(raw)
+                        })
+                        .filter(|s| !s.is_empty());
+
+                    let db_path = config_dir.join("messages.db");
+                    let mut truncated = false;   // a fullbody: result hit the provider-side cap
+                    let body = match rusqlite::Connection::open(&db_path) {
+                        Ok(conn) => {
+                            // Category colours per (account, lower-cased name), so each row can say
+                            // which categories it carries and how to draw them.
+                            let mut cat_colors: std::collections::HashMap<(String, String), String> = std::collections::HashMap::new();
+                            if let Ok(mut st) = conn.prepare("SELECT account_id, name, color FROM category_defs") {
+                                if let Ok(rows) = st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))) {
+                                    for (a, n, c) in rows.flatten() { cat_colors.insert((a, n.to_lowercase()), c); }
+                                }
+                            }
+                            let map_row = |row: &rusqlite::Row| {
+                                let account_id: String = row.get(6)?;
+                                let cats: Vec<serde_json::Value> = omalook::db::categories_from_json(row.get::<_, Option<String>>(12)?.as_deref())
+                                    .into_iter()
+                                    .map(|name| {
+                                        let color = cat_colors.get(&(account_id.clone(), name.to_lowercase())).cloned()
+                                            .unwrap_or_else(|| omalook::models::fallback_category_color(&name).to_string());
+                                        serde_json::json!([name, color])
+                                    })
+                                    .collect();
+                                Ok(serde_json::json!({
+                                    "id": row.get::<_, String>(0)?,
+                                    "subject": row.get::<_, String>(1)?,
+                                    "from_email": row.get::<_, String>(2)?,
+                                    "from_name": row.get::<_, Option<String>>(3)?.unwrap_or_default(),
+                                    "received_at": row.get::<_, String>(4)?,
+                                    "is_read": row.get::<_, bool>(5)?,
+                                    "account_id": account_id,
+                                    "account_email": row.get::<_, String>(7)?,
+                                    "to_text": row.get::<_, Option<String>>(8)?.unwrap_or_default(),
+                                    "cc_text": row.get::<_, Option<String>>(9)?.unwrap_or_default(),
+                                    "bcc_text": row.get::<_, Option<String>>(10)?.unwrap_or_default(),
+                                    "sent_at": row.get::<_, Option<String>>(11)?.unwrap_or_default(),
+                                    // JSON text: [["Name","#rrggbb"],…] (a list model cannot hold nested lists cheaply)
+                                    "cats": serde_json::Value::Array(cats).to_string(),
+                                    "importance": row.get::<_, Option<String>>(13)?.unwrap_or_default(),
+                                    "has_attachments": row.get::<_, Option<bool>>(14)?.unwrap_or(false),
+                                    "conversation_id": row.get::<_, Option<String>>(15)?.unwrap_or_default(),
+                                    "folder_id": row.get::<_, String>(16)?,
+                                }).to_string())
+                            };
+
+                            // Paged: ?limit= (default 200, max 1000) & ?offset=. The cache holds
+                            // tens of thousands of rows, so the UI pulls them a page at a time.
+                            // Optional filters: ?folder_id= and ?account=<id or email address>.
+                            let limit: i64 = query_param(first_line, "limit")
+                                .and_then(|v| v.parse().ok())
+                                .map(|n: i64| n.clamp(1, 1000))
+                                .unwrap_or(200);
+                            let offset: i64 = query_param(first_line, "offset")
+                                .and_then(|v| v.parse().ok())
+                                .map(|n: i64| n.max(0))
+                                .unwrap_or(0);
+                            let mut conds: Vec<String> = Vec::new();
+                            let mut args: Vec<rusqlite::types::Value> = Vec::new();
+                            if let Some(ref fid) = folder_id {
+                                // "all:<kind>" = that kind of folder across every account (Inbox - all accounts).
+                                if let Some(kind) = fid.strip_prefix("all:") {
+                                    args.push(kind.to_string().into());
+                                    conds.push(format!("m.folder_id IN (SELECT id FROM folders WHERE well_known_name = ?{})", args.len()));
+                                } else {
+                                    args.push(fid.clone().into());
+                                    conds.push(format!("m.folder_id = ?{}", args.len()));
+                                }
+                            }
+                            if let Some(acct) = query_param(first_line, "account") {
+                                args.push(acct.into());
+                                let n = args.len();
+                                conds.push(format!("(m.account_id = ?{n} OR lower(a.email) = lower(?{n}))"));
+                            }
+                            if let Some(ref sq) = search_q {
+                                conds.extend(sq.to_sql(&mut args));
+                                // `fullbody:` terms are answered by the mail provider(s); the ids that
+                                // come back (messages in scope, as cached here) become IN / NOT IN.
+                                let account = query_param(first_line, "account");
+                                for (neg, term) in &sq.fullbody {
+                                    match remote_body_ids(&conn, folder_id.as_deref(), account.as_deref(), term) {
+                                        Ok((ids, more)) => {
+                                            if more && *neg {
+                                                return json_error_response("400 Bad Request", &format!("-fullbody:{term} matches more than {REMOTE_SEARCH_CAP} messages, too many to exclude"));
+                                            }
+                                            truncated |= more;
+                                            if ids.is_empty() {
+                                                if !*neg { conds.push("0".to_string()); }
+                                                continue;
+                                            }
+                                            let marks: Vec<String> = ids.into_iter().map(|id| { args.push(id.into()); format!("?{}", args.len()) }).collect();
+                                            conds.push(format!("m.id {}IN ({})", if *neg { "NOT " } else { "" }, marks.join(",")));
+                                        }
+                                        Err(e) => return json_error_response("400 Bad Request", &format!("fullbody: {e}")),
+                                    }
+                                }
+                            }
+                            // Archived / deleted / moved messages wait out their undo window hidden.
+                            conds.push("m.action_pending IS NULL".to_string());
+                            let where_sql = if conds.is_empty() { String::new() } else { format!(" WHERE {}", conds.join(" AND ")) };
+                            args.push(limit.into());
+                            args.push(offset.into());
+                            let sql = format!(
+                                "SELECT m.id, m.subject, m.from_email, m.from_name, m.received_at, m.is_read, \
+                                        COALESCE(m.account_id, ''), COALESCE(a.email, ''), \
+                                        m.to_text, m.cc_text, m.bcc_text, m.sent_at, m.categories, m.importance, \
+                                        COALESCE((SELECT c.has_real FROM attachment_cache c WHERE c.message_id = m.id), m.has_attachments), \
+                                        m.conversation_id, COALESCE(m.folder_id, '') \
+                                 FROM messages m LEFT JOIN accounts a ON a.id = m.account_id{} \
+                                 ORDER BY m.received_at DESC LIMIT ?{} OFFSET ?{}",
+                                where_sql, args.len() - 1, args.len()
+                            );
+                            let rows: Vec<String> = match conn.prepare(&sql) {
+                                Ok(mut stmt) => stmt.query_map(rusqlite::params_from_iter(args.iter()), map_row)
+                                    .map(|it| it.filter_map(|r| r.ok()).collect())
+                                    .unwrap_or_default(),
+                                Err(e) => { warn!("GET /messages: bad query: {}", e); Vec::new() }
+                            };
+                            format!("[{}]", rows.join(","))
+                        }
+                        Err(e) => {
+                            warn!("GET /messages: DB open failed: {}", e);
+                            "[]".to_string()
+                        }
+                    };
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Expose-Headers: X-Search-Truncated\r\n{}Content-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                        if truncated { "X-Search-Truncated: 1\r\n" } else { "" }, body.len(), body
+                    );
+                    omalook::perf::mark(&format!("http -> GET /messages answered ({} bytes, handler {:.1}ms)", body.len(), req_t.elapsed().as_secs_f64() * 1000.0));
+                    response
+}
+
 /// Minimal HTTP trigger server — listens on localhost:27182
 /// QML uses XMLHttpRequest to POST to this endpoint to trigger auth/logout.
 /// This avoids the limitation of QML not being able to write files directly.
@@ -1286,147 +1536,12 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
 
                 // ── GET /messages — return messages as JSON (optional ?folder_id=) ──────────────
                 if first_line.contains("GET /messages") {
-                    // Optional ?q= keyword pattern (see src/search.rs). A bad pattern is a 400 with
-                    // {"error": "..."} so the UI can show why; `fullbody:` needs the provider, which
-                    // is not wired up yet, so it is refused rather than silently ignored.
-                    let search_q = match query_param(first_line, "q").map(|q| omalook::search::parse(&q)) {
-                        None => Ok(None),
-                        Some(Ok(q)) if !q.fullbody.is_empty() => Err("fullbody: search is not available yet".to_string()),
-                        Some(Ok(q)) => Ok(Some(q)),
-                        Some(Err(e)) => Err(e),
-                    };
-                    let search_q = match search_q {
-                        Ok(q) => q,
-                        Err(e) => {
-                            let body = serde_json::json!({ "error": e }).to_string();
-                            let response = format!(
-                                "HTTP/1.1 400 Bad Request\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
-                                body.len(), body
-                            );
-                            let _ = stream.write_all(response.as_bytes());
-                            continue;
-                        }
-                    };
-                    // Parse optional ?folder_id= query parameter
-                    let folder_id: Option<String> = first_line
-                        .split_once("folder_id=")
-                        .map(|(_, rest)| {
-                            let raw = rest.split(|c| c == ' ' || c == '&' || c == '\r' || c == '\n')
-                                .next()
-                                .unwrap_or("");
-                            // URL-decode: folder IDs contain = and / which QML encodeURIComponent encodes
-                            url_decode(raw)
-                        })
-                        .filter(|s| !s.is_empty());
-
-                    let db_path = config_dir.join("messages.db");
-                    let body = match rusqlite::Connection::open(&db_path) {
-                        Ok(conn) => {
-                            // Category colours per (account, lower-cased name), so each row can say
-                            // which categories it carries and how to draw them.
-                            let mut cat_colors: std::collections::HashMap<(String, String), String> = std::collections::HashMap::new();
-                            if let Ok(mut st) = conn.prepare("SELECT account_id, name, color FROM category_defs") {
-                                if let Ok(rows) = st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))) {
-                                    for (a, n, c) in rows.flatten() { cat_colors.insert((a, n.to_lowercase()), c); }
-                                }
-                            }
-                            let map_row = |row: &rusqlite::Row| {
-                                let account_id: String = row.get(6)?;
-                                let cats: Vec<serde_json::Value> = omalook::db::categories_from_json(row.get::<_, Option<String>>(12)?.as_deref())
-                                    .into_iter()
-                                    .map(|name| {
-                                        let color = cat_colors.get(&(account_id.clone(), name.to_lowercase())).cloned()
-                                            .unwrap_or_else(|| omalook::models::fallback_category_color(&name).to_string());
-                                        serde_json::json!([name, color])
-                                    })
-                                    .collect();
-                                Ok(serde_json::json!({
-                                    "id": row.get::<_, String>(0)?,
-                                    "subject": row.get::<_, String>(1)?,
-                                    "from_email": row.get::<_, String>(2)?,
-                                    "from_name": row.get::<_, Option<String>>(3)?.unwrap_or_default(),
-                                    "received_at": row.get::<_, String>(4)?,
-                                    "is_read": row.get::<_, bool>(5)?,
-                                    "account_id": account_id,
-                                    "account_email": row.get::<_, String>(7)?,
-                                    "to_text": row.get::<_, Option<String>>(8)?.unwrap_or_default(),
-                                    "cc_text": row.get::<_, Option<String>>(9)?.unwrap_or_default(),
-                                    "bcc_text": row.get::<_, Option<String>>(10)?.unwrap_or_default(),
-                                    "sent_at": row.get::<_, Option<String>>(11)?.unwrap_or_default(),
-                                    // JSON text: [["Name","#rrggbb"],…] (a list model cannot hold nested lists cheaply)
-                                    "cats": serde_json::Value::Array(cats).to_string(),
-                                    "importance": row.get::<_, Option<String>>(13)?.unwrap_or_default(),
-                                    "has_attachments": row.get::<_, Option<bool>>(14)?.unwrap_or(false),
-                                    "conversation_id": row.get::<_, Option<String>>(15)?.unwrap_or_default(),
-                                    "folder_id": row.get::<_, String>(16)?,
-                                }).to_string())
-                            };
-
-                            // Paged: ?limit= (default 200, max 1000) & ?offset=. The cache holds
-                            // tens of thousands of rows, so the UI pulls them a page at a time.
-                            // Optional filters: ?folder_id= and ?account=<id or email address>.
-                            let limit: i64 = query_param(first_line, "limit")
-                                .and_then(|v| v.parse().ok())
-                                .map(|n: i64| n.clamp(1, 1000))
-                                .unwrap_or(200);
-                            let offset: i64 = query_param(first_line, "offset")
-                                .and_then(|v| v.parse().ok())
-                                .map(|n: i64| n.max(0))
-                                .unwrap_or(0);
-                            let mut conds: Vec<String> = Vec::new();
-                            let mut args: Vec<rusqlite::types::Value> = Vec::new();
-                            if let Some(ref fid) = folder_id {
-                                // "all:<kind>" = that kind of folder across every account (Inbox - all accounts).
-                                if let Some(kind) = fid.strip_prefix("all:") {
-                                    args.push(kind.to_string().into());
-                                    conds.push(format!("m.folder_id IN (SELECT id FROM folders WHERE well_known_name = ?{})", args.len()));
-                                } else {
-                                    args.push(fid.clone().into());
-                                    conds.push(format!("m.folder_id = ?{}", args.len()));
-                                }
-                            }
-                            if let Some(acct) = query_param(first_line, "account") {
-                                args.push(acct.into());
-                                let n = args.len();
-                                conds.push(format!("(m.account_id = ?{n} OR lower(a.email) = lower(?{n}))"));
-                            }
-                            if let Some(ref sq) = search_q {
-                                conds.extend(sq.to_sql(&mut args));
-                            }
-                            // Archived / deleted / moved messages wait out their undo window hidden.
-                            conds.push("m.action_pending IS NULL".to_string());
-                            let where_sql = if conds.is_empty() { String::new() } else { format!(" WHERE {}", conds.join(" AND ")) };
-                            args.push(limit.into());
-                            args.push(offset.into());
-                            let sql = format!(
-                                "SELECT m.id, m.subject, m.from_email, m.from_name, m.received_at, m.is_read, \
-                                        COALESCE(m.account_id, ''), COALESCE(a.email, ''), \
-                                        m.to_text, m.cc_text, m.bcc_text, m.sent_at, m.categories, m.importance, \
-                                        COALESCE((SELECT c.has_real FROM attachment_cache c WHERE c.message_id = m.id), m.has_attachments), \
-                                        m.conversation_id, COALESCE(m.folder_id, '') \
-                                 FROM messages m LEFT JOIN accounts a ON a.id = m.account_id{} \
-                                 ORDER BY m.received_at DESC LIMIT ?{} OFFSET ?{}",
-                                where_sql, args.len() - 1, args.len()
-                            );
-                            let rows: Vec<String> = match conn.prepare(&sql) {
-                                Ok(mut stmt) => stmt.query_map(rusqlite::params_from_iter(args.iter()), map_row)
-                                    .map(|it| it.filter_map(|r| r.ok()).collect())
-                                    .unwrap_or_default(),
-                                Err(e) => { warn!("GET /messages: bad query: {}", e); Vec::new() }
-                            };
-                            format!("[{}]", rows.join(","))
-                        }
-                        Err(e) => {
-                            warn!("GET /messages: DB open failed: {}", e);
-                            "[]".to_string()
-                        }
-                    };
-                    let response = format!(
-                        "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
-                        body.len(), body
-                    );
-                    let _ = stream.write_all(response.as_bytes());
-                    omalook::perf::mark(&format!("http -> GET /messages answered ({} bytes, handler {:.1}ms)", body.len(), req_t.elapsed().as_secs_f64() * 1000.0));
+                    let dir = config_dir.clone();
+                    let line = first_line.to_string();
+                    std::thread::spawn(move || {
+                        let response = messages_response(&dir, &line, req_t);
+                        let _ = stream.write_all(response.as_bytes());
+                    });
                     continue;
                 }
 
