@@ -328,6 +328,40 @@ fn fts_term(t: &str, column: Option<&str>) -> String {
     }
 }
 
+// ---- search history -------------------------------------------------------------------------
+// A small JSON array of patterns (newest first) in the config dir; not part of settings.toml
+// because it is data the app writes, not configuration the user edits.
+
+pub const HISTORY_MAX: usize = 50;
+
+/// Saved patterns, newest first. A missing or unreadable file is an empty history.
+pub fn load_history(path: &std::path::Path) -> Vec<String> {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|t| serde_json::from_str::<Vec<String>>(&t).ok())
+        .unwrap_or_default()
+}
+
+/// Put `pattern` at the front (dropping an identical older entry), keep `HISTORY_MAX`, write the
+/// file atomically, and return the new list. Blank patterns are ignored.
+pub fn push_history(path: &std::path::Path, pattern: &str) -> Vec<String> {
+    let pattern = pattern.trim();
+    let mut list = load_history(path);
+    if pattern.is_empty() {
+        return list;
+    }
+    list.retain(|p| p != pattern);
+    list.insert(0, pattern.to_string());
+    list.truncate(HISTORY_MAX);
+    if let Ok(json) = serde_json::to_string(&list) {
+        let tmp = path.with_extension("json.tmp");
+        if std::fs::write(&tmp, json).is_ok() {
+            let _ = std::fs::rename(&tmp, path);
+        }
+    }
+    list
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -340,6 +374,29 @@ mod tests {
 
     fn p(s: &str) -> Query {
         parse_at(s, now()).unwrap()
+    }
+
+    #[test]
+    fn history_orders_dedupes_caps_and_survives_garbage() {
+        let path = std::env::temp_dir().join(format!("omalook-hist-{}.json", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        assert!(load_history(&path).is_empty());
+        push_history(&path, "from:a");
+        push_history(&path, "  is:unread ");
+        push_history(&path, "");
+        let l = push_history(&path, "from:a");
+        assert_eq!(l, ["from:a", "is:unread"]);
+        assert_eq!(load_history(&path), l);
+        for i in 0..80 {
+            push_history(&path, &format!("q{i}"));
+        }
+        let l = load_history(&path);
+        assert_eq!(l.len(), HISTORY_MAX);
+        assert_eq!(l[0], "q79");
+        std::fs::write(&path, "not json").unwrap();
+        assert!(load_history(&path).is_empty());
+        assert_eq!(push_history(&path, "x"), ["x"]);
+        let _ = std::fs::remove_file(&path);
     }
 
     // ---- parser ----

@@ -1,6 +1,7 @@
 import QtQuick
 import "Commands.js" as Cmd
 import "../mail/format.js" as Fmt
+import "Search.js" as Srch
 
 // The command registry: every key binding in the app, in one place. The router,
 // the palette and the status-bar hints all read `list`, so they cannot drift from
@@ -197,26 +198,62 @@ Item {
   }
 
   // ---- search ----------------------------------------------------------------
-  // `/` or `:search <pattern>`. Typing a pattern gives one row that runs it; with nothing typed
-  // the rows teach the syntax (choosing one starts that term).
+  // `/` or `:search <pattern>`. Typing a pattern gives one row that runs it. With nothing typed the
+  // list is, in order: clear / edit the current search (when one is active, so `/` Enter clears it),
+  // recent patterns (so with no search active `/` Enter repeats the last one), then the syntax.
+  function runSearch(text) { app.applySearch(text, function(why) { say("search: " + why) }) }
+
   function pickSearch(q) {
     var query = q.trim()
     if (query !== "") {
       return [{ id: "search.run", title: "Search " + app.selectedFolderName + ":  " + query, keys: [],
-                run: function() { app.applySearch(query, function(why) { say("search: " + why) }) } }]
+                run: function() { runSearch(query) } }]
     }
     var h = function(term, what) {
       return { id: "search.h." + term, title: term + "   " + what, keys: [], run: function() { root.paletteRequested("search " + term) } }
     }
-    var out = [
+    var out = []
+    if (app.searchQuery !== "") {
+      out.push({ id: "search.h.clear", title: "Clear current search  (" + app.searchQuery + ")", keys: [], run: function() { app.clearSearch() } })
+      out.push({ id: "search.h.edit", title: "Edit current search", keys: [], run: function() { root.paletteRequested("search " + app.searchQuery) } })
+    }
+    app.searchHistory.slice(0, 10).forEach(function(p, n) {
+      if (p === app.searchQuery) return
+      out.push({ id: "search.hist." + n, title: "\u21ba  " + p, keys: [], run: function() { runSearch(p) } })
+    })
+    return out.concat([
       h("from:", "sender name or address"), h("to:", "recipient (also cc: bcc:)"), h("subject:", "words in the subject"),
       h("body:", "words in the cached preview"), h("fullbody:", "full text, searched at the provider (not yet)"),
       h("is:unread", "also is:read, is:important"), h("has:attachment", "files attached"),
       h("after:7d", "also before:, date:2026-10-01, today, 2w, 3m"), h("cat:", "category name"),
       { id: "search.h.tip", title: "   plain words match subject, sender and preview; \"quotes\" for phrases, -word to exclude", keys: [], run: function() {} }
-    ]
-    if (app.searchQuery !== "") out.unshift({ id: "search.h.clear", title: "Clear current search  (" + app.searchQuery + ")", keys: [], run: function() { app.clearSearch() } })
-    return out
+    ])
+  }
+
+  // `:filter` — quick filters built from the selected message. Each row toggles its term in the
+  // current search (a check mark = already in it), so filters stack: from:bob + is:unread.
+  function pickFilters(q) {
+    var query = q.trim(), m = app.currentMessage, rows = []
+    var add = function(label, term) {
+      var on = Srch.has(app.searchQuery, term)
+      rows.push({ id: "filter." + term, title: (on ? "\u2713 " : "   ") + label, keys: [],
+                  run: function() { runSearch(Srch.toggle(app.searchQuery, term)) } })
+    }
+    if (m) {
+      if (m.from_email) add("from " + (m.from_name ? m.from_name + " <" + m.from_email + ">" : m.from_email), "from:" + Srch.quote(m.from_email))
+      var subj = Srch.stripReplyPrefix(m.subject || "")
+      if (subj !== "") add("same subject  \u201c" + subj + "\u201d", "subject:" + Srch.quote(subj))
+      var cats = []
+      try { cats = JSON.parse(m.cats || "[]") } catch (e) {}
+      cats.forEach(function(c) { add("category " + c[0], "cat:" + Srch.quote(c[0])) })
+    }
+    add("unread only", "is:unread")
+    add("has attachment", "has:attachment")
+    if (query !== "") rows = rows.filter(function(r) { return _fz(query, r.title) })
+    if (rows.length === 0) rows.push({ id: "filter.none", title: "no filter matches \u201c" + query + "\u201d", keys: [], run: function() {} })
+    if (app.searchQuery !== "" && query === "")
+      rows.push({ id: "filter.clear", title: "   clear search  (" + app.searchQuery + ")", keys: [], run: function() { app.clearSearch() } })
+    return rows
   }
 
   function sync() { app.loadFolders(); app.loadMessages(); say("syncing…") }
@@ -290,6 +327,7 @@ Item {
     { id: "help",       title: "Keyboard help",   scope: "global", keys: ["?"], ex: ["help"], run: function() { root.helpRequested() } },
     { id: "app.sync",   title: "Sync now",        scope: "global", keys: [], ex: ["sync", "refresh"], run: function() { sync() } },
     { id: "app.search", title: "Search mail…",    scope: "global", keys: ["/"], ex: ["search"], pick: pickSearch, run: function() { if (!inMail) app.gotoView("mail"); root.paletteRequested("search ") } },
+    { id: "search.filter", title: "Filter by this message…", scope: "mail", keys: [], ex: ["filter"], pick: pickFilters, run: function() { root.paletteRequested("filter ") } },
     { id: "search.clear", title: "Clear search",   scope: "global", keys: [], ex: ["clear"], when: function() { return app.searchQuery !== "" }, run: function() { app.clearSearch() } },
 
     // reader

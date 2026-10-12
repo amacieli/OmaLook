@@ -1462,6 +1462,27 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                     continue;
                 }
 
+                // ── GET /search/history — recent search patterns, newest first (JSON array);
+                // POST /search/history?q=PATTERN — record one (called after it ran fine). ──
+                if first_line.contains("GET /search/history") || first_line.contains("POST /search/history") {
+                    let path = config_dir.join("search_history.json");
+                    let list = if first_line.contains("POST ") {
+                        match query_param(first_line, "q") {
+                            Some(q) => omalook::search::push_history(&path, &q),
+                            None => omalook::search::load_history(&path),
+                        }
+                    } else {
+                        omalook::search::load_history(&path)
+                    };
+                    let body = serde_json::to_string(&list).unwrap_or_else(|_| "[]".to_string());
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                        body.len(), body
+                    );
+                    let _ = stream.write_all(response.as_bytes());
+                    continue;
+                }
+
                 // ── GET /settings/ui — return UI settings as JSON ─────────────
                 if first_line.contains("GET /settings/ui") {
                     let settings_path = config_dir.join("settings.toml");

@@ -16,7 +16,7 @@ Item {
   }
   property bool backendOnline: false
   onBackendOnlineChanged: {
-    if (backendOnline) { perfMark("backend first answered"); loadCalendarSettings(); loadUiSettings(); loadSenders(); loadMailSettings() }
+    if (backendOnline) { perfMark("backend first answered"); loadCalendarSettings(); loadUiSettings(); loadSenders(); loadMailSettings(); loadSearchHistory() }
   }
 
   // ---- launch timing (see src/perf.rs): marks are queued until the backend answers, then
@@ -86,6 +86,7 @@ Item {
   // Active search pattern ("from:stripe is:unread"); "" = the plain folder view. The scope is
   // whatever the list shows (one folder, or an "all accounts" folder); switching folders clears it.
   property string searchQuery: ""
+  property var searchHistory: []      // recent patterns, newest first (kept by the backend)
 
   // _readRev is bumped whenever a row's read flag changes, so the reading pane's
   // button label re-evaluates (ListModel.get() hands back a snapshot).
@@ -986,7 +987,23 @@ Item {
     if (q === "") { clearSearch(); return }
     var prev = root.searchQuery
     root.searchQuery = q
-    loadMessages(function(err) { root.searchQuery = prev; if (onError) onError(err) })
+    loadMessages(function(err) { root.searchQuery = prev; if (onError) onError(err) },
+                 function() { root.recordSearch(q) })
+  }
+
+  function loadSearchHistory() {
+    request("GET", "/search/history", function(xhr) {
+      if (xhr.status !== 200) return
+      try { root.searchHistory = JSON.parse(xhr.responseText) } catch (e) {}
+    })
+  }
+
+  // A pattern that ran without error goes to the front of the history (the backend persists it).
+  function recordSearch(q) {
+    var h = root.searchHistory.filter(function(p) { return p !== q })
+    h.unshift(q)
+    root.searchHistory = h.slice(0, 50)
+    request("POST", "/search/history?q=" + encodeURIComponent(q), null)
   }
 
   // Back to the plain folder view.
@@ -998,7 +1015,7 @@ Item {
   }
 
   property bool _perfFirstMessages: true
-  function loadMessages(onRejected) {
+  function loadMessages(onRejected, onAccepted) {
     if (_perfFirstMessages) perfMark("first loadMessages request sent")
     var priorStatus = root.messagesStatus
     root.messagesStatus = "…"
@@ -1026,6 +1043,7 @@ Item {
             ? messages.length.toLocaleString(Qt.locale("en_US"), "f", 0) + (root._hasMoreMessages ? "+" : "") + " found"
             : root.messageTotal.toLocaleString(Qt.locale("en_US"), "f", 0)
           if (root.msgIndex >= messageModelObj.count) root.msgIndex = Math.max(0, messageModelObj.count - 1)
+          if (onAccepted) onAccepted()
         } catch (e) { root.messagesStatus = "err" }
       } else {
         root.messagesStatus = xhr.status === 0 ? "" : "e" + xhr.status

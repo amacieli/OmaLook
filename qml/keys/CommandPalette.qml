@@ -91,7 +91,7 @@ Item {
       TextField {
         id: input
         Layout.fillWidth: true
-        placeholderText: "Type a command, or: goto <view>   folder <name>   search <pattern>   sync   q"
+        placeholderText: "Type a command, or: goto <view>   folder <name>   search <pattern>   filter   sync   q"
         onTextChanged: { root._restore = -1; list.currentIndex = 0 }
         Keys.priority: Keys.BeforeItem
         Keys.onPressed: function(e) {
