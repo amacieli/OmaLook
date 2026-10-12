@@ -46,17 +46,17 @@ cause chain (in order of discovery):
    the log with the old error indefinitely. Fixed by clearing this file on login
    trigger and on manual `rm`.
 
-7. **Symlink pointed to debug binary**: `./omarchylook` → `target/debug/omarchylook`
+7. **Symlink pointed to debug binary**: `./omalook` → `target/debug/omalook`
    (set at project init). Source changes only applied to release build. Fixed:
-   `ln -sf target/release/omarchylook omarchylook`.
+   `ln -sf target/release/omalook omalook`.
 
-### ✅ Azure App Registration — omarchylook (permanent)
+### ✅ Azure App Registration — omalook (permanent)
 
 One-time developer registration covering all future users:
 
 | Field | Value |
 |---|---|
-| **App name** | omarchylook |
+| **App name** | omalook |
 | **Client ID** | `9c277d6f-edb2-4f82-bda5-901b4c11c457` |
 | **Account types** | Multi-tenant + personal Microsoft accounts |
 | **Public client flows** | Enabled (required for Device Flow) |
@@ -81,7 +81,7 @@ offline_access
 
 Confirmed emails in DB:
 - Anthropic receipts, Amazon delivery notifications, NC-300 Attendance Bot, etc.
-- DB: `~/.config/omarchylook/messages.db` — table `messages`, 10 rows
+- DB: `~/.config/omalook/messages.db` — table `messages`, 10 rows
 - FTS5 index: `messages_fts` with Porter stemmer — ready for search
 
 ### ✅ Graph API Error Instrumentation Added
@@ -148,7 +148,7 @@ CREATE VIRTUAL TABLE messages_fts USING fts5(
 | `src/auth.rs` | New client ID (`9c277d6f-...`), explicit Graph scopes, `error` log import, ureq non-2xx error handling with body logging |
 | `src/providers/graph.rs` | Full error body + token prefix logged on 403/non-2xx |
 | `src/main.rs` | HTTP login trigger clears stale `auth_state.json` before starting Device Flow |
-| `omarchylook` (symlink) | Fixed: now points to `target/release/omarchylook` |
+| `omalook` (symlink) | Fixed: now points to `target/release/omalook` |
 
 ---
 
@@ -188,15 +188,15 @@ DELETE /messages/:id                → delete message
 
 **Clear auth state (when stuck)**:
 ```bash
-uv run --with keyring python3 -c "import keyring; keyring.delete_password('omarchylook', 'auth_cache')"
-rm -f ~/.config/omarchylook/auth_state.json ~/.config/omarchylook/device_code.json
+uv run --with keyring python3 -c "import keyring; keyring.delete_password('omalook', 'auth_cache')"
+rm -f ~/.config/omalook/auth_state.json ~/.config/omalook/device_code.json
 ```
 
 **Verify token scopes after auth**:
 ```bash
 uv run --with keyring python3 -c "
 import keyring, json, base64
-val = keyring.get_password('omarchylook', 'auth_cache')
+val = keyring.get_password('omalook', 'auth_cache')
 data = json.loads(val)
 token = data['access_token']
 parts = token.split('.')
@@ -210,5 +210,5 @@ Expected: `appid: 9c277d6f-edb2-4f82-bda5-901b4c11c457`, `scp` includes `Mail.Re
 
 **Query inbox DB**:
 ```bash
-sqlite3 ~/.config/omarchylook/messages.db "SELECT subject, from_email, received_at FROM messages ORDER BY received_at DESC LIMIT 10;"
+sqlite3 ~/.config/omalook/messages.db "SELECT subject, from_email, received_at FROM messages ORDER BY received_at DESC LIMIT 10;"
 ```

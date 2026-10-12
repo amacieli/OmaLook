@@ -1,4 +1,4 @@
-# OmarchyLook Phase 3 Status — 2026-09-26
+# OmaLook Phase 3 Status — 2026-09-26
 
 ## Summary
 Phase 3 **COMPLETE (Partial Delivery)**: Qt/QML frontend initialization and app shell wired. Backend ↔ Frontend integration ready for Phase 4.
@@ -49,7 +49,7 @@ Phase 3 **COMPLETE (Partial Delivery)**: Qt/QML frontend initialization and app 
 ### ✅ COMPLETED: Environment & Build Integration
 **File:** `run.sh`  
 **Status:** Already handled QML_DIR correctly; no changes needed  
-**Binary:** `target/debug/omarchylook` (after `cargo build`)
+**Binary:** `target/debug/omalook` (after `cargo build`)
 
 **Build Status:** All dependencies met
 - Qt 6 libraries present at `/usr/lib/qt6/bin/qmlscene`
@@ -62,9 +62,9 @@ Phase 3 **COMPLETE (Partial Delivery)**: Qt/QML frontend initialization and app 
 
 ### Test Command
 ```bash
-cd /mnt/ai/projects/omarchylook
+cd /mnt/ai/projects/omalook
 ./run.sh
-# Expected: Dark window with OmarchyLook login UI, "Waiting for authentication..."
+# Expected: Dark window with OmaLook login UI, "Waiting for authentication..."
 ```
 
 ### Test Results (2026-09-26 17:18:53 UTC)
@@ -169,7 +169,7 @@ cd /mnt/ai/projects/omarchylook
 
 ```bash
 # Build debug binary
-cd /mnt/ai/projects/omarchylook
+cd /mnt/ai/projects/omalook
 cargo build
 
 # Run with QML hot-reload (dev mode)
@@ -182,7 +182,7 @@ cargo build
 /usr/lib/qt6/bin/qmlscene qml/main.qml
 
 # View logs in real-time
-RUST_LOG=omarchy_look=debug ./target/debug/omarchylook
+RUST_LOG=omarchy_look=debug ./target/debug/omalook
 ```
 
 ---

@@ -3,7 +3,7 @@
 Press `?` in the app for every binding, grouped by where it works, with each command's id.
 `:` / Ctrl-P opens the command list.
 
-## Rebinding: `[keys]` in `~/.config/omarchylook/settings.toml`
+## Rebinding: `[keys]` in `~/.config/omalook/settings.toml`
 
 The file is re-read every couple of seconds, so edits apply without a restart. Problems (unknown ids,
 bad keys, two commands on one key) are listed at the top of the `?` help overlay.

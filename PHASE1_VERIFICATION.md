@@ -8,14 +8,14 @@
 
 ### Debug Build
 ```
-Binary: target/debug/omarchylook
+Binary: target/debug/omalook
 Size: 109M (unoptimized + debuginfo)
 Status: ✅ Compiled successfully
 ```
 
 ### Release Build
 ```
-Binary: target/release/omarchylook
+Binary: target/release/omalook
 Size: 5.8M (optimized, stripped)
 Status: ✅ Compiled successfully
 ELF 64-bit LSB pie executable, x86-64, dynamically linked
@@ -27,16 +27,16 @@ BuildID: 183c2eee0c703c41f0670e00a44f81b27456a8e0
 ## Runtime Verification
 
 ### Backend Module Initialization (Release Build)
-Successfully executed `./target/release/omarchylook` — all 8 modules initialized without errors:
+Successfully executed `./target/release/omalook` — all 8 modules initialized without errors:
 
 ```
 ✅ Database (SQLite + FTS5)
-   - Schema initialized at ~/.config/omarchylook/omarchy.db
+   - Schema initialized at ~/.config/omalook/omarchy.db
    - Full-text search indexes ready
    - Status: READY
 
 ✅ Settings Manager (TOML + File Watcher)
-   - Configuration loaded from ~/.config/omarchylook/settings.toml
+   - Configuration loaded from ~/.config/omalook/settings.toml
    - File watcher active (hot-reload on save)
    - Status: READY
 
@@ -72,23 +72,23 @@ Successfully executed `./target/release/omarchylook` — all 8 modules initializ
 
 ### Sample Output Log
 ```
-[2026-09-26T16:37:58Z INFO  omarchy_look] OmarchyLook starting
-[2026-09-26T16:37:58Z INFO  omarchy_look] Config dir: /home/adam/.config/omarchylook
-[2026-09-26T16:37:58Z INFO  omarchy_look] Database: /home/adam/.config/omarchylook/omarchy.db
-[2026-09-26T16:37:58Z DEBUG omarchy_look::db] Opening database at: /home/adam/.config/omarchylook/omarchy.db
+[2026-09-26T16:37:58Z INFO  omarchy_look] OmaLook starting
+[2026-09-26T16:37:58Z INFO  omarchy_look] Config dir: /home/adam/.config/omalook
+[2026-09-26T16:37:58Z INFO  omarchy_look] Database: /home/adam/.config/omalook/omarchy.db
+[2026-09-26T16:37:58Z DEBUG omarchy_look::db] Opening database at: /home/adam/.config/omalook/omarchy.db
 [2026-09-26T16:37:58Z DEBUG omarchy_look::db] Initializing database schema
 [2026-09-26T16:37:58Z INFO  omarchy_look::db] Database initialized
 [2026-09-26T16:37:58Z INFO  omarchy_look] Database initialized
-[2026-09-26T16:37:58Z DEBUG omarchy_look::settings] Loading settings from: /home/adam/.config/omarchylook/settings.toml
-[2026-09-26T16:37:58Z INFO  omarchy_look::settings] Settings loaded from: /home/adam/.config/omarchylook/settings.toml
+[2026-09-26T16:37:58Z DEBUG omarchy_look::settings] Loading settings from: /home/adam/.config/omalook/settings.toml
+[2026-09-26T16:37:58Z INFO  omarchy_look::settings] Settings loaded from: /home/adam/.config/omalook/settings.toml
 [2026-09-26T16:37:58Z DEBUG omarchy_look::settings] File watcher set up for settings
 [2026-09-26T16:37:58Z INFO  omarchy_look] Settings initialized
 [2026-09-26T16:37:58Z DEBUG omarchy_look::keyring_mgr] Retrieved cached token from keyring
 [2026-09-26T16:37:58Z INFO  omarchy_look] User already authenticated (cached tokens available)
 [2026-09-26T16:37:58Z INFO  omarchy_look] Application initialized successfully
 
-✅ OmarchyLook backend initialized
-   Config: /home/adam/.config/omarchylook
+✅ OmaLook backend initialized
+   Config: /home/adam/.config/omalook
    Next: Qt/QML UI integration
 ```
 
@@ -227,12 +227,12 @@ cache_retention_days = 30
 ## Artifacts
 
 ### Binaries
-- `target/debug/omarchylook` (109M)
-- `target/release/omarchylook` (5.8M)
+- `target/debug/omalook` (109M)
+- `target/release/omalook` (5.8M)
 
 ### Configuration
-- `~/.config/omarchylook/settings.toml` (auto-generated)
-- `~/.config/omarchylook/omarchy.db` (initialized, 32KB)
+- `~/.config/omalook/settings.toml` (auto-generated)
+- `~/.config/omalook/omarchy.db` (initialized, 32KB)
 
 ### Source Files
 - `src/lib.rs` (32 LOC) — crate root
@@ -262,5 +262,5 @@ All 8 Rust backend modules compiled successfully and initialized correctly at ru
 ```bash
 ./build.sh                    # Debug build
 ./build.sh --release          # Release build
-./target/release/omarchylook # Run release binary
+./target/release/omalook # Run release binary
 ```

@@ -103,8 +103,6 @@ RowLayout {
   Component {
     id: appearancePage
     AppearancePage {
-      sidebarExpanded: root.app.sidebarExpanded
-      onSidebarExpandedToggled: root.app.sidebarExpanded = !root.app.sidebarExpanded
     }
   }
   Component { id: mailPage;          MailPage { app: root.app } }

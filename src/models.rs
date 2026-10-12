@@ -1,4 +1,4 @@
-//! Data models for OmarchyLook
+//! Data models for OmaLook
 
 use serde::{Deserialize, Serialize};
 use chrono::{DateTime, Utc};

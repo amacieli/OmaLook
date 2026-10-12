@@ -74,7 +74,7 @@ function findEx(commands, name) {
 }
 
 var sectionNames = {
-  "global": "Everywhere", "nav": "Menu pane", "folder": "Folders pane", "list": "List pane",
+  "global": "Everywhere", "folder": "Folders pane", "list": "List pane",
   "reader": "Reading pane", "mail": "Mail", "calendar/list": "Calendar", "contacts/list": "People",
   "tasks/list": "Tasks", "settings": "Settings", "sms": "SMS"
 }

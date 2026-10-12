@@ -14,7 +14,7 @@ Item {
   property string folderName: ""
   property int messageCount: 0
   property int unreadCount: 0
-  property string focusPane: "nav"
+  property string focusPane: "msg"
   property string currentView: "mail"
 
   function fmt(n) { return Number(n).toLocaleString(Qt.locale("en_US"), "f", 0) }
@@ -32,7 +32,6 @@ Item {
 
   // Hints for the focused pane. ":" always opens the full command list.
   readonly property string hints: {
-    if (focusPane === "nav")    return hintLine([k("move.down", "move") , k("move.right", "open"), k("pane.next", "next pane"), k("go.mail", "go to…")])
     if (focusPane === "folder") return hintLine([k("move.down", "move"), k("move.right", "select"), k("move.left", "back"), k("pane.next", "next pane")])
     if (focusPane === "reader") return hintLine([k("move.down", "scroll"), k("reader.pagedown", "page"), k("mail.reply", "reply"), k("move.left", "back")])
     if (currentView === "settings") return hintLine([k("move.down", "category"), k("move.left", "back"), k("pane.next", "next pane")])
@@ -100,7 +99,7 @@ Item {
     }
 
     UiText {
-      text: "  " + (root.keyOf("palette") || ":") + "  commands   " + (root.keyOf("help") || "?") + "  help"
+      text: "  " + (root.keyOf("palette") || ":") + "  commands   " + (root.keyOf("help") || "?") + "  help   " + (root.keyOf("go.mail") || "g m").split(" ")[0] + "  go to"
       color: Hues.cyan
       font.pixelSize: Style.font.caption
       font.bold: true

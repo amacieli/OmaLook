@@ -3,7 +3,7 @@ import QtQuick.Controls
 import QtQuick.Layouts
 import qs.Commons
 import qs.Ui
-import OmarchyLook.Compose
+import OmaLook.Compose
 import "../common"
 import "modes.js" as Modes
 import "../mail/format.js" as Fmt

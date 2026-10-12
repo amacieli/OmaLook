@@ -54,7 +54,7 @@ This structure establishes account management as a **preferences/configuration t
 ## Build Status
 
 ✅ Build successful (no new errors)
-- Binary: `/mnt/ai/projects/omarchylook/target/debug/omarchylook`
+- Binary: `/mnt/ai/projects/omalook/target/debug/omalook`
 - Size: 45M
 - All QML files compile without syntax errors
 

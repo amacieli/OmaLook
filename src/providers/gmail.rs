@@ -400,7 +400,7 @@ impl super::EmailProvider for GmailProvider {
                 Err(e) => warn!("Gmail: cannot thread reply to {}: {}", msg.in_reply_to, e),
             }
         }
-        let boundary = format!("=_omarchylook_{:x}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0));
+        let boundary = format!("=_omalook_{:x}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0));
         let mime = build_mime(msg, from, reply.as_ref(), &boundary, &chrono::Utc::now().to_rfc2822());
         let mut body = serde_json::json!({ "raw": base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(mime.as_bytes()) });
         if let Some(t) = thread_id {

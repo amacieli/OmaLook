@@ -74,7 +74,7 @@ Item {
       : i.response === "declined" ? "You declined" : "Not answered yet"
     return now + "   " + root.inviteKeys
   }
-  property string hotkey: "\u2074"
+  property string hotkey: "\u00b3"
 
   // Keyboard scrolling of the body (the reader pane). Whichever view is showing.
   function _flick() { return htmlScroll.visible ? htmlScroll.contentItem : scroll.contentItem }
@@ -128,10 +128,10 @@ Item {
   readonly property real _htmlWidth: Math.max(0, htmlScroll.width - Style.spacing.huge * 2)
 
   // ---- WebKit view -------------------------------------------------------------------------
-  // HTML mail is drawn by omarchylook-render (WebKitGTK, its own process, see tools/render): full
+  // HTML mail is drawn by omalook-render (WebKitGTK, its own process, see tools/render): full
   // CSS, rounded cards, remote images when allowed. It returns a PNG plus the link boxes. If the
   // helper is missing or fails, the message falls back to Qt's rich-text renderer below.
-  readonly property string helperPath: Quickshell.env("QML_DIR") + "/../bin/omarchylook-render"
+  readonly property string helperPath: Quickshell.env("QML_DIR") + "/../bin/omalook-render"
   property bool webkitOk: false          // the helper exists
   property int webkitFailures: 0
   readonly property bool webkitBroken: webkitFailures >= 3   // stop trying this session
@@ -207,7 +207,7 @@ Item {
   function _startShot() {
     _stopShot()
     var run = Quickshell.env("XDG_RUNTIME_DIR") || "/tmp"
-    var out = run + "/omarchylook-render-" + (_seq % 6) + ".png"
+    var out = run + "/omalook-render-" + (_seq % 6) + ".png"
     var args = [helperPath, "--width", String(Math.max(300, Math.floor(htmlScroll.availableWidth))),
                 "--scale", String(Math.max(1, Screen.devicePixelRatio)), "--out", out]
     if (imagesAllowed) args.splice(1, 0, "--images")

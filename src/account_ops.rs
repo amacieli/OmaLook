@@ -471,7 +471,7 @@ mod tests {
         crate::models::CachedToken { access_token: a.into(), refresh_token: Some(r.into()), expires_at: None }
     }
     fn setup(tag: &str) -> (std::path::PathBuf, SyncScheduler, String, String) {
-        let dir = std::env::temp_dir().join(format!("omarchylook-reauth-{}-{}", tag, std::process::id()));
+        let dir = std::env::temp_dir().join(format!("omalook-reauth-{}-{}", tag, std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         // unsupported provider => the scheduler never spawns real sync threads in tests
         let (existing, pending_id) = (format!("gmail-{}1", tag), format!("gmail-{}2", tag));

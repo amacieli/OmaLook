@@ -2,7 +2,7 @@ import QtQuick
 import Quickshell
 import qs.Commons
 
-// OmarchyLook entry point. Run standalone with:
+// OmaLook entry point. Run standalone with:
 //   quickshell -p <this dir>        (the Rust launcher / run.sh do this)
 //
 // Quickshell is used as a plain Qt Quick host here, not as a shell plugin:
@@ -13,7 +13,7 @@ ShellRoot {
   FloatingWindow {
     id: window
     visible: true
-    title: "OmarchyLook"
+    title: "OmaLook"
     color: Color.menu.background
     implicitWidth: Style.space(1200)
     implicitHeight: Style.space(800)

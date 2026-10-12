@@ -33,14 +33,14 @@ RowLayout {
     paneFocused: root.app.focusPane === "msg"
     marks: root.app.marks
     frameTitle: root.app.selectedFolderLabel
-    hotkey: root.app.showFolderPane ? "\u00b3" : "\u00b2"
+    hotkey: root.app.showFolderPane ? "\u00b2" : "\u00b9"
     onRowClicked: function(i) { root.app.clickMessage(i) }
     onEndReached: root.app.loadMoreMessages()
     onRefreshRequested: { root.app.loadMessages(); root.app.focusRequested() }
   }
 
   // Compose takes the reading pane's slot. Loaded on demand: the editor needs the native
-  // OmarchyLook.Compose plugin, and a Loader keeps a missing plugin from breaking the list.
+  // OmaLook.Compose plugin, and a Loader keeps a missing plugin from breaking the list.
   Loader {
     id: composeLoader
     Layout.fillWidth: true
@@ -75,7 +75,7 @@ RowLayout {
       function onBrowsed(dir) { root.app.attachBrowseDir = dir }
     }
     onStatusChanged: if (status === Loader.Error) {
-      root.app.composeStatus = "Could not load the editor (is the OmarchyLook.Compose plugin on QML_IMPORT_PATH?)"
+      root.app.composeStatus = "Could not load the editor (is the OmaLook.Compose plugin on QML_IMPORT_PATH?)"
       root.app.composing = false
     }
   }
@@ -84,7 +84,7 @@ RowLayout {
     id: preview
     visible: !root.app.composing
     paneFocused: root.app.focusPane === "reader"
-    hotkey: root.app.showFolderPane ? "\u2074" : "\u00b3"
+    hotkey: root.app.showFolderPane ? "\u00b3" : "\u00b2"
     Layout.fillWidth: true
     Layout.fillHeight: true
     onReplyRequested: root.app.openCompose("reply")

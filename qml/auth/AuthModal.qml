@@ -88,7 +88,7 @@ Item {
           }
           UiText {
             Layout.fillWidth: true
-            text: "Your browser opens Google's own sign-in page. omarchylook never sees your password."
+            text: "Your browser opens Google's own sign-in page. omalook never sees your password."
             dim: true
             wrapMode: Text.Wrap
             horizontalAlignment: Text.AlignHCenter

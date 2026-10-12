@@ -64,7 +64,7 @@ Outlook IA). Status: **plan only, nothing built.** Decisions settled in §6.
 ## 3. Phases
 
 ### Phase 0 — prerequisites (DONE 2026-10-09 except Q-pending: dirty tree left uncommitted by choice; branch `feature/keyboard`; body fetch debounced 120 ms — OL-001 not yet re-tested under load)
-- [ ] Commit/stash the unrelated dirty tree (`build.sh`, `omarchylook`, `packaging/`); branch `feature/keyboard`.
+- [ ] Commit/stash the unrelated dirty tree (`build.sh`, `omalook`, `packaging/`); branch `feature/keyboard`.
 - [ ] OL-001 mitigation: debounce body fetch, ignore stale responses by message id.
 - [ ] Settle §6 questions.
 

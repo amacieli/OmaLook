@@ -833,7 +833,7 @@ mod delta_tests {
     #[test]
     fn poll_interval_follows_settings_toml_and_rereads() {
         let (mut d, _f) = setup(vec![]);
-        let path = std::env::temp_dir().join(format!("omarchylook-daemon-poll-{}.toml", std::process::id()));
+        let path = std::env::temp_dir().join(format!("omalook-daemon-poll-{}.toml", std::process::id()));
         std::fs::write(&path, "[sync]\npoll_interval_secs = 30\n").unwrap();
         d.config.settings_path = Some(path.clone());
         assert_eq!(d.poll_interval(), Duration::from_secs(30));

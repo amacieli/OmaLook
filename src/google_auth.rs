@@ -57,11 +57,11 @@ pub struct GoogleClient {
 
 pub fn default_config_dir() -> PathBuf {
     if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
-        PathBuf::from(xdg).join("omarchylook")
+        PathBuf::from(xdg).join("omalook")
     } else if let Ok(home) = std::env::var("HOME") {
-        PathBuf::from(home).join(".config").join("omarchylook")
+        PathBuf::from(home).join(".config").join("omalook")
     } else {
-        PathBuf::from("/tmp/omarchylook")
+        PathBuf::from("/tmp/omalook")
     }
 }
 
@@ -80,7 +80,7 @@ pub fn parse_client_json(raw: &str) -> Result<GoogleClient> {
 impl GoogleClient {
     /// The client compiled into this binary (see build.rs), if the build had one.
     pub fn embedded() -> Option<Self> {
-        match (option_env!("OMARCHYLOOK_GOOGLE_CLIENT_ID"), option_env!("OMARCHYLOOK_GOOGLE_CLIENT_SECRET")) {
+        match (option_env!("OMALOOK_GOOGLE_CLIENT_ID"), option_env!("OMALOOK_GOOGLE_CLIENT_SECRET")) {
             (Some(id), Some(secret)) if !id.is_empty() && !secret.is_empty() => {
                 Some(Self { client_id: id.to_string(), client_secret: secret.to_string() })
             }
@@ -227,12 +227,12 @@ pub fn start_login(config_dir: &Path, login_hint: Option<&str>) -> Result<Pendin
     Ok(PendingLogin { client, listener, redirect_uri, state, verifier: verifier.secret().clone(), generation, auth_url })
 }
 
-const SUCCESS_PAGE: &str = "<!doctype html><meta charset=utf-8><title>omarchylook</title>\
+const SUCCESS_PAGE: &str = "<!doctype html><meta charset=utf-8><title>omalook</title>\
 <body style=\"font-family:sans-serif;background:#000;color:#ddd;text-align:center;padding-top:20vh\">\
-<h2>Signed in</h2><p>You can close this tab and return to omarchylook.</p></body>";
-const FAILURE_PAGE: &str = "<!doctype html><meta charset=utf-8><title>omarchylook</title>\
+<h2>Signed in</h2><p>You can close this tab and return to omalook.</p></body>";
+const FAILURE_PAGE: &str = "<!doctype html><meta charset=utf-8><title>omalook</title>\
 <body style=\"font-family:sans-serif;background:#000;color:#ddd;text-align:center;padding-top:20vh\">\
-<h2>Sign-in failed</h2><p>Return to omarchylook for details.</p></body>";
+<h2>Sign-in failed</h2><p>Return to omalook for details.</p></body>";
 
 fn respond(stream: &mut TcpStream, status: &str, body: &str) {
     let _ = write!(
@@ -382,7 +382,7 @@ mod tests {
 
     #[test]
     fn load_prefers_the_file_then_the_embedded_client() {
-        let dir = std::env::temp_dir().join(format!("omarchylook-gclient-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("omalook-gclient-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let _ = std::fs::remove_file(dir.join("google_client.json"));
         // no file: embedded client if this build has one, else a clear error

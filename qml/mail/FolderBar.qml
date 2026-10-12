@@ -8,7 +8,7 @@ import "../common"
 Item {
   id: root
 
-  PaneFrame { tint: Hues.cyan; focused: root.paneFocused; hotkey: "\u00b2"; title: "folders" }
+  PaneFrame { tint: Hues.cyan; focused: root.paneFocused; hotkey: "\u00b9"; title: "folders" }
 
   property var model
   property int currentIndex: 0

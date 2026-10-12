@@ -1,6 +1,6 @@
-# Build OmarchyLook Field Chooser
+# Build OmaLook Field Chooser
 
-You are implementing a field-chooser feature for OmarchyLook, an Omarchy-first desktop tool. Build it as a real, keyboard-first TUI-style dialog using Python and QML. Do not invent extra product scope. Ship a working chooser that reads and writes the project config and feels like Omarchy’s existing terminal apps: monospace, pane-based, lazygit-like, no mouse required.
+You are implementing a field-chooser feature for OmaLook, an Omarchy-first desktop tool. Build it as a real, keyboard-first TUI-style dialog using Python and QML. Do not invent extra product scope. Ship a working chooser that reads and writes the project config and feels like Omarchy’s existing terminal apps: monospace, pane-based, lazygit-like, no mouse required.
 
 ## Product goal
 
@@ -11,7 +11,7 @@ Create a floating field-chooser dialog with two panes:
 
 The user moves fields between panes, reorders the chosen list, filters the available list, accepts or cancels. On accept, persist the chosen field ids in order. On cancel, change nothing.
 
-This is not a plugin. It is a standalone dialog used by OmarchyLook. The typeface is already chosen and pulled from system defaults. Do not hardcode a font family, font file, or font size. Use whatever font the OmarchyLook / Qt / Quickshell stack already inherits from the system and current Omarchy theme.
+This is not a plugin. It is a standalone dialog used by OmaLook. The typeface is already chosen and pulled from system defaults. Do not hardcode a font family, font file, or font size. Use whatever font the OmaLook / Qt / Quickshell stack already inherits from the system and current Omarchy theme.
 
 ## Tech stack
 
@@ -19,13 +19,13 @@ This is not a plugin. It is a standalone dialog used by OmarchyLook. The typefac
 - QML for the dialog UI, two lists, focus, keybindings, and status bar.
 - Keep the QML visual language terminal-like: box-drawing or simple rectangular panels, dim inactive pane, bright focused row, numbered chosen rows, muted secondary text for field ids. No Material cards, no rounded shopping-UI chrome, no icon-heavy toolbars, no drag-and-drop as the primary model.
 
-If the project already has a QML window helper or Python embedding pattern, reuse it. Otherwise create a small, isolated module so this dialog can be opened from OmarchyLook and also launched directly for testing.
+If the project already has a QML window helper or Python embedding pattern, reuse it. Otherwise create a small, isolated module so this dialog can be opened from OmaLook and also launched directly for testing.
 
 ## Config
 
 Master field list and chosen state live in:
 
-~/.config/omarchylook/settings.toml
+~/.config/omalook/settings.toml
 
 Create the directory and file if missing, with safe defaults.
 
@@ -49,7 +49,7 @@ Rules:
 - Use an atomic write: write a temp file in the same directory, then replace settings.toml. Do not clobber unrelated keys in the file.
 - If the file is malformed, show a clear error in the dialog status area and refuse to save over it until the user cancels or the file is readable.
 
-Include a small default catalog of plausible OmarchyLook fields so the dialog is usable before the user customizes the file. Examples of ids: email, display_name, status, plan, created_at, last_seen, org_id, notes. Labels should be human. Groups can be identity, activity, org, other. Mark a few as default.
+Include a small default catalog of plausible OmaLook fields so the dialog is usable before the user customizes the file. Examples of ids: email, display_name, status, plan, created_at, last_seen, org_id, notes. Labels should be human. Groups can be identity, activity, org, other. Mark a few as default.
 
 ## Layout
 
@@ -86,7 +86,7 @@ Visual states:
 Window behavior:
 
 - Open as a floating dialog.
-- If integrating with Omarchy TUI window classes is straightforward, use a floating TUI-style class. Do not block on that if the existing OmarchyLook window path already floats.
+- If integrating with Omarchy TUI window classes is straightforward, use a floating TUI-style class. Do not block on that if the existing OmaLook window path already floats.
 
 ## Keyboard model
 
@@ -145,7 +145,7 @@ Help:
 
 Split cleanly:
 
-- settings loader/saver for ~/.config/omarchylook/settings.toml
+- settings loader/saver for ~/.config/omalook/settings.toml
 - field catalog model: Field(id, label, group, default)
 - chooser session state: chosen ordered ids, available computed list, focused pane, cursors, filter text, dirty flag
 - commands: add, remove, add_all_filtered, move_up, move_down, accept, cancel
@@ -166,7 +166,7 @@ Keep the session state the source of truth. QML displays it.
 - High contrast focused row. Dim inactive pane.
 - Numbered chosen rows so order is obvious.
 - One-line footer of keys.
-- Theme colors should follow the application / system palette already in use. If OmarchyLook already exposes theme colors, use them. Do not ship a private Tokyo Night palette that fights the desktop theme.
+- Theme colors should follow the application / system palette already in use. If OmaLook already exposes theme colors, use them. Do not ship a private Tokyo Night palette that fights the desktop theme.
 - No splash, no settings-inside-settings, no network, no plugin manifest, no packaging work unless the repo already requires it for a new dialog.
 
 ## Files to add or touch
@@ -175,7 +175,7 @@ Prefer a tight module, for example:
 
 - python package or module for settings and chooser state
 - qml file for the dialog
-- a way to launch the dialog from OmarchyLook, plus a __main__ or CLI entry so field-chooser can be run alone
+- a way to launch the dialog from OmaLook, plus a __main__ or CLI entry so field-chooser can be run alone
 - default settings written only when the config file does not exist
 
 Do not dump this into a single thousand-line file if the project already has structure. Do not scatter TOML paths.

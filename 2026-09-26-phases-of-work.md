@@ -1,4 +1,4 @@
-# OmarchyLook Phases of Work
+# OmaLook Phases of Work
 **Timeline**: September 26, 2026 (Adam's Time)  
 **Project**: Python PySide6 Outlook client → Rust backend + Qt/QML frontend migration
 
@@ -58,8 +58,8 @@
 
 #### Binaries Compiled
 ```
-Debug:   target/debug/omarchylook      (109M, unoptimized + debuginfo)
-Release: target/release/omarchylook    (5.8M, optimized, stripped)
+Debug:   target/debug/omalook      (109M, unoptimized + debuginfo)
+Release: target/release/omalook    (5.8M, optimized, stripped)
 ```
 
 #### Compilation Metrics
@@ -74,10 +74,10 @@ Release: target/release/omarchylook    (5.8M, optimized, stripped)
 - Rust version: 1.98.1
 
 #### Runtime Verification (Release Binary)
-Successfully executed `./target/release/omarchylook` — all 8 modules initialized without errors:
+Successfully executed `./target/release/omalook` — all 8 modules initialized without errors:
 
 ```
-✅ Database: Schema initialized at ~/.config/omarchylook/omarchy.db (SQLite+FTS5)
+✅ Database: Schema initialized at ~/.config/omalook/omarchy.db (SQLite+FTS5)
 ✅ Settings: TOML config loaded + file watcher active for hot-reload
 ✅ Keyring: Retrieved cached token from system keyring (SecretService)
 ✅ Auth: Device Flow OAuth2 ready, cached tokens verified
@@ -105,7 +105,7 @@ Successfully executed `./target/release/omarchylook` — all 8 modules initializ
    - Schema: Messages table with timestamp, sender, subject, body, message_id
 
 4. **Config**: TOML with file watcher
-   - Location: ~/.config/omarchylook/settings.toml (XDG spec)
+   - Location: ~/.config/omalook/settings.toml (XDG spec)
    - Hot-reload on file save (notify crate watches for changes)
    - Font, color, UI, sync settings auto-persisted
 
@@ -337,7 +337,7 @@ Successfully executed `./target/release/omarchylook` — all 8 modules initializ
 ### Build Results
 ```
 $ cargo build
-   Compiling omarchylook ...
+   Compiling omalook ...
    Finished `dev` profile [unoptimized + debuginfo] target(s) in 15.01s
 ✅ Zero errors, warnings only
 ```
@@ -383,13 +383,13 @@ $ cargo build
 
 ### Estimated Deliverables
 - `package.sh` fully functional (replaces placeholders)
-- AppImage: `omarchylook-x86_64.AppImage`
+- AppImage: `omalook-x86_64.AppImage`
 - AUR: PKGBUILD submission
 - System packages: `.deb`, `.rpm`, pacman package
 
 ### Success Criteria
 - [ ] AppImage runs on any Linux x86_64 system
-- [ ] AUR package installs via `yay -S omarchylook`
+- [ ] AUR package installs via `yay -S omalook`
 - [ ] deb/rpm packages install and create menu entry
 - [ ] All packages verified on fresh VM
 
@@ -435,7 +435,7 @@ Cargo.toml             (Dependencies: ureq, rusqlite, secretservice, etc.)
 
 ### Configuration (Phase 1 ✅)
 ```
-~/.config/omarchylook/
+~/.config/omalook/
   ├── settings.toml     (Auto-generated: font, color, UI, sync)
   └── omarchy.db        (SQLite cache with FTS5 indexes)
 ```
@@ -469,7 +469,7 @@ Cargo.toml             (Dependencies: ureq, rusqlite, secretservice, etc.)
 - **Build system**: Cargo + cmake (via qt-build-utils)
 
 ### Development
-- **Config paths**: XDG Base Directory spec (~/.config/omarchylook)
+- **Config paths**: XDG Base Directory spec (~/.config/omalook)
 - **Git workflow**: Feature branches, PRs to main
 - **Logging**: env_logger with RUST_LOG environment variable
 - **Testing**: Manual UI testing (no unit test framework in Phase 1)
@@ -509,8 +509,8 @@ Cargo.toml             (Dependencies: ureq, rusqlite, secretservice, etc.)
 
 ## References
 
-- **Project**: https://github.com/amacieli/OmarchyLook.git
-- **Working Dir**: /mnt/ai/projects/omarchylook
+- **Project**: https://github.com/amacieli/OmaLook.git
+- **Working Dir**: /mnt/ai/projects/omalook
 - **Rust Version**: 1.98.1 (via rustup)
 - **Qt Version**: TBD (system Qt 6.x, to be confirmed in Phase 2)
 - **Original Python Code**: 993 LOC (archived in git history)

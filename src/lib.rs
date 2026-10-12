@@ -1,4 +1,4 @@
-//! OmarchyLook: Rust backend for Outlook-style QML client
+//! OmaLook: Rust backend for Outlook-style QML client
 //! 
 //! Modules:
 //! - auth: Device Flow OAuth2 (Microsoft public client)
@@ -31,6 +31,7 @@ pub mod invites;
 pub mod attachments;
 pub mod contacts_daemon;
 pub mod providers;
+pub mod search;
 
 pub use auth::AuthManager;
 pub use db::Database;
@@ -41,7 +42,7 @@ use log::warn;
 /// Initialize logging for the application
 pub fn init_logging() {
     if std::env::var("RUST_LOG").is_err() {
-        std::env::set_var("RUST_LOG", "omarchylook=debug,info");
+        std::env::set_var("RUST_LOG", "omalook=debug,info");
     }
     env_logger::init();
 }

@@ -237,7 +237,7 @@ mod message_rendering_tests {
         assert_eq!(normalize_message_rendering("html"), Some("html"));
         assert_eq!(normalize_message_rendering("Always HTML"), None);
 
-        let p = std::env::temp_dir().join(format!("omarchylook-render-{}.toml", std::process::id()));
+        let p = std::env::temp_dir().join(format!("omalook-render-{}.toml", std::process::id()));
         let _ = fs::remove_file(&p);
         let mut base = Settings::default();
         base.ui.sidebar_expanded = false;
@@ -261,7 +261,7 @@ mod calendar_settings_tests {
     use super::*;
 
     fn temp(name: &str) -> PathBuf {
-        let p = std::env::temp_dir().join(format!("omarchylook-settings-{}-{}.toml", name, std::process::id()));
+        let p = std::env::temp_dir().join(format!("omalook-settings-{}-{}.toml", name, std::process::id()));
         let _ = fs::remove_file(&p);
         p
     }
@@ -317,7 +317,7 @@ mod poll_interval_tests {
     use super::*;
 
     fn file(tag: &str, content: Option<&str>) -> std::path::PathBuf {
-        let p = std::env::temp_dir().join(format!("omarchylook-poll-{}-{}.toml", tag, std::process::id()));
+        let p = std::env::temp_dir().join(format!("omalook-poll-{}-{}.toml", tag, std::process::id()));
         match content {
             Some(c) => fs::write(&p, c).unwrap(),
             None => { let _ = fs::remove_file(&p); }
@@ -358,7 +358,7 @@ mod send_delay_tests {
     use super::*;
 
     fn temp(name: &str) -> PathBuf {
-        let p = std::env::temp_dir().join(format!("omarchylook-senddelay-{}-{}.toml", name, std::process::id()));
+        let p = std::env::temp_dir().join(format!("omalook-senddelay-{}-{}.toml", name, std::process::id()));
         let _ = fs::remove_file(&p);
         p
     }

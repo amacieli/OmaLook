@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, Duration};
 
-// omarchylook Azure App Registration (multi-tenant + personal accounts)
+// omalook Azure App Registration (multi-tenant + personal accounts)
 // Registered once by the developer; all users authenticate via Device Flow with no Azure interaction.
 const PUBLIC_CLIENT_ID: &str = "9c277d6f-edb2-4f82-bda5-901b4c11c457";
 // const TENANT_ID: &str = "common";  // Unused; part of OAuth spec but not needed for public client flow
@@ -657,7 +657,7 @@ mod scope_marker_tests {
     use std::sync::atomic::Ordering;
 
     fn marker(tag: &str) -> std::path::PathBuf {
-        std::env::temp_dir().join(format!("omarchylook-scope-{}-{}", tag, std::process::id()))
+        std::env::temp_dir().join(format!("omalook-scope-{}-{}", tag, std::process::id()))
     }
 
     #[test]
@@ -687,7 +687,7 @@ mod scope_plus_tests {
         assert!(plus_scope().starts_with(GRAPH_SCOPE));
         assert!(plus_scope().ends_with("MailboxSettings.ReadWrite"));
         assert!(!GRAPH_SCOPE.contains("MailboxSettings"), "the lower tiers must not ask for it");
-        let path = std::env::temp_dir().join(format!("omarchylook-plus-{}", std::process::id()));
+        let path = std::env::temp_dir().join(format!("omalook-plus-{}", std::process::id()));
         let plus = path.with_file_name(format!("{}_plus", path.file_name().unwrap().to_string_lossy()));
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(&plus);

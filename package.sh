@@ -1,5 +1,5 @@
 #!/bin/bash
-# Package script for OmarchyLook
+# Package script for OmaLook
 # Usage: ./package.sh [--type <format>] [--version <ver>]
 #
 # Formats:
@@ -21,9 +21,9 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
-echo -e "${YELLOW}📦 OmarchyLook Packaging (Phase 6 - Placeholder)${NC}"
+echo -e "${YELLOW}📦 OmaLook Packaging (Phase 6 - Placeholder)${NC}"
 echo ""
-echo "This script is a skeleton for distributing OmarchyLook across platforms."
+echo "This script is a skeleton for distributing OmaLook across platforms."
 echo "Full implementations will be added when you're ready to package for distribution."
 echo ""
 
@@ -38,7 +38,7 @@ case "$PACKAGE_TYPE" in
         echo "Steps:"
         echo "  1. Build release binary: ./build.sh --release"
         echo "  2. Create AppImage structure with embedded Qt"
-        echo "  3. Output: omarchylook-$VERSION.AppImage"
+        echo "  3. Output: omalook-$VERSION.AppImage"
         echo ""
         echo "Dependencies: linuxdeploy, linuxdeploy-plugin-qt, appimagetool"
         ;;
@@ -50,7 +50,7 @@ case "$PACKAGE_TYPE" in
         echo "Workflow:"
         echo "  1. Create aur/ directory with PKGBUILD, .SRCINFO"
         echo "  2. Push to AUR: git push aur"
-        echo "  3. Users can: yay -S omarchylook"
+        echo "  3. Users can: yay -S omalook"
         ;;
     
     pacman)
@@ -58,7 +58,7 @@ case "$PACKAGE_TYPE" in
         echo "Placeholder: Arch/Manjaro .pkg.tar.zst"
         echo "Steps:"
         echo "  1. Generate from PKGBUILD: makepkg -si"
-        echo "  2. Output: omarchylook-$VERSION-1-x86_64.pkg.tar.zst"
+        echo "  2. Output: omalook-$VERSION-1-x86_64.pkg.tar.zst"
         echo "  3. Optional: Host on custom repo"
         ;;
     
@@ -70,20 +70,20 @@ case "$PACKAGE_TYPE" in
         echo "  ├── control         # Package metadata"
         echo "  ├── changelog       # Version history"
         echo "  ├── rules           # Build rules"
-        echo "  └── omarchylook.install"
+        echo "  └── omalook.install"
         echo ""
         echo "Build: dpkg-buildpackage -us -uc"
-        echo "Output: omarchylook_$VERSION_amd64.deb"
+        echo "Output: omalook_$VERSION_amd64.deb"
         ;;
     
     rpm)
         echo -e "${BLUE}🔴 RPM Package${NC}"
         echo "Placeholder: Fedora/RHEL/openSUSE .rpm"
         echo "Structure:"
-        echo "  omarchylook.spec"
+        echo "  omalook.spec"
         echo ""
-        echo "Build: rpmbuild -ba omarchylook.spec"
-        echo "Output: omarchylook-$VERSION-1.fc*.x86_64.rpm"
+        echo "Build: rpmbuild -ba omalook.spec"
+        echo "Output: omalook-$VERSION-1.fc*.x86_64.rpm"
         ;;
     
     all)

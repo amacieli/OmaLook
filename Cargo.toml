@@ -1,5 +1,5 @@
 [package]
-name = "omarchylook"
+name = "omalook"
 version = "0.1.0"
 edition = "2021"
 authors = ["Adam"]
@@ -57,7 +57,7 @@ cxx-qt-build = { version = "0.10" }
 cxx-build = "1.0"
 
 [[bin]]
-name = "omarchylook"
+name = "omalook"
 path = "src/main.rs"
 
 [profile.release]

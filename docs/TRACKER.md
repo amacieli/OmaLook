@@ -1,4 +1,4 @@
-# OmarchyLook — outstanding issues and plans
+# OmaLook — outstanding issues and plans
 
 Single index of open work. Add new items at the top of the relevant section; move finished ones to **Done** with the commit hash.
 IDs are stable (never reused). Status: `open` | `investigating` | `planned` | `in progress` | `done`.
@@ -30,7 +30,7 @@ IDs are stable (never reused). Status: `open` | `investigating` | `planned` | `i
 
 ### OL-002 — HTML rendering is not correct (fixed 2026-10-10 with a WebKitGTK helper)
 - **Cause:** Qt `Text.RichText` has no `border-radius`, `box-shadow`, inline-block layout or `<style>` support, so styled mail (Stripe receipts, newsletters) came out as flat boxes with collapsed columns.
-- **Fix:** `tools/render/omarchylook-render.c` (WebKitGTK 4.1, ~200 lines of C) renders the HTML to a PNG plus link boxes in its own process; `MessagePreview.qml` shows the PNG with a click area per link. A GTK widget cannot be embedded in a Quickshell window on Wayland, so a separate process is the embedding. Crash/hang/timeout (20 s) of the helper only means that message falls back to the Qt renderer; 3 failures disable the helper for the session.
+- **Fix:** `tools/render/omalook-render.c` (WebKitGTK 4.1, ~200 lines of C) renders the HTML to a PNG plus link boxes in its own process; `MessagePreview.qml` shows the PNG with a click area per link. A GTK widget cannot be embedded in a Quickshell window on Wayland, so a separate process is the embedding. Crash/hang/timeout (20 s) of the helper only means that message falls back to the Qt renderer; 3 failures disable the helper for the session.
 - **Isolation:** ephemeral WebKit data (no cookies/cache), page JS blocked (CSP `script-src 'none'` + only our own link query runs), navigation and popups denied, no remote loads unless `--images` (message/sender allowed).
 - **Build/ship:** `build.sh` compiles it to `bin/` when `webkit2gtk-4.1`, gtk3 and gcc exist (else a warning and Qt fallback); `--live` installs it to `/opt/omalook/bin`. Runtime needs `libwebkit2gtk-4.1` (Arch: `webkit2gtk-4.1`).
 - **Known limits:** no text selection in the WebKit view (use the System view to copy text); blocked remote images show as WebKit's empty image boxes; re-renders on every selection/resize (no cache yet).
@@ -55,7 +55,7 @@ IDs are stable (never reused). Status: `open` | `investigating` | `planned` | `i
 
 ## Backlog — mutt-parity gaps (compared 2026-10-11; tackle in this order)
 
-Where OmarchyLook already leads mutt: native Graph + OAuth, calendar and invitations, contacts, SMS, HTML mail via the
+Where OmaLook already leads mutt: native Graph + OAuth, calendar and invitations, contacts, SMS, HTML mail via the
 WebKit helper, undo-send, rebindable keys with which-key and a palette. Mutt's edge is mail handling:
 
 1. [ ] **Search and filtering**: pattern-style search (from, subject, date, flags), limit view. Today `/` and `:search` are stubs.

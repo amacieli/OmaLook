@@ -351,7 +351,7 @@ mod tests {
 
     #[test]
     fn the_daemon_reads_the_window_from_settings_each_time() {
-        let path = std::env::temp_dir().join(format!("omarchylook-daemon-settings-{}.toml", std::process::id()));
+        let path = std::env::temp_dir().join(format!("omalook-daemon-settings-{}.toml", std::process::id()));
         let _ = std::fs::remove_file(&path);
         let (mut dm, _p) = (daemon().0, ());
         dm.config.settings_path = Some(path.clone());

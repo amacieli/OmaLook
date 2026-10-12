@@ -1,4 +1,4 @@
-//! Error types for OmarchyLook
+//! Error types for OmaLook
 
 use thiserror::Error;
 

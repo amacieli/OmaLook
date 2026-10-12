@@ -2,7 +2,6 @@ import QtQuick
 import QtQuick.Layouts
 import qs.Commons
 import qs.Ui
-import "nav"
 import "mail"
 import "chrome"
 import "auth"
@@ -99,18 +98,6 @@ FocusScope {
         Layout.margins: Style.spacing.sm
         spacing: Style.spacing.sm
 
-        NavBar {
-          Layout.preferredWidth: implicitWidth
-          Layout.fillHeight: true
-          items: appState.navItems
-          currentIndex: appState.navIndex
-          expanded: appState.sidebarExpanded
-          paneFocused: appState.focusPane === "nav"
-          cursorOnToggle: appState.navOnToggle
-          onItemClicked: function(i) { appState.clickNav(i) }
-          onToggleClicked: appState.clickNavToggle()
-        }
-
         FolderBar {
           id: folderBar
           visible: appState.currentView === "mail" && appState.showFolderPane
@@ -151,7 +138,7 @@ FocusScope {
             tint: Hues.blue
             visible: appState.currentView !== "mail"
             focused: appState.focusPane === "msg"
-            hotkey: "\u00b2"
+            hotkey: "\u00b9"
             title: appState.currentViewLabel
           }
         }

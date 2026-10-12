@@ -66,7 +66,7 @@ Free in the mail scope today: `A`, `S`, `o`, `d`, `D`. Proposed: `A` picker, `S`
 - Gmail scope: need to confirm the current token scope allows `attachments.get` (readonly covers it; will verify before phase 2).
 - Graph `item` attachments (attached emails) and `reference` attachments (cloud links): v1 shows them, saves `.eml` for items if `/$value` behaves, otherwise marks unsupported. Acceptable?
 - Messages not in the local cache while offline: save fails with a clear message; no offline caching of file bytes.
-- The tree has other uncommitted work (`build.sh`, `omarchylook`, `packaging/`); commit only attachment files, on a feature branch `feature/attachments`.
+- The tree has other uncommitted work (`build.sh`, `omalook`, `packaging/`); commit only attachment files, on a feature branch `feature/attachments`.
 
 ## Decisions needed from Adam
 1. Keys `A` (picker) and `S` (save all) OK?

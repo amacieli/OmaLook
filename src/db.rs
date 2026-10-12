@@ -2096,7 +2096,7 @@ mod recurrence_tests {
 
     #[test]
     fn event_type_columns_are_added_to_an_existing_calendar_table() {
-        let path = std::env::temp_dir().join(format!("omarchylook-evtype-{}", std::process::id())).to_string_lossy().to_string();
+        let path = std::env::temp_dir().join(format!("omalook-evtype-{}", std::process::id())).to_string_lossy().to_string();
         let _ = std::fs::remove_file(&path);
         {
             let c = Connection::open(&path).unwrap();
@@ -2140,7 +2140,7 @@ mod account_tests {
     }
 
     fn temp_db_path(name: &str) -> String {
-        let dir = std::env::temp_dir().join(format!("omarchylook-test-{}-{}", name, std::process::id()));
+        let dir = std::env::temp_dir().join(format!("omalook-test-{}-{}", name, std::process::id()));
         let _ = std::fs::remove_file(&dir);
         dir.to_string_lossy().to_string()
     }
@@ -2571,7 +2571,7 @@ mod multi_account_data_tests {
 
     /// One shared database file, two accounts (Exchange + Gmail), each with its own handle.
     fn two_accounts(name: &str) -> (String, Database, Database) {
-        let path = std::env::temp_dir().join(format!("omarchylook-multi-{}-{}.db", name, std::process::id())).to_string_lossy().to_string();
+        let path = std::env::temp_dir().join(format!("omalook-multi-{}-{}.db", name, std::process::id())).to_string_lossy().to_string();
         let _ = std::fs::remove_file(&path);
         let ex = Database::open_for_account(&path, "exchange-aaaaaa").unwrap();
         let gm = Database::open_for_account(&path, "gmail-bbbbbb").unwrap();

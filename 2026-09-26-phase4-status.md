@@ -86,7 +86,7 @@ Email sent successfully (status message)
 ### Build Status
 ```
 $ cargo build
-   Compiling omarchylook ...
+   Compiling omalook ...
    Finished `dev` profile [unoptimized + debuginfo] target(s) in 15.01s
 ✅ Zero errors
 ```

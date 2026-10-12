@@ -1,13 +1,13 @@
-# omarchylook Privacy Policy
+# omalook Privacy Policy
 
 **Effective date:** October 4, 2026
 **Applies to:** the OmaLook desktop application ("omalook", "the app")
-**Source code:** https://github.com/amacieli/OmarchyLook
+**Source code:** https://github.com/amacieli/OmaLook
 
 ## Summary
 
-omarchylook is a desktop mail, calendar, contacts and tasks client. It runs entirely on your
-computer. There is no omarchylook server: the app talks directly from your machine to your mail
+omalook is a desktop mail, calendar, contacts and tasks client. It runs entirely on your
+computer. There is no omalook server: the app talks directly from your machine to your mail
 provider (Google or Microsoft), and what it downloads stays on your machine. The developer does
 not receive, see, store or sell your data.
 
@@ -38,7 +38,7 @@ Everything is stored locally, under your own user account on your own computer:
   keyring, for example GNOME Keyring). Your account password is never seen or stored by the app:
   you enter it on Google's or Microsoft's own sign-in page in your browser.
 - **A cache of your mail, calendar, contacts and tasks** is kept in a local SQLite database in
-  `~/.config/omarchylook/` so the app is fast and works offline.
+  `~/.config/omalook/` so the app is fast and works offline.
 
 Nothing is uploaded to the developer or to any third party by the app.
 
@@ -51,7 +51,7 @@ share it.
 
 ## Google API Services User Data Policy
 
-omarchylook's use and transfer to any other app of information received from Google APIs will
+omalook's use and transfer to any other app of information received from Google APIs will
 adhere to the
 [Google API Services User Data Policy](https://developers.google.com/terms/api-services-user-data-policy),
 including the Limited Use requirements. In particular:
@@ -81,8 +81,8 @@ The app contains no analytics, telemetry or crash reporting.
   Google: https://myaccount.google.com/permissions ·
   Microsoft: https://account.microsoft.com/privacy/app-access (personal accounts) or
   https://myapps.microsoft.com (work or school accounts).
-- **Uninstall completely** by deleting the `~/.config/omarchylook/` directory and the
-  `omarchylook` entries in your keyring.
+- **Uninstall completely** by deleting the `~/.config/omalook/` directory and the
+  `omalook` entries in your keyring.
 
 Because the developer holds none of your data, there is nothing for the developer to delete on
 your behalf.
@@ -98,7 +98,7 @@ effective date.
 
 ## Contact
 
-Questions about this policy: open an issue at https://github.com/amacieli/OmarchyLook/issues or
+Questions about this policy: open an issue at https://github.com/amacieli/OmaLook/issues or
 write to adam.macielinski@gmail.com.
 
 **Developer:** Adam Macielinski

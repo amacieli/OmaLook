@@ -6,7 +6,7 @@ import "../mail/format.js" as Fmt
 // the palette and the status-bar hints all read `list`, so they cannot drift from
 // what the keys really do. Commands call AppState intents; no backend logic here.
 //
-// Scopes, innermost first (built in AppShell): pane ("nav" | "folder" | "list" |
+// Scopes, innermost first (built in AppShell): pane ( "folder" | "list" |
 // "reader"), "<view>/<pane>", "<view>", "global".
 Item {
   id: root
@@ -64,7 +64,6 @@ Item {
 
   function edge(bottom) {
     var p = app.focusPane
-    if (p === "nav") { app.navEdge(bottom); return }
     if (p === "reader") { if (content) content.readerEdge(bottom); return }
     var m = mod()
     if (m) { if (m.keyEdge) m.keyEdge(bottom); return }
@@ -237,17 +236,16 @@ Item {
     { id: "pane.prev",  title: "Previous pane",       scope: "global", keys: ["S-Tab"],      run: function() { app.cyclePane(-1) } },
     { id: "pane.cycle", title: "Cycle pane (old key)", scope: "global", keys: ["s"], hidden: true, run: function() { app.cycleFocus() } },
     { id: "pane.back",  title: "Back / cancel",       scope: "global", keys: ["Esc"],        run: function() { if (app.markCount > 0) app.clearMarks(); else app.back() } },
-    { id: "pane.nav",     title: "Focus navigation",  scope: "global", keys: ["1"],          run: function() { app.focusPaneNamed("nav") } },
-    // Pane numbers follow what is on screen: with the folder pane hidden, list = 2, reader = 3.
-    { id: "pane.folders", title: "Focus folders",     scope: "mail",   keys: ["2"], when: function() { return app.showFolderPane }, helpWhen: function() { return app.showFolderPane }, run: function() { app.focusPaneNamed("folder") } },
-    { id: "pane.list",    title: "Focus list",        scope: "mail",   keys: ["3"], when: function() { return app.showFolderPane }, helpWhen: function() { return app.showFolderPane }, run: function() { app.focusPaneNamed("msg") } },
-    { id: "pane.reader",  title: "Focus reading pane", scope: "mail",  keys: ["4"], when: function() { return app.showFolderPane }, helpWhen: function() { return app.showFolderPane }, run: function() { app.focusPaneNamed("reader") } },
-    { id: "pane.list.nf",   title: "Focus list",        scope: "mail", keys: ["2"], when: function() { return !app.showFolderPane }, helpWhen: function() { return !app.showFolderPane }, run: function() { app.focusPaneNamed("msg") } },
-    { id: "pane.reader.nf", title: "Focus reading pane", scope: "mail", keys: ["3"], when: function() { return !app.showFolderPane }, helpWhen: function() { return !app.showFolderPane }, run: function() { app.focusPaneNamed("reader") } },
+    // Pane numbers follow what is on screen: with the folder pane hidden, list = 1, reader = 2.
+    { id: "pane.folders", title: "Focus folders",     scope: "mail",   keys: ["1"], when: function() { return app.showFolderPane }, helpWhen: function() { return app.showFolderPane }, run: function() { app.focusPaneNamed("folder") } },
+    { id: "pane.list",    title: "Focus list",        scope: "mail",   keys: ["2"], when: function() { return app.showFolderPane }, helpWhen: function() { return app.showFolderPane }, run: function() { app.focusPaneNamed("msg") } },
+    { id: "pane.reader",  title: "Focus reading pane", scope: "mail",  keys: ["3"], when: function() { return app.showFolderPane }, helpWhen: function() { return app.showFolderPane }, run: function() { app.focusPaneNamed("reader") } },
+    { id: "pane.list.nf",   title: "Focus list",        scope: "mail", keys: ["1"], when: function() { return !app.showFolderPane }, helpWhen: function() { return !app.showFolderPane }, run: function() { app.focusPaneNamed("msg") } },
+    { id: "pane.reader.nf", title: "Focus reading pane", scope: "mail", keys: ["2"], when: function() { return !app.showFolderPane }, helpWhen: function() { return !app.showFolderPane }, run: function() { app.focusPaneNamed("reader") } },
     { id: "view.folders", title: "Show / hide folder pane", scope: "mail", keys: ["F"], ex: ["folders"], run: function() { app.toggleFolderPane() } },
-    { id: "pane.list2",   title: "Focus list",        scope: "global", keys: ["2"], hidden: true, when: function() { return !inMail }, run: function() { app.focusPaneNamed("msg") } },
-    { id: "view.close", title: "Back to navigation",  scope: "global", keys: ["q"],          run: function() { app.focusPaneNamed("nav") } },
-    { id: "app.quit",   title: "Quit OmarchyLook",    scope: "global", keys: ["Q"], ex: ["q", "quit"], run: function() { root.quitRequested() } },
+    { id: "pane.list2",   title: "Focus list",        scope: "global", keys: ["1"], hidden: true, when: function() { return !inMail }, run: function() { app.focusPaneNamed("msg") } },
+    { id: "view.close", title: "Back (one pane left)", scope: "global", keys: ["q"],          run: function() { app.back() } },
+    { id: "app.quit",   title: "Quit OmaLook",    scope: "global", keys: ["Q"], ex: ["q", "quit"], run: function() { root.quitRequested() } },
 
     // go to a module
     { id: "go.mail",     title: "Go to Mail",     scope: "global", keys: ["g m"], run: function() { app.gotoView("mail") } },

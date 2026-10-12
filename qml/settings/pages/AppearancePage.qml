@@ -5,12 +5,9 @@ import "../../common"
 import ".."
 
 // Fonts, colours and corner rounding are owned by Omarchy and shown read-only.
-// The sidebar toggle is real; density / preview position are placeholders.
+// Density / preview position are placeholders.
 SettingsPage {
   id: page
-
-  property bool sidebarExpanded: true
-  signal sidebarExpandedToggled()
 
   // placeholder state
   property string density: "comfortable"
@@ -41,16 +38,6 @@ SettingsPage {
       UiText { text: "Corner radius"; dim: true; font.pixelSize: Style.font.caption; width: Style.space(110) }
       UiText { text: Style.cornerRadius + " px"; font.pixelSize: Style.font.caption }
     }
-  }
-
-  PanelSeparator { width: parent.width }
-
-  Toggle {
-    width: parent.width
-    label: "Expanded sidebar"
-    description: page.sidebarExpanded ? "Showing icons and labels" : "Showing icons only"
-    checked: page.sidebarExpanded
-    onClicked: page.sidebarExpandedToggled()
   }
 
   Column {

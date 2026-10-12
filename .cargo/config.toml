@@ -1,5 +1,5 @@
 [build]
-target-dir = "/mnt/d/omarchylook-build"
+target-dir = "/mnt/d/omalook-build"
 
 [profile.dev]
 # Optimize for rebuild speed during development

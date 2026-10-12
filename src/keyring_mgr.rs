@@ -3,7 +3,7 @@
 use crate::errors::{OmarchyError, Result};
 use log::{debug, warn};
 
-const SERVICE_NAME: &str = "omarchylook";
+const SERVICE_NAME: &str = "omalook";
 const ACCOUNT_NAME: &str = "auth_cache";
 
 /// Get cached token from keyring

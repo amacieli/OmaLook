@@ -13,7 +13,7 @@ SettingsPage {
   property bool backendOnline: false
 
   title: "About"
-  description: "OmarchyLook runs inside omarchy-shell and talks to a local Rust backend."
+  description: "OmaLook runs inside omarchy-shell and talks to a local Rust backend."
 
   Column {
     width: parent.width
@@ -23,7 +23,7 @@ SettingsPage {
 
     Repeater {
       model: [
-        { k: "Plugin",    v: "adam.omarchylook" },
+        { k: "Plugin",    v: "adam.omalook" },
         { k: "Backend",   v: page.backendUrl + (page.backendOnline ? "  (online)" : "  (offline)") },
         { k: "Config",    v: page.configDir },
         { k: "Font",      v: Style.font.resolvedFamily + " " + Style.font.baseSize + "px" }

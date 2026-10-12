@@ -13,7 +13,7 @@ SettingsPage {
   property string scope: "inbox"
 
   title: "Notifications"
-  description: "How OmarchyLook tells you about new mail and upcoming events."
+  description: "How OmaLook tells you about new mail and upcoming events."
   placeholder: true
 
   Toggle {

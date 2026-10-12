@@ -20,7 +20,7 @@ Item {
   property bool paneFocused: false
   property var marks: ({})
   property string frameTitle: ""
-  property string hotkey: "\u00b3"
+  property string hotkey: "\u00b2"
 
   // Rows that fit in one screenful (less one for overlap): the step PageUp/PageDown take.
   readonly property int pageRows: list.count > 0 && list.contentHeight > 0

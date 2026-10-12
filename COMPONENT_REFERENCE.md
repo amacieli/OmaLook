@@ -1,8 +1,8 @@
-# omarchylook Component Reference Guide
+# omalook Component Reference Guide
 
 **Generated:** 2026-09-26  
-**Project:** omarchylook (Omarchy-style Outlook clone with Rust backend + Qt QML frontend)  
-**Location:** /mnt/ai/projects/omarchylook/
+**Project:** omalook (Omarchy-style Outlook clone with Rust backend + Qt QML frontend)  
+**Location:** /mnt/ai/projects/omalook/
 
 ---
 
@@ -338,7 +338,7 @@
 | `msgfolderroot` | Root of all mail folders |
 | `recoverableitemsdeletions` | Soft-deleted items |
 
-**message resource — official v1.0 properties used in omarchylook:**
+**message resource — official v1.0 properties used in omalook:**
 
 | Property | Type | Notes |
 |---|---|---|

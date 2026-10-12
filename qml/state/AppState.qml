@@ -12,7 +12,7 @@ Item {
   readonly property string backendUrl: "http://127.0.0.1:27182"
   readonly property string configDir: {
     var d = Quickshell.env("CONFIG_DIR")
-    return (d && d.length > 0) ? d : Quickshell.env("HOME") + "/.config/omarchylook"
+    return (d && d.length > 0) ? d : Quickshell.env("HOME") + "/.config/omalook"
   }
   property bool backendOnline: false
   onBackendOnlineChanged: {
@@ -20,7 +20,7 @@ Item {
   }
 
   // ---- launch timing (see src/perf.rs): marks are queued until the backend answers, then
-  // posted to POST /perf so they land in the same ~/.config/omarchylook/perf.log timeline.
+  // posted to POST /perf so they land in the same ~/.config/omalook/perf.log timeline.
   // Each carries its own QML-side age (ms since AppState was created).
   property double _perfT0: Date.now()
   property var _perfQueue: []
@@ -44,7 +44,7 @@ Item {
   readonly property alias auth: authController
 
   // ---------------------------------------------------------- navigation
-  // `pinned` items render at the bottom of the nav bar.
+  // Module list for `g` chords and the palette.
   readonly property var navItems: [
     { icon: "\uf0e0", label: "Mail",     view: "mail"     },
     { icon: "\uf073", label: "Calendar", view: "calendar" },
@@ -66,12 +66,12 @@ Item {
   ]
 
   property string currentView: "mail"
-  // "nav" = left bar, "folder" = folder bar, "msg" = message list (or the
-  // category list when the Settings view is showing).
-  property string focusPane: "nav"
+  // "folder" = folder bar, "msg" = message list (or the view's own list /
+  // category list), "reader" = reading pane. There is no menu bar: modules are
+  // reached with `g` chords or the command palette.
+  property string focusPane: "msg"
   property int navIndex: 0
-  property bool navOnToggle: false
-  property bool sidebarExpanded: true
+  property bool sidebarExpanded: true   // legacy persisted setting; no UI uses it
   property int folderIndex: 0
   property string selectedFolderId: ""
   property int msgIndex: 0
@@ -1404,14 +1404,11 @@ Item {
       if (settingsCategories[i].id === id) settingsCategoryIndex = i
     for (var j = 0; j < navItems.length; j++)
       if (navItems[j].view === "settings") setNavIndex(j)
-    navOnToggle = false
     focusPane = "msg"
     focusRequested()
   }
 
   // Mouse intents ------------------------------------------------------
-  function clickNav(i)        { setNavIndex(i); focusPane = "nav"; navOnToggle = false; focusRequested() }
-  function clickNavToggle()   { sidebarExpanded = !sidebarExpanded; navOnToggle = true; focusPane = "nav"; focusRequested() }
   function clickFolder(i)     { folderIndex = i; selectFolderAt(i); focusPane = "msg"; msgIndex = 0; focusRequested() }
   function clickMessage(i)    { focusPane = "msg"; msgIndex = i; focusRequested() }
   function clickCategory(i)   { settingsCategoryIndex = i; focusPane = "msg"; focusRequested() }
@@ -1424,16 +1421,7 @@ Item {
   }
 
   function moveVertical(dy) {
-    if (focusPane === "nav") {
-      if (dy > 0) {
-        if (navOnToggle) { navOnToggle = false; setNavIndex(0) }
-        else setNavIndex(Math.min(navIndex + 1, navItems.length - 1))
-      } else {
-        if (navOnToggle) return
-        if (navIndex === 0) navOnToggle = true
-        else setNavIndex(navIndex - 1)
-      }
-    } else if (focusPane === "folder") {
+    if (focusPane === "folder") {
       folderIndex = Math.max(0, Math.min(folderIndex + dy, folderModelObj.count - 1))
       selectFolderAt(folderIndex)
     } else if (focusPane === "msg") {
@@ -1445,10 +1433,7 @@ Item {
   }
 
   function moveInto() {
-    if (focusPane === "nav") {
-      if (navOnToggle) sidebarExpanded = !sidebarExpanded
-      else drillIn()
-    } else if (focusPane === "folder") {
+    if (focusPane === "folder") {
       selectFolderAt(folderIndex)
       focusPane = "msg"
       msgIndex = 0
@@ -1459,17 +1444,16 @@ Item {
 
   function activate() { moveInto() }
 
-  // `h` / Esc: one pane to the left. Never closes the window (that is `Q`).
+  // `h` / Esc: one pane to the left; stops at the leftmost pane. Never closes the window (that is `Q`).
   function back() {
     if (focusPane === "reader") focusPane = "msg"
-    else if (focusPane === "msg") focusPane = currentView === "mail" && showFolderPane ? "folder" : "nav"
-    else if (focusPane === "folder") focusPane = "nav"
+    else if (focusPane === "msg" && currentView === "mail" && showFolderPane) focusPane = "folder"
   }
 
   // Panes that exist in the current view, left to right.
   function panesInView() {
-    if (currentView !== "mail") return ["nav", "msg"]
-    return showFolderPane ? ["nav", "folder", "msg", "reader"] : ["nav", "msg", "reader"]
+    if (currentView !== "mail") return ["msg"]
+    return showFolderPane ? ["folder", "msg", "reader"] : ["msg", "reader"]
   }
 
   // Put the cursor in `pane` (no-op if the view has no such pane). Entering the
@@ -1478,8 +1462,6 @@ Item {
     if (panesInView().indexOf(pane) < 0) return
     if (pane === "folder") folderIndex = Math.max(0, folderIndex)
     if (pane === "reader" && !currentMessage) return
-    if (pane === "msg" && currentView !== "mail" && focusPane === "nav") msgIndex = 0
-    navOnToggle = false
     focusPane = pane
   }
 
@@ -1496,12 +1478,6 @@ Item {
     }
   }
 
-  // Jump to the first/last entry in the nav bar.
-  function navEdge(bottom) {
-    navOnToggle = false
-    setNavIndex(bottom ? navItems.length - 1 : 0)
-  }
-
   // Jump to folder `i` of the folder model and land in its message list.
   function gotoFolder(i) {
     gotoView("mail")
@@ -1513,17 +1489,15 @@ Item {
     for (var i = 0; i < navItems.length; i++) {
       if (navItems[i].view !== view) continue
       setNavIndex(i)
-      navOnToggle = false
       if (view !== "mail") msgIndex = 0
       focusPane = "msg"
       return
     }
   }
 
-  // `s`: cycle nav -> folder/list -> nav.
+  // `s` (old key): folder -> list, otherwise same as Tab.
   function cycleFocus() {
-    if (focusPane === "nav") { if (!navOnToggle) drillIn() }
-    else if (focusPane === "folder") { selectFolderAt(folderIndex); focusPane = "msg"; msgIndex = 0 }
-    else focusPane = "nav"
+    if (focusPane === "folder") { selectFolderAt(folderIndex); focusPane = "msg"; msgIndex = 0 }
+    else cyclePane(1)
   }
 }

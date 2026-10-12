@@ -54,7 +54,7 @@
 
 ### File Structure
 ```
-/mnt/ai/projects/omarchylook/
+/mnt/ai/projects/omalook/
 ├── src/qt_bridge/
 │   ├── mod.rs (exports all bridges)
 │   ├── auth_bridge.rs (AuthBridge impl)
@@ -74,7 +74,7 @@
 ### Validation
 ```
 $ cargo check
-Checking omarchylook v0.1.0 (/mnt/ai/projects/omarchylook)
+Checking omalook v0.1.0 (/mnt/ai/projects/omalook)
 ...
 Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.77s
 ```

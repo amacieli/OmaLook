@@ -1,11 +1,11 @@
 /*
- * omarchylook-render: renders one HTML mail body with WebKitGTK to a PNG.
+ * omalook-render: renders one HTML mail body with WebKitGTK to a PNG.
  *
  * Why a separate process: a GTK widget cannot be embedded in the Qt/Quickshell window on Wayland,
  * and WebKit must never be able to take the UI down. The UI runs this per message, kills it if the
  * user moves on, and shows the PNG. A crash, hang or timeout here only means "fall back".
  *
- *   omarchylook-render --width CSS_PX [--scale N] [--images] --out FILE.png  < mail.html
+ *   omalook-render --width CSS_PX [--scale N] [--images] --out FILE.png  < mail.html
  *
  * stdout, one JSON line:
  *   {"width":W,"height":H,"scale":S,"bg":"#rrggbb","links":[{"x":..,"y":..,"w":..,"h":..,"href":".."}]}

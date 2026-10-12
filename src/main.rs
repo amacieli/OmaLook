@@ -1,10 +1,10 @@
 //! Main application entry point (Rust + QML)
 //!
-//! OmarchyLook: Lightweight Outlook clone
+//! OmaLook: Lightweight Outlook clone
 //! - Rust backend: Auth, Graph API, SQLite cache
 //! - QML frontend: Native Qt UI with hot-reload support
 
-use omarchylook::{init_logging, AuthManager, Database, SettingsManager, email_daemon::{EmailDaemon, DaemonConfig}, providers::graph::GraphEmailProvider};
+use omalook::{init_logging, AuthManager, Database, SettingsManager, email_daemon::{EmailDaemon, DaemonConfig}, providers::graph::GraphEmailProvider};
 use log::{debug, error, info, warn};
 use std::env;
 use std::path::PathBuf;
@@ -14,7 +14,7 @@ use std::sync::Arc;
 use tokio::runtime::Runtime;
 
 /// Process-wide sync scheduler (one mail + one calendar thread per signed-in account).
-static SCHEDULER: std::sync::OnceLock<Arc<omarchylook::scheduler::SyncScheduler>> = std::sync::OnceLock::new();
+static SCHEDULER: std::sync::OnceLock<Arc<omalook::scheduler::SyncScheduler>> = std::sync::OnceLock::new();
 
 /// Value of `?key=` in a request line (percent-decoded).
 fn query_param(first_line: &str, key: &str) -> Option<String> {
@@ -28,35 +28,35 @@ fn query_param(first_line: &str, key: &str) -> Option<String> {
 
 /// Percent-decode a URL query parameter value (e.g. %3D → =, %2F → /)
 fn url_decode(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
     let bytes = s.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let Ok(hex) = std::str::from_utf8(&bytes[i+1..i+3]) {
+            if let Ok(hex) = std::str::from_utf8(&bytes[i + 1..i + 3]) {
                 if let Ok(byte) = u8::from_str_radix(hex, 16) {
-                    out.push(byte as char);
+                    out.push(byte);
                     i += 3;
                     continue;
                 }
             }
         } else if bytes[i] == b'+' {
-            out.push(' ');
+            out.push(b' ');
             i += 1;
             continue;
         }
-        out.push(bytes[i] as char);
+        out.push(bytes[i]);
         i += 1;
     }
-    out
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 fn main() {
     // Initialize logging
     init_logging();
     let config_dir = get_config_dir();
-    omarchylook::perf::init(&config_dir);
-    info!("OmarchyLook starting");
+    omalook::perf::init(&config_dir);
+    info!("OmaLook starting");
     
     let db_path = config_dir.join("omarchy.db");
     let settings_path = config_dir.join("settings.toml");
@@ -80,13 +80,13 @@ fn main() {
 }
 
 fn get_config_dir() -> PathBuf {
-    // Use XDG standard: ~/.config/omarchylook
+    // Use XDG standard: ~/.config/omalook
     if let Ok(xdg_config) = env::var("XDG_CONFIG_HOME") {
-        PathBuf::from(xdg_config).join("omarchylook")
+        PathBuf::from(xdg_config).join("omalook")
     } else if let Ok(home) = env::var("HOME") {
-        PathBuf::from(home).join(".config").join("omarchylook")
+        PathBuf::from(home).join(".config").join("omalook")
     } else {
-        PathBuf::from("/tmp/omarchylook")
+        PathBuf::from("/tmp/omalook")
     }
 }
 
@@ -117,7 +117,7 @@ fn ensure_omarchy_kit(qml_dir: &PathBuf) -> std::io::Result<()> {
         if !target.exists() {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
-                format!("{} not found - OmarchyLook needs the Omarchy shell UI kit", target.display()),
+                format!("{} not found - OmaLook needs the Omarchy shell UI kit", target.display()),
             ));
         }
         let link = qml_dir.join(name);
@@ -153,16 +153,16 @@ fn launch_qml_app(config_dir: &PathBuf) {
     // `quickshell -p <dir>` runs <dir>/shell.qml as its own instance, independent
     // of the running omarchy-shell. CONFIG_DIR tells the UI where the backend
     // writes auth_state.json / device_code.json.
-    omarchylook::perf::mark("spawning quickshell");
+    omalook::perf::mark("spawning quickshell");
     let mut cmd = Command::new("quickshell");
-    // Native QML plugins (OmarchyLook.Compose): the dev build next to the source tree, then the
+    // Native QML plugins (OmaLook.Compose): the dev build next to the source tree, then the
     // installed location. Existing QML_IMPORT_PATH entries are kept.
     {
         let mut paths: Vec<std::path::PathBuf> = Vec::new();
         if let Some(root) = std::path::Path::new(&qml_dir).parent() {
-            paths.push(root.join("plugin/omarchylook-compose/build/qml"));
+            paths.push(root.join("plugin/omalook-compose/build/qml"));
         }
-        paths.push(std::path::PathBuf::from("/usr/lib/omarchylook/qml"));
+        paths.push(std::path::PathBuf::from("/usr/lib/omalook/qml"));
         let mut joined: Vec<String> = paths.iter().filter(|p| p.exists()).map(|p| p.display().to_string()).collect();
         if let Ok(existing) = std::env::var("QML_IMPORT_PATH") { if !existing.is_empty() { joined.push(existing); } }
         if !joined.is_empty() { cmd.env("QML_IMPORT_PATH", joined.join(":")); }
@@ -188,10 +188,10 @@ fn launch_qml_app(config_dir: &PathBuf) {
     }
 }
 
-fn initialize_app(config_dir: &PathBuf, db_path: &str, settings_path: &str) -> omarchylook::errors::Result<()> {
+fn initialize_app(config_dir: &PathBuf, db_path: &str, settings_path: &str) -> omalook::errors::Result<()> {
     // Initialize database
     let db = {
-        let _t = omarchylook::perf::span("Database::open (schema init)");
+        let _t = omalook::perf::span("Database::open (schema init)");
         Arc::new(Database::open(db_path)?)
     };
     info!("Database initialized");
@@ -201,7 +201,7 @@ fn initialize_app(config_dir: &PathBuf, db_path: &str, settings_path: &str) -> o
     info!("Settings initialized");
     
     // Initialize auth (check if already authenticated, but don't auto-prompt)
-    let _auth_span = omarchylook::perf::span("AuthManager::new + keyring check");
+    let _auth_span = omalook::perf::span("AuthManager::new + keyring check");
     let auth = AuthManager::new();
     let authed = auth.is_authenticated();
     drop(_auth_span);
@@ -228,7 +228,7 @@ fn initialize_app(config_dir: &PathBuf, db_path: &str, settings_path: &str) -> o
     });
     
     // Per-account sync (mail + calendar threads for every signed-in account)
-    let scheduler = Arc::new(omarchylook::scheduler::SyncScheduler::new(config_dir));
+    let scheduler = Arc::new(omalook::scheduler::SyncScheduler::new(config_dir));
     let _ = SCHEDULER.set(Arc::clone(&scheduler));
     std::thread::Builder::new().name("scheduler".into()).spawn(move || scheduler.start_all()).ok();
     
@@ -241,8 +241,8 @@ fn watch_for_device_flow_trigger(config_dir: &PathBuf) {
     use std::thread;
     use std::time::Duration;
     
-    let trigger_file = "/tmp/omarchylook-trigger-device-flow";
-    let logout_trigger_file = "/tmp/omarchylook-trigger-logout";
+    let trigger_file = "/tmp/omalook-trigger-device-flow";
+    let logout_trigger_file = "/tmp/omalook-trigger-logout";
     
     loop {
         thread::sleep(Duration::from_millis(500));
@@ -258,7 +258,7 @@ fn watch_for_device_flow_trigger(config_dir: &PathBuf) {
             info!("🔔 Trigger file: add {} account", provider);
             match SCHEDULER.get() {
                 Some(scheduler) => {
-                    if let Err(e) = omarchylook::account_ops::begin_add_account(config_dir, &provider, Arc::clone(scheduler)) {
+                    if let Err(e) = omalook::account_ops::begin_add_account(config_dir, &provider, Arc::clone(scheduler)) {
                         error!("❌ Add account failed: {}", e);
                     }
                 }
@@ -273,9 +273,9 @@ fn watch_for_device_flow_trigger(config_dir: &PathBuf) {
             match SCHEDULER.get() {
                 Some(scheduler) => {
                     let result = if id.is_empty() {
-                        omarchylook::account_ops::sign_out_all(config_dir, scheduler).map(|n| info!("✅ Signed out {} account(s)", n))
+                        omalook::account_ops::sign_out_all(config_dir, scheduler).map(|n| info!("✅ Signed out {} account(s)", n))
                     } else {
-                        omarchylook::account_ops::sign_out_account(config_dir, &id, scheduler)
+                        omalook::account_ops::sign_out_account(config_dir, &id, scheduler)
                     };
                     if let Err(e) = result {
                         error!("❌ Logout failed: {}", e);
@@ -291,7 +291,7 @@ fn watch_for_device_flow_trigger(config_dir: &PathBuf) {
 /// Ordinary mail is cached for good; calendar mail for a few minutes, because the answer can
 /// change elsewhere (Outlook, phone) and the event can be cancelled or deleted.
 fn invite_info_json(config_dir: &PathBuf, id: &str) -> String {
-    use omarchylook::invites::{cache_ttl_secs, InviteInfo};
+    use omalook::invites::{cache_ttl_secs, InviteInfo};
     let err = |m: &str| format!("{{\"error\":{}}}", serde_json::to_string(m).unwrap());
     if id.is_empty() {
         return err("missing id");
@@ -304,7 +304,7 @@ fn invite_info_json(config_dir: &PathBuf, id: &str) -> String {
         Ok(Some(a)) => a,
         _ => return err("unknown message"),
     };
-    if omarchylook::accounts::provider_of(&account) != "exchange" {
+    if omalook::accounts::provider_of(&account) != "exchange" {
         return InviteInfo::none().to_json().to_string();
     }
     let cached = db.invite_info(id).ok().flatten();
@@ -343,7 +343,7 @@ fn invite_info_json(config_dir: &PathBuf, id: &str) -> String {
 /// `"ok":true` and `"calendar":"refreshed"|"not refreshed: ..."`, or `{"error":...}`.
 /// A 403 means the account has not granted Calendars.ReadWrite yet.
 fn respond_invite_json(config_dir: &PathBuf, id: &str, choice: &str) -> String {
-    use omarchylook::invites::{response_op, status_of};
+    use omalook::invites::{response_op, status_of};
     let err = |m: &str| format!("{{\"error\":{}}}", serde_json::to_string(m).unwrap());
     let Some((op, new_response)) = response_op(choice) else {
         return err("unknown response");
@@ -360,7 +360,7 @@ fn respond_invite_json(config_dir: &PathBuf, id: &str, choice: &str) -> String {
         Ok(Some(a)) => a,
         _ => return err("unknown message"),
     };
-    if omarchylook::accounts::provider_of(&account) != "exchange" {
+    if omalook::accounts::provider_of(&account) != "exchange" {
         return err("responding to invitations is only supported for Microsoft accounts");
     }
     let rt = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
@@ -400,8 +400,8 @@ fn respond_invite_json(config_dir: &PathBuf, id: &str, choice: &str) -> String {
     let note = match Database::open_for_account(db_path.to_str().unwrap_or("messages.db"), &account) {
         Err(e) => format!("not refreshed: {}", e),
         Ok(cal_db) => {
-            let provider = Arc::new(omarchylook::providers::GraphCalendarProvider::new(AuthManager::for_account(&account)));
-            let cal = omarchylook::calendar_daemon::CalendarDaemon::new(Default::default(), Arc::new(cal_db), provider);
+            let provider = Arc::new(omalook::providers::GraphCalendarProvider::new(AuthManager::for_account(&account)));
+            let cal = omalook::calendar_daemon::CalendarDaemon::new(Default::default(), Arc::new(cal_db), provider);
             let near = rt.block_on(cal.refresh_near_window());
             let around = match info.start_date() {
                 Some(d) => rt.block_on(cal.refresh_around(d)).map(|_| ()),
@@ -442,8 +442,8 @@ fn message_body_json(config_dir: &PathBuf, id: &str) -> String {
         Ok(rt) => rt,
         Err(e) => return err(&format!("runtime: {}", e)),
     };
-    let fetched = if omarchylook::accounts::provider_of(&account) == "gmail" {
-        rt.block_on(omarchylook::providers::GmailProvider::new(&account, None).fetch_message_body(id))
+    let fetched = if omalook::accounts::provider_of(&account) == "gmail" {
+        rt.block_on(omalook::providers::GmailProvider::new(&account, None).fetch_message_body(id))
     } else {
         rt.block_on(GraphEmailProvider::new(AuthManager::for_account(&account)).fetch_message_body(id))
     };
@@ -477,7 +477,7 @@ fn graph_for_message(db: &Database, id: &str) -> Result<GraphEmailProvider, Stri
         Ok(Some(a)) => a,
         _ => return Err("unknown message".into()),
     };
-    if omarchylook::accounts::provider_of(&account) == "gmail" {
+    if omalook::accounts::provider_of(&account) == "gmail" {
         return Err("attachments are not supported for Gmail accounts yet".into());
     }
     Ok(GraphEmailProvider::new(AuthManager::for_account(&account)))
@@ -485,7 +485,7 @@ fn graph_for_message(db: &Database, id: &str) -> Result<GraphEmailProvider, Stri
 
 /// The attachment list of a message: cached, else fetched (and cached). The HTML body is
 /// consulted so pictures embedded in it are not listed as attachments.
-fn attachment_list(config_dir: &PathBuf, db: &Database, id: &str) -> Result<Vec<omarchylook::attachments::Attachment>, String> {
+fn attachment_list(config_dir: &PathBuf, db: &Database, id: &str) -> Result<Vec<omalook::attachments::Attachment>, String> {
     if let Ok(Some(list)) = db.cached_attachments(id) {
         return Ok(list);
     }
@@ -519,8 +519,8 @@ fn message_attachments_json(config_dir: &PathBuf, id: &str) -> String {
     };
     match attachment_list(config_dir, &db, id) {
         Ok(list) => {
-            let dir = omarchylook::attachments::download_dir(&config_dir.join("settings.toml"));
-            serde_json::json!({ "attachments": list, "dir": omarchylook::attachments::display_dir(&dir) }).to_string()
+            let dir = omalook::attachments::download_dir(&config_dir.join("settings.toml"));
+            serde_json::json!({ "attachments": list, "dir": omalook::attachments::display_dir(&dir) }).to_string()
         }
         Err(e) => err(&e),
     }
@@ -547,7 +547,7 @@ fn save_attachments_json(config_dir: &PathBuf, id: &str, att: Option<&str>) -> S
         Ok(rt) => rt,
         Err(e) => return err(&format!("runtime: {}", e)),
     };
-    let dir = omarchylook::attachments::download_dir(&config_dir.join("settings.toml"));
+    let dir = omalook::attachments::download_dir(&config_dir.join("settings.toml"));
     let (mut saved, mut failed) = (Vec::new(), Vec::new());
     for a in &wanted {
         match rt.block_on(provider.download_attachment(id, a, &dir)) {
@@ -558,7 +558,7 @@ fn save_attachments_json(config_dir: &PathBuf, id: &str, att: Option<&str>) -> S
             }
         }
     }
-    serde_json::json!({ "saved": saved, "failed": failed, "dir": omarchylook::attachments::display_dir(&dir) }).to_string()
+    serde_json::json!({ "saved": saved, "failed": failed, "dir": omalook::attachments::display_dir(&dir) }).to_string()
 }
 
 /// Read the body of a POST whose headers (and maybe part of the body) are already in `initial`.
@@ -593,11 +593,11 @@ fn read_post_body(stream: &mut std::net::TcpStream, initial: &[u8], limit: usize
 }
 
 /// POST /compose/send — queue a composed message. The body is the JSON the compose pane builds
-/// (`omarchylook::compose::OutgoingMessage`). It is stored in the outbox to go out after the
+/// (`omalook::compose::OutgoingMessage`). It is stored in the outbox to go out after the
 /// `[mail] send_delay_secs` setting (0 = now) and the account's outbox worker is woken, so the
 /// send never waits for a poll. Answers `{ok, id, delay_secs}` or `{ok:false, error}`.
 fn compose_send_response(config_dir: &PathBuf, stream: &mut std::net::TcpStream, initial: &[u8]) -> String {
-    use omarchylook::compose::{OutgoingMessage, MAX_BODY_BYTES};
+    use omalook::compose::{OutgoingMessage, MAX_BODY_BYTES};
     use std::sync::atomic::{AtomicU64, Ordering};
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let err = |m: &str| serde_json::json!({ "ok": false, "error": m }).to_string();
@@ -613,7 +613,7 @@ fn compose_send_response(config_dir: &PathBuf, stream: &mut std::net::TcpStream,
     if let Err(e) = msg.validate() {
         return err(&e);
     }
-    if !msg.attachments.is_empty() && omarchylook::accounts::provider_of(&msg.account_id) == "gmail" {
+    if !msg.attachments.is_empty() && omalook::accounts::provider_of(&msg.account_id) == "gmail" {
         return err("attachments are not supported for Gmail accounts yet");
     }
     // A signed-out account has no worker, so the message would sit unsent without anyone knowing.
@@ -624,7 +624,7 @@ fn compose_send_response(config_dir: &PathBuf, stream: &mut std::net::TcpStream,
         Ok(db) => db,
         Err(e) => return err(&format!("database: {}", e)),
     };
-    let delay = omarchylook::settings::read_send_delay(&config_dir.join("settings.toml"));
+    let delay = omalook::settings::read_send_delay(&config_dir.join("settings.toml"));
     let now = Database::now_ms();
     let id = format!("ob-{:x}-{:03x}", now, COUNTER.fetch_add(1, Ordering::Relaxed) & 0xfff);
     let payload = match serde_json::to_string(&msg) {
@@ -634,7 +634,7 @@ fn compose_send_response(config_dir: &PathBuf, stream: &mut std::net::TcpStream,
     if let Err(e) = db.outbox_enqueue(&id, &msg.account_id, &payload, now + delay as i64 * 1000) {
         return err(&format!("could not queue the message: {}", e));
     }
-    omarchylook::sync_state::request_outbox_run();
+    omalook::sync_state::request_outbox_run();
     info!("Compose: queued {} ({} → {} recipient(s)), sends in {}s", id, msg.account_id, msg.to.len() + msg.cc.len() + msg.bcc.len(), delay);
     serde_json::json!({ "ok": true, "id": id, "delay_secs": delay }).to_string()
 }
@@ -662,7 +662,7 @@ fn compose_outbox_response(config_dir: &PathBuf, first_line: &str) -> String {
 
 /// JSON body for the /settings/senders endpoints (see the route comment).
 fn sender_prefs_response(config_dir: &PathBuf, first_line: &str) -> String {
-    use omarchylook::db::SenderAdd;
+    use omalook::db::SenderAdd;
     let err = |m: &str| format!("{{\"ok\":false,\"error\":{}}}", serde_json::to_string(m).unwrap());
     let path = config_dir.join("messages.db");
     let db = match Database::open(path.to_str().unwrap_or("messages.db")) {
@@ -701,15 +701,15 @@ fn sender_prefs_response(config_dir: &PathBuf, first_line: &str) -> String {
 ///   POST /auth/login   → triggers device flow
 ///   POST /auth/logout  → triggers logout
 fn start_http_trigger_server(config_dir: &PathBuf) {
-    // OMARCHYLOOK_PORT is for tests that run a second instance beside the real one; the UI always
+    // OMALOOK_PORT is for tests that run a second instance beside the real one; the UI always
     // talks to the default port.
-    let addr = format!("127.0.0.1:{}", env::var("OMARCHYLOOK_PORT").ok().and_then(|p| p.parse::<u16>().ok()).unwrap_or(27182));
+    let addr = format!("127.0.0.1:{}", env::var("OMALOOK_PORT").ok().and_then(|p| p.parse::<u16>().ok()).unwrap_or(27182));
     eprintln!("[HTTP] Attempting to bind {}", addr);
     let listener = match TcpListener::bind(&addr) {
         Ok(l) => {
             eprintln!("[HTTP] ✅ Bound OK");
             info!("🌐 HTTP trigger server listening on http://127.0.0.1:27182");
-            omarchylook::perf::mark("http server bound");
+            omalook::perf::mark("http server bound");
             l
         }
         Err(e) => {
@@ -729,7 +729,7 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                 let req_t = std::time::Instant::now();
                 // ── GET /sync/serial — cheap change counter the UI polls (no DB access)
                 if first_line.contains("GET /sync/serial") {
-                    let body = format!("{{\"mail\":{}}}", omarchylook::sync_state::mail_serial());
+                    let body = format!("{{\"mail\":{}}}", omalook::sync_state::mail_serial());
                     let response = format!(
                         "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                         body.len(), body
@@ -738,13 +738,13 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                     continue;
                 }
                 if !first_line.contains("POST /perf") {
-                    omarchylook::perf::mark(&format!("http <- {}", first_line.split(" HTTP").next().unwrap_or("").chars().take(60).collect::<String>()));
+                    omalook::perf::mark(&format!("http <- {}", first_line.split(" HTTP").next().unwrap_or("").chars().take(60).collect::<String>()));
                 }
 
                 // ── POST /perf?m=label — a mark from the QML side (shares this timeline)
                 if first_line.contains("POST /perf") {
                     if let Some(m) = query_param(first_line, "m") {
-                        omarchylook::perf::mark(&format!("UI: {}", m));
+                        omalook::perf::mark(&format!("UI: {}", m));
                     }
                     let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: 2\r\n\r\nok");
                     continue;
@@ -790,12 +790,12 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                             // more accounts have. Their account_id is empty, so move targets skip them.
                             let mut all_rows: Vec<String> = Vec::new();
                             if account.is_none() {
-                                if let Ok(aggs) = omarchylook::db::all_accounts_folders(&conn) {
+                                if let Ok(aggs) = omalook::db::all_accounts_folders(&conn) {
                                     for a in aggs {
                                         all_rows.push(format!(
                                             "{{\"id\":{},\"display_name\":{},\"unread_item_count\":{},\"well_known_name\":{},\"total_item_count\":{},\"account_id\":\"\",\"account_email\":\"All accounts\",\"all_accounts\":true}}",
                                             serde_json::to_string(&format!("all:{}", a.well_known_name)).unwrap(),
-                                            serde_json::to_string(omarchylook::db::all_accounts_label(&a.well_known_name)).unwrap(),
+                                            serde_json::to_string(omalook::db::all_accounts_label(&a.well_known_name)).unwrap(),
                                             a.unread_item_count,
                                             serde_json::to_string(&a.well_known_name).unwrap(),
                                             a.total_item_count,
@@ -821,7 +821,7 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
 
                 // ── GET /accounts — configured accounts and whether each is signed in ──
                 if first_line.contains("GET /accounts") {
-                    let body = omarchylook::account_ops::accounts_json(config_dir);
+                    let body = omalook::account_ops::accounts_json(config_dir);
                     let response = format!(
                         "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                         body.len(), body
@@ -879,7 +879,7 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                     let ok = !id.is_empty()
                         && Database::open(config_dir.join("messages.db").to_str().unwrap_or("messages.db"))
                             .and_then(|db| db.set_message_read(&id, read))
-                            .map(|changed| if changed { omarchylook::sync_state::request_read_push() })
+                            .map(|changed| if changed { omalook::sync_state::request_read_push() })
                             .is_ok();
                     let body = if ok { "ok" } else { "error" };
                     let response = format!(
@@ -910,7 +910,7 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                                 .query_row("SELECT master_list FROM category_state WHERE account_id = ?1", rusqlite::params![account], |r| r.get::<_, i64>(0))
                                 .map(|v| v != 0)
                                 .unwrap_or(true);
-                            let palette: Vec<serde_json::Value> = omarchylook::models::CATEGORY_PALETTE.iter()
+                            let palette: Vec<serde_json::Value> = omalook::models::CATEGORY_PALETTE.iter()
                                 .map(|c| serde_json::json!({ "key": c.key, "label": c.label, "hex": c.hex }))
                                 .collect();
                             serde_json::json!({ "categories": cats, "master_list": master, "palette": palette }).to_string()
@@ -930,14 +930,14 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                 if first_line.contains("POST /categories/create") {
                     let account = query_param(first_line, "account").unwrap_or_default();
                     let name = query_param(first_line, "name").unwrap_or_default().trim().to_string();
-                    let color = query_param(first_line, "color").and_then(|k| omarchylook::models::palette_color(&k));
+                    let color = query_param(first_line, "color").and_then(|k| omalook::models::palette_color(&k));
                     let body = match color {
                         Some(c) if !account.is_empty() && !name.is_empty() && name.chars().count() <= 64 && !name.chars().any(|ch| ch.is_control() || ch == ';' || ch == ',') => {
                             match Database::open_for_account(config_dir.join("messages.db").to_str().unwrap_or("messages.db"), &account)
                                 .and_then(|db| db.add_pending_category(&name, c.hex))
                             {
                                 Ok(created) => {
-                                    omarchylook::sync_state::request_read_push();
+                                    omalook::sync_state::request_read_push();
                                     serde_json::json!({ "created": created }).to_string()
                                 }
                                 Err(e) => serde_json::json!({ "error": format!("database: {}", e) }).to_string(),
@@ -967,7 +967,7 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                                 .and_then(|db| db.change_message_categories(&ids, add, &name))
                             {
                                 Ok(changed) => {
-                                    if changed > 0 { omarchylook::sync_state::request_read_push(); }
+                                    if changed > 0 { omalook::sync_state::request_read_push(); }
                                     serde_json::json!({ "changed": changed }).to_string()
                                 }
                                 Err(e) => serde_json::json!({ "error": format!("database: {}", e) }).to_string(),
@@ -989,7 +989,7 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                     let remaining: i64 = rusqlite::Connection::open(config_dir.join("messages.db"))
                         .and_then(|c| c.query_row("SELECT COUNT(*) FROM messages WHERE meta_ok = 0", [], |r| r.get(0)))
                         .unwrap_or(0);
-                    let body = serde_json::json!({ "active": omarchylook::sync_state::meta_active(), "remaining": remaining }).to_string();
+                    let body = serde_json::json!({ "active": omalook::sync_state::meta_active(), "remaining": remaining }).to_string();
                     let response = format!(
                         "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                         body.len(), body
@@ -1007,15 +1007,15 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                     let ids: Vec<String> = query_param(first_line, "ids")
                         .map(|v| v.split(',').filter(|s| !s.is_empty()).map(String::from).collect())
                         .unwrap_or_default();
-                    let delay = omarchylook::settings::read_send_delay(&config_dir.join("settings.toml"));
+                    let delay = omalook::settings::read_send_delay(&config_dir.join("settings.toml"));
                     let body = match Database::open(db_path.to_str().unwrap_or("messages.db")) {
                         Ok(db) if first_line.contains("POST /messages/action/undo") => {
                             let undone = db.cancel_message_actions(&ids).unwrap_or(0);
-                            if undone > 0 { omarchylook::sync_state::bump_mail("message action undone"); }
+                            if undone > 0 { omalook::sync_state::bump_mail("message action undone"); }
                             serde_json::json!({ "undone": undone }).to_string()
                         }
                         Ok(db) => {
-                            use omarchylook::models::MessageAction;
+                            use omalook::models::MessageAction;
                             let op = query_param(first_line, "op").unwrap_or_default();
                             let action = match op.as_str() {
                                 "archive" => Some(MessageAction::Archive),
@@ -1031,7 +1031,7 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                                     // Wake the daemons the moment the window closes.
                                     std::thread::spawn(move || {
                                         std::thread::sleep(std::time::Duration::from_millis(delay * 1000 + 400));
-                                        omarchylook::sync_state::request_read_push();
+                                        omalook::sync_state::request_read_push();
                                     });
                                     serde_json::json!({ "queued": queued, "delay_secs": delay }).to_string()
                                 }
@@ -1052,7 +1052,7 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                 if first_line.contains("GET /fs/list") {
                     let path = query_param(first_line, "path").unwrap_or_default();
                     let hidden = query_param(first_line, "hidden").as_deref() == Some("1");
-                    let body = match omarchylook::fs_browse::list(&path, hidden) {
+                    let body = match omalook::fs_browse::list(&path, hidden) {
                         Ok(l) => serde_json::to_string(&l).unwrap_or_else(|_| "{\"error\":\"could not list\"}".into()),
                         Err(e) => serde_json::json!({ "error": e }).to_string(),
                     };
@@ -1087,12 +1087,12 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
 
                 // ── GET|POST /settings/mail?send_delay=N — seconds a sent message waits before it goes ──
                 if first_line.contains("GET /settings/mail") || first_line.contains("POST /settings/mail") {
-                    use omarchylook::models::MailSettings;
+                    use omalook::models::MailSettings;
                     let settings_path = config_dir.join("settings.toml");
-                    let mut secs = omarchylook::settings::read_send_delay(&settings_path);
+                    let mut secs = omalook::settings::read_send_delay(&settings_path);
                     if first_line.contains("POST /settings/mail") {
                         if let Some(wanted) = query_param(first_line, "send_delay").and_then(|v| v.parse::<i32>().ok()) {
-                            match omarchylook::settings::write_send_delay(&settings_path, wanted) {
+                            match omalook::settings::write_send_delay(&settings_path, wanted) {
                                 Ok(stored) => secs = stored,
                                 Err(e) => warn!("POST /settings/mail: could not save: {}", e),
                             }
@@ -1117,7 +1117,7 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                     let replace = query_param(first_line, "decision").as_deref() == Some("replace");
                     let ok = SCHEDULER
                         .get()
-                        .map(|sch| omarchylook::account_ops::resolve_reauth(config_dir, &pending_id, replace, sch))
+                        .map(|sch| omalook::account_ops::resolve_reauth(config_dir, &pending_id, replace, sch))
                         .map(|r| r.map_err(|e| error!("❌ re-authentication answer failed: {}", e)).is_ok())
                         .unwrap_or(false);
                     let body = if ok { "ok" } else { "error" };
@@ -1134,9 +1134,9 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                 if first_line.contains("POST /accounts/login") {
                     let id = query_param(first_line, "account").unwrap_or_default();
                     let body = match SCHEDULER.get() {
-                        Some(scheduler) => match omarchylook::account_ops::log_in_existing(config_dir, &id, scheduler) {
-                            Ok(omarchylook::account_ops::ResumeOutcome::Resumed) => "{\"result\":\"resumed\"}".to_string(),
-                            Ok(omarchylook::account_ops::ResumeOutcome::LoginRequired(provider)) => {
+                        Some(scheduler) => match omalook::account_ops::log_in_existing(config_dir, &id, scheduler) {
+                            Ok(omalook::account_ops::ResumeOutcome::Resumed) => "{\"result\":\"resumed\"}".to_string(),
+                            Ok(omalook::account_ops::ResumeOutcome::LoginRequired(provider)) => {
                                 serde_json::json!({ "result": "login_required", "provider": provider }).to_string()
                             }
                             Err(e) => {
@@ -1286,6 +1286,27 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
 
                 // ── GET /messages — return messages as JSON (optional ?folder_id=) ──────────────
                 if first_line.contains("GET /messages") {
+                    // Optional ?q= keyword pattern (see src/search.rs). A bad pattern is a 400 with
+                    // {"error": "..."} so the UI can show why; `fullbody:` needs the provider, which
+                    // is not wired up yet, so it is refused rather than silently ignored.
+                    let search_q = match query_param(first_line, "q").map(|q| omalook::search::parse(&q)) {
+                        None => Ok(None),
+                        Some(Ok(q)) if !q.fullbody.is_empty() => Err("fullbody: search is not available yet".to_string()),
+                        Some(Ok(q)) => Ok(Some(q)),
+                        Some(Err(e)) => Err(e),
+                    };
+                    let search_q = match search_q {
+                        Ok(q) => q,
+                        Err(e) => {
+                            let body = serde_json::json!({ "error": e }).to_string();
+                            let response = format!(
+                                "HTTP/1.1 400 Bad Request\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                                body.len(), body
+                            );
+                            let _ = stream.write_all(response.as_bytes());
+                            continue;
+                        }
+                    };
                     // Parse optional ?folder_id= query parameter
                     let folder_id: Option<String> = first_line
                         .split_once("folder_id=")
@@ -1311,11 +1332,11 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                             }
                             let map_row = |row: &rusqlite::Row| {
                                 let account_id: String = row.get(6)?;
-                                let cats: Vec<serde_json::Value> = omarchylook::db::categories_from_json(row.get::<_, Option<String>>(12)?.as_deref())
+                                let cats: Vec<serde_json::Value> = omalook::db::categories_from_json(row.get::<_, Option<String>>(12)?.as_deref())
                                     .into_iter()
                                     .map(|name| {
                                         let color = cat_colors.get(&(account_id.clone(), name.to_lowercase())).cloned()
-                                            .unwrap_or_else(|| omarchylook::models::fallback_category_color(&name).to_string());
+                                            .unwrap_or_else(|| omalook::models::fallback_category_color(&name).to_string());
                                         serde_json::json!([name, color])
                                     })
                                     .collect();
@@ -1369,6 +1390,9 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                                 let n = args.len();
                                 conds.push(format!("(m.account_id = ?{n} OR lower(a.email) = lower(?{n}))"));
                             }
+                            if let Some(ref sq) = search_q {
+                                conds.extend(sq.to_sql(&mut args));
+                            }
                             // Archived / deleted / moved messages wait out their undo window hidden.
                             conds.push("m.action_pending IS NULL".to_string());
                             let where_sql = if conds.is_empty() { String::new() } else { format!(" WHERE {}", conds.join(" AND ")) };
@@ -1402,7 +1426,7 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                         body.len(), body
                     );
                     let _ = stream.write_all(response.as_bytes());
-                    omarchylook::perf::mark(&format!("http -> GET /messages answered ({} bytes, handler {:.1}ms)", body.len(), req_t.elapsed().as_secs_f64() * 1000.0));
+                    omalook::perf::mark(&format!("http -> GET /messages answered ({} bytes, handler {:.1}ms)", body.len(), req_t.elapsed().as_secs_f64() * 1000.0));
                     continue;
                 }
 
@@ -1419,7 +1443,7 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                         .map(|d| d.as_nanos())
                         .unwrap_or(0);
                     let body = match std::fs::read_to_string(&settings_path) {
-                        Ok(text) => match toml::from_str::<omarchylook::models::Settings>(&text) {
+                        Ok(text) => match toml::from_str::<omalook::models::Settings>(&text) {
                             Ok(st) => {
                                 let bindings: serde_json::Map<String, serde_json::Value> = st.keys.bindings.iter()
                                     .map(|(k, v)| (k.clone(), serde_json::json!(v.keys())))
@@ -1443,14 +1467,14 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                     let settings_path = config_dir.join("settings.toml");
                     let body = match std::fs::read_to_string(&settings_path)
                         .ok()
-                        .and_then(|s| toml::from_str::<omarchylook::models::Settings>(&s).ok())
+                        .and_then(|s| toml::from_str::<omalook::models::Settings>(&s).ok())
                     {
                         Some(settings) => format!(
                             "{{\"sidebar_expanded\":{},\"window_width\":{},\"window_height\":{},\"message_rendering\":\"{}\",\"folder_pane\":{}}}",
                             settings.ui.sidebar_expanded,
                             settings.ui.window_width,
                             settings.ui.window_height,
-                            omarchylook::settings::normalize_message_rendering(&settings.ui.message_rendering).unwrap_or("system_sender"),
+                            omalook::settings::normalize_message_rendering(&settings.ui.message_rendering).unwrap_or("system_sender"),
                             settings.ui.folder_pane,
                         ),
                         None => "{\"sidebar_expanded\":true,\"window_width\":1280,\"window_height\":800,\"message_rendering\":\"system_sender\",\"folder_pane\":false}".to_string(),
@@ -1465,15 +1489,15 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
 
                 // ── GET|POST /settings/calendar — recurring-meeting window (years back / ahead) ──
                 if first_line.contains("GET /settings/calendar") || first_line.contains("POST /settings/calendar") {
-                    use omarchylook::models::CalendarSettings;
+                    use omalook::models::CalendarSettings;
                     let settings_path = config_dir.join("settings.toml");
                     let current = if first_line.contains("POST /settings/calendar") {
-                        let cur = omarchylook::settings::read_calendar_settings(&settings_path);
+                        let cur = omalook::settings::read_calendar_settings(&settings_path);
                         let wanted = CalendarSettings {
                             recurrence_years_back: query_param(first_line, "back").and_then(|v| v.parse().ok()).unwrap_or(cur.recurrence_years_back),
                             recurrence_years_ahead: query_param(first_line, "ahead").and_then(|v| v.parse().ok()).unwrap_or(cur.recurrence_years_ahead),
                         };
-                        match omarchylook::settings::write_calendar_settings(&settings_path, &wanted) {
+                        match omalook::settings::write_calendar_settings(&settings_path, &wanted) {
                             Ok(stored) => stored,
                             Err(e) => {
                                 warn!("POST /settings/calendar: could not save: {}", e);
@@ -1481,7 +1505,7 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                             }
                         }
                     } else {
-                        omarchylook::settings::read_calendar_settings(&settings_path)
+                        omalook::settings::read_calendar_settings(&settings_path)
                     };
                     let body = serde_json::json!({
                         "recurrence_years_back": current.recurrence_years_back,
@@ -1500,7 +1524,7 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                 // ── POST /settings/message_rendering?value=html|system|system_sender ──
                 if first_line.contains("POST /settings/message_rendering") {
                     let wanted = query_param(first_line, "value").unwrap_or_default();
-                    let body = match omarchylook::settings::write_message_rendering(&config_dir.join("settings.toml"), &wanted) {
+                    let body = match omalook::settings::write_message_rendering(&config_dir.join("settings.toml"), &wanted) {
                         Ok(stored) => format!("{{\"ok\":true,\"message_rendering\":\"{}\"}}", stored),
                         Err(e) => {
                             warn!("POST /settings/message_rendering {}: {}", wanted, e);
@@ -1525,7 +1549,7 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                     let settings_path = config_dir.join("settings.toml");
                     let result = std::fs::read_to_string(&settings_path)
                         .ok()
-                        .and_then(|s| toml::from_str::<omarchylook::models::Settings>(&s).ok())
+                        .and_then(|s| toml::from_str::<omalook::models::Settings>(&s).ok())
                         .map(|mut settings| {
                             settings.ui.sidebar_expanded = expanded;
                             toml::to_string_pretty(&settings)
@@ -1547,7 +1571,7 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                     let settings_path = config_dir.join("settings.toml");
                     let ok = std::fs::read_to_string(&settings_path)
                         .ok()
-                        .and_then(|s| toml::from_str::<omarchylook::models::Settings>(&s).ok())
+                        .and_then(|s| toml::from_str::<omalook::models::Settings>(&s).ok())
                         .and_then(|mut settings| {
                             settings.ui.folder_pane = shown;
                             toml::to_string_pretty(&settings).ok().map(|content| std::fs::write(&settings_path, content))
@@ -1591,7 +1615,7 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                         if let Some(scheduler) = SCHEDULER.get() {
                             let (config_dir, scheduler) = (config_dir.clone(), Arc::clone(scheduler));
                             std::thread::spawn(move || {
-                                if let Err(e) = omarchylook::account_ops::begin_add_account_with_hint(&config_dir, &provider, email.as_deref(), scheduler) {
+                                if let Err(e) = omalook::account_ops::begin_add_account_with_hint(&config_dir, &provider, email.as_deref(), scheduler) {
                                     error!("❌ Add account failed: {}", e);
                                 }
                             });
@@ -1599,17 +1623,17 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                     }
                     "cancel" => {
                         info!("🔔 HTTP trigger: cancel sign-in");
-                        omarchylook::google_auth::cancel_login(config_dir);
+                        omalook::google_auth::cancel_login(config_dir);
                     }
                     "logout" | "remove" => {
                         let id = query_param(first_line, "account")
-                            .unwrap_or_else(|| omarchylook::token_store::DEFAULT_ACCOUNT.to_string());
+                            .unwrap_or_else(|| omalook::token_store::DEFAULT_ACCOUNT.to_string());
                         info!("🔔 HTTP trigger: {} account {}", action, id);
                         if let Some(scheduler) = SCHEDULER.get() {
                             let result = if action == "remove" {
-                                omarchylook::account_ops::remove_account(config_dir, &id, scheduler)
+                                omalook::account_ops::remove_account(config_dir, &id, scheduler)
                             } else {
-                                omarchylook::account_ops::sign_out_account(config_dir, &id, scheduler)
+                                omalook::account_ops::sign_out_account(config_dir, &id, scheduler)
                             };
                             match result {
                                 Ok(()) => info!("✅ {} succeeded for {}", action, id),

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Run script for OmarchyLook (Rust backend + QML UI hosted by Quickshell)
+# Run script for OmaLook (Rust backend + QML UI hosted by Quickshell)
 # Usage: ./run.sh [--release] [--dev] [--qml-dir <path>]
 #
 # Features:
@@ -57,7 +57,7 @@ done
 TARGET_DIR="$(cargo metadata --format-version 1 --no-deps 2>/dev/null \
     | grep -o '"target_directory":"[^"]*"' | cut -d'"' -f4)"
 TARGET_DIR="${TARGET_DIR:-$PROJECT_DIR/target}"
-BINARY="$TARGET_DIR/$BUILD_TYPE/omarchylook"
+BINARY="$TARGET_DIR/$BUILD_TYPE/omalook"
 
 # Check if binary exists
 if [ ! -f "$BINARY" ]; then
@@ -66,7 +66,7 @@ if [ ! -f "$BINARY" ]; then
     ./build.sh --"$BUILD_TYPE"
 fi
 
-echo -e "${GREEN}🚀 OmarchyLook${NC}"
+echo -e "${GREEN}🚀 OmaLook${NC}"
 echo "Binary: $BINARY"
 echo "QML Dir: $QML_DIR"
 echo "Mode: $([ "$DEV_MODE" = true ] && echo "development (hot-reload)" || echo "production")"

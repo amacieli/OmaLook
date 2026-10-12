@@ -1,6 +1,6 @@
 import QtQuick
 import Quickshell
-import OmarchyLook.Compose
+import OmaLook.Compose
 
 ShellRoot {
   FloatingWindow {

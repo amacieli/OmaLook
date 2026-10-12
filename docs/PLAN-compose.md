@@ -72,7 +72,7 @@ Built: `src/compose.rs` (model, validation, HTML clean-up, Graph JSON, Gmail MIM
 both providers, routes `POST /compose/send`, `POST /compose/cancel`, `GET /compose/status`, `GET|POST /settings/mail`,
 setting `[mail] send_delay_secs` (default 3, 0 = immediately, max 60), Settings > Mail field, `SendToast.qml` (Undo / `u`).
 Part of Phase B was pulled in (outbox, undo window, retry/no-retry rules, crash handling); drafts, attachments and
-`compose_html` golden tests are still open. `OMARCHYLOOK_PORT` runs a second backend beside the real one for tests.
+`compose_html` golden tests are still open. `OMALOOK_PORT` runs a second backend beside the real one for tests.
 
 - [ ] `models.rs`: `OutgoingMessage { account_id, to, cc, bcc, subject, body: Body{Text|Html}, attachments, in_reply_to: Option<id>, kind: New|Reply|ReplyAll|Forward }`.
 - [ ] `providers/mod.rs`: add `send_message`, `create_draft`, `update_draft`, `delete_draft` with default
@@ -142,12 +142,12 @@ with a **local copy** so nothing is lost offline or on a crash.
 - [ ] Tests: MIME builder snapshot tests (headers, boundaries, UTF-8 subject encoding, non-ASCII body).
 
 ### Phase D — C++ DocumentHandler plugin (spike first, 1 day box)
-**Spike result 2026-10-07: PASS.** A CMake `qt_add_qml_module` plugin (`OmarchyLook.Compose`, Qt 6.11.2) loads in
+**Spike result 2026-10-07: PASS.** A CMake `qt_add_qml_module` plugin (`OmaLook.Compose`, Qt 6.11.2) loads in
 Quickshell 0.3.1 via `QML_IMPORT_PATH`; a `DocumentHandler` bolded a TextEdit selection and `toHtml()` returned the expected
-span (verbose Qt HTML confirmed, so D2 `clean()` stays). Source: `plugin/omarchylook-compose/spike/`. WebEngine not tested (not needed).
+span (verbose Qt HTML confirmed, so D2 `clean()` stays). Source: `plugin/omalook-compose/spike/`. WebEngine not tested (not needed).
 - [ ] Spike: confirm Quickshell loads a third-party QML module from an import path on this machine; confirm WebEngine
       is not viable (record result here either way).
-- [ ] `plugin/omarchylook-compose/` with `DocumentHandler` (bold, italic, underline, strike, font family/size,
+- [ ] `plugin/omalook-compose/` with `DocumentHandler` (bold, italic, underline, strike, font family/size,
       colour, highlight, align, list style, indent, insert link/image/table, clear formatting, `html` property,
       `plainText`, `hasRichAttributes`).
 - [ ] `build.sh` and `package.sh` build the plugin; `run.sh` sets `QML_IMPORT_PATH`.
@@ -180,7 +180,7 @@ span (verbose Qt HTML confirmed, so D2 `clean()` stays). Source: `plugin/omarchy
 
 ## 5. Files likely to change
 
-Create: `src/compose.rs`, `src/compose_html.rs`, `plugin/omarchylook-compose/*`, `qml/compose/*.qml`, `qml/compose/modes.js`.
+Create: `src/compose.rs`, `src/compose_html.rs`, `plugin/omalook-compose/*`, `qml/compose/*.qml`, `qml/compose/modes.js`.
 Modify: `src/models.rs`, `src/db.rs`, `src/scheduler.rs`, `src/main.rs` (routes), `src/providers/{mod,graph,gmail}.rs`,
 `src/settings.rs`, `qml/mail/MailView.qml`, `qml/state/AppState.qml`, `qml/AppShell.qml`, `qml/settings/pages/MailPage.qml`,
 `build.sh`, `package.sh`, `run.sh`. Remove: `src/qt_bridge/compose_bridge.rs`.

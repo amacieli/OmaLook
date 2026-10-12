@@ -2,8 +2,8 @@
 //!
 //! Embeds the Google OAuth client (a "Desktop app" client; Google documents its secret as not
 //! confidential) so a distributed binary can sign users in to Gmail without any setup on their
-//! side. Lookup order: env `OMARCHYLOOK_GOOGLE_CLIENT_ID` + `OMARCHYLOOK_GOOGLE_CLIENT_SECRET`,
-//! then `./google_client.json` (git-ignored), then `~/.config/omarchylook/google_client.json`.
+//! side. Lookup order: env `OMALOOK_GOOGLE_CLIENT_ID` + `OMALOOK_GOOGLE_CLIENT_SECRET`,
+//! then `./google_client.json` (git-ignored), then `~/.config/omalook/google_client.json`.
 //! With none of them the binary still builds and falls back to that file at run time.
 
 use std::path::PathBuf;
@@ -19,16 +19,16 @@ fn main() {
     // CXX-Qt build configuration is currently disabled: qmlscene runs in a separate process.
     println!("cargo:rerun-if-changed=src/qt_bridge/mod.rs");
 
-    println!("cargo:rerun-if-env-changed=OMARCHYLOOK_GOOGLE_CLIENT_ID");
-    println!("cargo:rerun-if-env-changed=OMARCHYLOOK_GOOGLE_CLIENT_SECRET");
+    println!("cargo:rerun-if-env-changed=OMALOOK_GOOGLE_CLIENT_ID");
+    println!("cargo:rerun-if-env-changed=OMALOOK_GOOGLE_CLIENT_SECRET");
     let project_file = PathBuf::from("google_client.json");
-    let home_file = std::env::var("HOME").map(|h| PathBuf::from(h).join(".config/omarchylook/google_client.json")).ok();
+    let home_file = std::env::var("HOME").map(|h| PathBuf::from(h).join(".config/omalook/google_client.json")).ok();
     println!("cargo:rerun-if-changed=google_client.json");
     if let Some(p) = &home_file {
         println!("cargo:rerun-if-changed={}", p.display());
     }
 
-    let from_env = match (std::env::var("OMARCHYLOOK_GOOGLE_CLIENT_ID"), std::env::var("OMARCHYLOOK_GOOGLE_CLIENT_SECRET")) {
+    let from_env = match (std::env::var("OMALOOK_GOOGLE_CLIENT_ID"), std::env::var("OMALOOK_GOOGLE_CLIENT_SECRET")) {
         (Ok(i), Ok(s)) if !i.is_empty() && !s.is_empty() => Some((i, s)),
         _ => None,
     };
@@ -37,9 +37,9 @@ fn main() {
         .or_else(|| home_file.as_ref().and_then(client_from_json));
     match client {
         Some((id, secret)) => {
-            println!("cargo:rustc-env=OMARCHYLOOK_GOOGLE_CLIENT_ID={}", id);
-            println!("cargo:rustc-env=OMARCHYLOOK_GOOGLE_CLIENT_SECRET={}", secret);
+            println!("cargo:rustc-env=OMALOOK_GOOGLE_CLIENT_ID={}", id);
+            println!("cargo:rustc-env=OMALOOK_GOOGLE_CLIENT_SECRET={}", secret);
         }
-        None => println!("cargo:warning=no Google OAuth client found: Gmail sign-in will need ~/.config/omarchylook/google_client.json at run time"),
+        None => println!("cargo:warning=no Google OAuth client found: Gmail sign-in will need ~/.config/omalook/google_client.json at run time"),
     }
 }

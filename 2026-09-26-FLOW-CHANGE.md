@@ -5,7 +5,7 @@
 
 ## Summary
 
-Changed the omarchylook startup flow so users go **directly to the main app view** on launch, with the ability to re-authenticate via a link in the Settings menu.
+Changed the omalook startup flow so users go **directly to the main app view** on launch, with the ability to re-authenticate via a link in the Settings menu.
 
 ## Changes Made
 
@@ -81,7 +81,7 @@ Rectangle {
 ## Build Status
 
 ✅ **Build successful** (2026-09-26 14:50 UTC)
-- Binary: `target/debug/omarchylook` (45M)
+- Binary: `target/debug/omalook` (45M)
 - No new compiler errors
 - 3 pre-existing warnings (unrelated to these changes)
 
@@ -106,5 +106,5 @@ To test:
 
 **Build Command Used:**
 ```bash
-cd /mnt/ai/projects/omarchylook && ./build.sh
+cd /mnt/ai/projects/omalook && ./build.sh
 ```

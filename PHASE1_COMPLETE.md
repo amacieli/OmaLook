@@ -1,4 +1,4 @@
-# OmarchyLook Phase 1: Rust Scaffolding
+# OmaLook Phase 1: Rust Scaffolding
 
 **Status**: ✅ Complete  
 **Date**: September 26, 2026  
@@ -56,7 +56,7 @@
 ### Cargo Configuration
 
 #### `Cargo.toml` (1.22 KB)
-- **Binary name**: `omarchylook`
+- **Binary name**: `omalook`
 - **Edition**: 2021
 - **Dependencies**:
   - **HTTP**: `ureq` (sync/blocking, no Tokio)
@@ -86,7 +86,7 @@
 
 #### `src/main.rs`
 - Application entry point
-- XDG config directory support (`~/.config/omarchylook`)
+- XDG config directory support (`~/.config/omalook`)
 - Database and settings initialization
 - Auth state check (demonstrates backend readiness)
 
@@ -260,7 +260,7 @@ cargo --version
 
 ### First Build
 ```bash
-cd /mnt/ai/projects/omarchylook
+cd /mnt/ai/projects/omalook
 ./build.sh --dev-setup   # Validate dependencies
 ./build.sh --release      # Build optimized binary
 ./run.sh --release        # Run
@@ -274,19 +274,19 @@ cd /mnt/ai/projects/omarchylook
 
 ## Configuration
 
-Settings are stored in `~/.config/omarchylook/settings.toml` and automatically reload on change.
+Settings are stored in `~/.config/omalook/settings.toml` and automatically reload on change.
 
 To adjust sync interval:
 ```bash
 # Edit settings.toml
-nano ~/.config/omarchylook/settings.toml
+nano ~/.config/omalook/settings.toml
 
 # Change:
 # [sync]
 # poll_interval_secs = 120  (was 60)
 ```
 
-Database is at `~/.config/omarchylook/omarchy.db` (SQLite).
+Database is at `~/.config/omalook/omarchy.db` (SQLite).
 
 ## Performance Notes
 

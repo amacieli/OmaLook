@@ -101,7 +101,7 @@ Loader {
 ✅ **Release build successful**:
 ```
 $ cargo build --release
-   Compiling omarchylook ...
+   Compiling omalook ...
    Finished `release` profile [optimized] target(s) in 1m 42s
 ```
 

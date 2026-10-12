@@ -28,7 +28,7 @@ Outlook arrive as ordinary feed changes. Rows written by new code are born with 
 * **Gmail:** no feed, so details are fetched message by message (10 at a time, throttled), a ~60 s slice per sync cycle,
   everything, newest first. A message that is gone from the server (404) is marked done.
 * Progress: `GET /messages/meta_progress`; the bottom bar shows "filling in message details · N to go".
-* Back up first: `~/.config/omarchylook/backup/messages-before-fields.db` was taken before the first run.
+* Back up first: `~/.config/omalook/backup/messages-before-fields.db` was taken before the first run.
 
 ## Categories
 * Key **`t`** (message list / reading pane; applies to the marked messages, else the cursor row) opens a picker: existing
