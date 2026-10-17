@@ -22,6 +22,12 @@ RowLayout {
   // True while the active page has an input that owns the keyboard.
   readonly property bool editing: pageLoader.item ? pageLoader.item.editing === true : false
 
+  // Put the keyboard into the active page's first control, if it has one (l / Right / Enter).
+  function enterPage() {
+    var it = pageLoader.item
+    return (it && it.focusFirst) ? it.focusFirst() === true : false
+  }
+
   spacing: 0
 
   // ---- category list
@@ -76,6 +82,7 @@ RowLayout {
       width: scroll.availableWidth - Style.space(40)
       sourceComponent: {
         switch (root.app.settingsCategories[root.app.settingsCategoryIndex].id) {
+          case "general":       return generalPage
           case "account":       return accountPage
           case "appearance":    return appearancePage
           case "mail":          return mailPage
@@ -102,9 +109,9 @@ RowLayout {
   }
   Component {
     id: appearancePage
-    AppearancePage {
-    }
+    AppearancePage { app: root.app }
   }
+  Component { id: generalPage;       GeneralPage { app: root.app } }
   Component { id: mailPage;          MailPage { app: root.app } }
   Component { id: sendersPage;       SendersPage { app: root.app } }
   Component { id: calendarPage;      CalendarPage { app: root.app } }

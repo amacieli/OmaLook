@@ -9,13 +9,18 @@ import ".."
 SettingsPage {
   id: page
 
+  property var app: null
+
+  // Moves the keyboard into the scale field; SettingsView calls this on l / Right / Enter.
+  function focusFirst() { scaleField.focusField(); return true }
+  editing: scaleField.field.activeFocus
+
   // placeholder state
   property string density: "comfortable"
   property string previewPosition: "right"
 
   title: "Appearance"
   description: "Typography and colours follow your Omarchy theme. Change them with `omarchy font set`, `omarchy display text size` or by switching theme."
-  placeholder: true
 
   Column {
     width: parent.width
@@ -37,6 +42,28 @@ SettingsPage {
       spacing: Style.spacing.xxl
       UiText { text: "Corner radius"; dim: true; font.pixelSize: Style.font.caption; width: Style.space(110) }
       UiText { text: Style.cornerRadius + " px"; font.pixelSize: Style.font.caption }
+    }
+  }
+
+  Column {
+    width: parent.width
+    spacing: Style.space(6)
+
+    PanelSectionHeader { text: "SCALE FACTOR" }
+    ScaleField {
+      id: scaleField
+      value: page.app ? page.app.uiScale : 1.0
+      from: page.app ? page.app.minUiScale : 0.5
+      to: page.app ? page.app.maxUiScale : 3.0
+      onModified: function(v) { if (page.app) page.app.setUiScale(v) }
+      onLeave: if (page.app) page.app.focusRequested()
+    }
+    UiText {
+      width: parent.width
+      wrapMode: Text.WordWrap
+      dim: true
+      font.pixelSize: Style.font.caption
+      text: "Scales the whole window, 0.5 to 3.0 (default 1.0). Up / Down step by 0.1, or type a value and press Enter. Esc returns to the list. Saved to settings.toml [font] scale_factor."
     }
   }
 

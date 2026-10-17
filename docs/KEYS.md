@@ -71,3 +71,13 @@ subfolder. A name that already exists becomes `name (1).ext`; nothing is overwri
 Change the folder with `[attachments] download_dir = "~/Documents/mail"` in `settings.toml`. There is no preview: open a saved
 file with your desktop's default application. Commands: `mail.attachments`, `mail.attachments.saveall` (also `:attachments`,
 `:saveattachments`). Gmail accounts are not supported yet.
+
+## Texts (SMS view)
+| Key | Command id | Does |
+|---|---|---|
+| `z` | `sms.read` | mark the whole conversation read / unread (opening one does not read it) |
+| `r`, `i` | `sms.reply` | write in the open conversation; `Ctrl+Enter` sends, `Esc` leaves (draft is kept) |
+| `c`, `Ctrl+N` | `sms.new` | new conversation: recipients (contact names or numbers), then the text |
+| `/` | `app.search` | search conversations by name, number or message text; `Esc` clears |
+| `R` | `sms.retry` | send failed texts again (a failed text shows a red "Send failure") |
+| `x` | `item.delete` | says deleting is not possible (KDE Connect has no delete) |

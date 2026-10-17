@@ -34,6 +34,9 @@ notify = "6.1"
 cxx-qt = { version = "0.10" }
 cxx = "1.0"
 
+# D-Bus (KDE Connect SMS); already in the tree via keyring
+zbus = "3.15"
+
 # Logging
 log = "0.4"
 env_logger = "0.11"

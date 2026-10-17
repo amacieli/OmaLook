@@ -441,6 +441,24 @@ FocusScope {
     onNavigated: function(d) { root.browsed(d) }
   }
 
+  // While a confirm dialog is up, keys go to it, not to the editor/header
+  // field that had focus (those consume Enter/Left/Right/Tab themselves).
+  property Item _focusBeforeConfirm: null
+  onConfirmingChanged: {
+    if (confirming !== "") {
+      _focusBeforeConfirm = Window.activeFocusItem
+      confirmDialog.selectedIndex = 1
+      dialogKeys.forceActiveFocus()
+    } else {
+      if (_focusBeforeConfirm) _focusBeforeConfirm.forceActiveFocus()
+      _focusBeforeConfirm = null
+    }
+  }
+  Item {
+    id: dialogKeys
+    Keys.onPressed: function(e) { if (confirmDialog.handleKey(e)) e.accepted = true }
+  }
+
   ConfirmDialog {
     id: confirmDialog
     anchors.fill: parent

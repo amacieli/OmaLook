@@ -164,6 +164,59 @@ pub fn read_poll_interval(path: &Path) -> u64 {
         .unwrap_or(DEFAULT_POLL_SECS)
 }
 
+/// `[sync] run_in_background`: keep the backend running after the UI closes. False when the
+/// file is missing, unreadable or has no usable value. Read when the UI closes and while
+/// staying in the background, so a change applies without a restart.
+pub fn read_run_in_background(path: &Path) -> bool {
+    fs::read_to_string(path)
+        .ok()
+        .and_then(|s| toml::from_str::<toml::Value>(&s).ok())
+        .and_then(|v| v.get("sync")?.get("run_in_background")?.as_bool())
+        .unwrap_or(false)
+}
+
+/// Persist `[sync] run_in_background`, leaving every other setting as it was. Refuses to touch a
+/// file that does not parse. Returns what was stored.
+pub fn write_run_in_background(path: &Path, on: bool) -> Result<bool> {
+    let mut settings: Settings = match fs::read_to_string(path) {
+        Ok(content) => toml::from_str(&content).map_err(|e| OmarchyError::SettingsError(e.to_string()))?,
+        Err(_) => Settings::default(),
+    };
+    settings.sync.run_in_background = on;
+    let content = toml::to_string_pretty(&settings).map_err(|e| OmarchyError::SettingsError(e.to_string()))?;
+    fs::write(path, content)?;
+    Ok(on)
+}
+
+/// `[mcp]` as stored. A missing file or missing section is the default (everything off).
+/// `None` when the file exists but does not parse: callers must treat that as "MCP locked",
+/// never as "defaults".
+pub fn read_mcp_settings(path: &Path) -> Option<crate::mcp::policy::McpSettings> {
+    let text = match fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Some(Default::default()),
+        Err(_) => return None,
+    };
+    let v: toml::Value = toml::from_str(&text).ok()?;
+    match v.get("mcp") {
+        None => Some(Default::default()),
+        Some(m) => m.clone().try_into::<crate::mcp::policy::McpSettings>().ok().map(|s| s.sanitized()),
+    }
+}
+
+/// Persist `[mcp]` (sanitised), leaving every other setting as it was. Refuses to touch a file
+/// that does not parse. Returns what was stored.
+pub fn write_mcp_settings(path: &Path, wanted: &crate::mcp::policy::McpSettings) -> Result<crate::mcp::policy::McpSettings> {
+    let mut settings: Settings = match fs::read_to_string(path) {
+        Ok(content) => toml::from_str(&content).map_err(|e| OmarchyError::SettingsError(e.to_string()))?,
+        Err(_) => Settings::default(),
+    };
+    settings.mcp = wanted.clone().sanitized();
+    let content = toml::to_string_pretty(&settings).map_err(|e| OmarchyError::SettingsError(e.to_string()))?;
+    fs::write(path, content)?;
+    Ok(settings.mcp)
+}
+
 /// Seconds a sent message waits before it goes out (`[mail] send_delay_secs`): the default (3)
 /// when the file is missing, unreadable or has no usable value, otherwise clamped to 0..=60.
 /// Read on every send, so a change applies to the next message without a restart.
@@ -225,6 +278,74 @@ pub fn write_message_rendering(path: &Path, value: &str) -> Result<String> {
     let content = toml::to_string_pretty(&settings).map_err(|e| OmarchyError::SettingsError(e.to_string()))?;
     fs::write(path, content)?;
     Ok(settings.ui.message_rendering)
+}
+
+/// Bounds of the UI scale factor (Settings -> Appearance).
+pub const MIN_SCALE_FACTOR: f64 = 0.5;
+pub const MAX_SCALE_FACTOR: f64 = 3.0;
+
+/// Clamp to the allowed range and round to 2 decimals; NaN/inf fall back to 1.0.
+pub fn normalize_scale_factor(v: f64) -> f64 {
+    if !v.is_finite() { return 1.0; }
+    (v.clamp(MIN_SCALE_FACTOR, MAX_SCALE_FACTOR) * 100.0).round() / 100.0
+}
+
+/// UI scale factor from a settings.toml: 1.0 when the file is missing, unreadable or lacks it.
+pub fn read_scale_factor(path: &Path) -> f64 {
+    fs::read_to_string(path)
+        .ok()
+        .and_then(|s| toml::from_str::<toml::Value>(&s).ok())
+        .and_then(|v| {
+            let f = v.get("font")?.get("scale_factor")?;
+            f.as_float().or_else(|| f.as_integer().map(|i| i as f64))
+        })
+        .map(normalize_scale_factor)
+        .unwrap_or(1.0)
+}
+
+/// Persist the UI scale factor (clamped) into settings.toml, leaving every other setting as it
+/// was. Refuses to touch a file that does not parse. Returns what was stored.
+pub fn write_scale_factor(path: &Path, v: f64) -> Result<f64> {
+    let mut settings: Settings = match fs::read_to_string(path) {
+        Ok(content) => toml::from_str(&content).map_err(|e| OmarchyError::SettingsError(e.to_string()))?,
+        Err(_) => Settings::default(),
+    };
+    settings.font.scale_factor = normalize_scale_factor(v);
+    let content = toml::to_string_pretty(&settings).map_err(|e| OmarchyError::SettingsError(e.to_string()))?;
+    fs::write(path, content)?;
+    Ok(settings.font.scale_factor)
+}
+
+#[cfg(test)]
+mod scale_factor_tests {
+    use super::*;
+
+    #[test]
+    fn clamps_rounds_defaults_and_persists() {
+        assert_eq!(normalize_scale_factor(1.04), 1.04);
+        assert_eq!(normalize_scale_factor(0.1), 0.5);
+        assert_eq!(normalize_scale_factor(9.0), 3.0);
+        assert_eq!(normalize_scale_factor(f64::NAN), 1.0);
+        let p = std::env::temp_dir().join(format!("omalook-scale-{}.toml", std::process::id()));
+        let _ = fs::remove_file(&p);
+        assert_eq!(read_scale_factor(&p), 1.0);
+        let mut base = Settings::default();
+        base.ui.sidebar_expanded = false;
+        fs::write(&p, toml::to_string_pretty(&base).unwrap()).unwrap();
+        assert_eq!(write_scale_factor(&p, 1.3).unwrap(), 1.3);
+        assert_eq!(read_scale_factor(&p), 1.3);
+        let back: Settings = toml::from_str(&fs::read_to_string(&p).unwrap()).unwrap();
+        assert!(!back.ui.sidebar_expanded, "other settings untouched");
+        // legacy file without the key loads with 1.0
+        let old = fs::read_to_string(&p).unwrap().lines().filter(|l| !l.starts_with("scale_factor")).collect::<Vec<_>>().join("\n");
+        let legacy: Settings = toml::from_str(&old).unwrap();
+        assert_eq!(legacy.font.scale_factor, 1.0);
+        // a broken file is left alone
+        fs::write(&p, "not [toml").unwrap();
+        assert!(write_scale_factor(&p, 2.0).is_err());
+        assert_eq!(fs::read_to_string(&p).unwrap(), "not [toml");
+        let _ = fs::remove_file(&p);
+    }
 }
 
 #[cfg(test)]
@@ -409,6 +530,129 @@ mod send_delay_tests {
         let p = temp("broken");
         fs::write(&p, "this is = not [valid toml").unwrap();
         assert!(write_send_delay(&p, 5).is_err());
+        assert_eq!(fs::read_to_string(&p).unwrap(), "this is = not [valid toml");
+        let _ = fs::remove_file(&p);
+    }
+}
+
+#[cfg(test)]
+mod run_in_background_tests {
+    use super::*;
+
+    fn temp(name: &str) -> PathBuf {
+        let p = std::env::temp_dir().join(format!("omalook-bgset-{}-{}.toml", name, std::process::id()));
+        let _ = fs::remove_file(&p);
+        p
+    }
+
+    #[test]
+    fn off_by_default_and_for_old_files() {
+        assert!(!Settings::default().sync.run_in_background);
+        assert!(!read_run_in_background(&temp("missing")));
+        let p = temp("old");
+        fs::write(&p, "[sync]\npoll_interval_secs = 60\nauto_sync = true\ncache_retention_days = 30\n").unwrap();
+        assert!(!read_run_in_background(&p));
+        let _ = fs::remove_file(&p);
+    }
+
+    #[test]
+    fn write_round_trips_and_preserves_other_settings() {
+        let p = temp("write");
+        let mut base = Settings::default();
+        base.ui.sidebar_expanded = false;
+        base.sync.poll_interval_secs = 45;
+        fs::write(&p, toml::to_string_pretty(&base).unwrap()).unwrap();
+        assert!(write_run_in_background(&p, true).unwrap());
+        assert!(read_run_in_background(&p));
+        let back: Settings = toml::from_str(&fs::read_to_string(&p).unwrap()).unwrap();
+        assert!(!back.ui.sidebar_expanded && back.sync.poll_interval_secs == 45, "other settings untouched");
+        assert!(!write_run_in_background(&p, false).unwrap());
+        assert!(!read_run_in_background(&p));
+        let _ = fs::remove_file(&p);
+    }
+
+    #[test]
+    fn an_unparseable_file_is_not_overwritten() {
+        let p = temp("broken");
+        fs::write(&p, "this is = not [valid toml").unwrap();
+        assert!(write_run_in_background(&p, true).is_err());
+        assert_eq!(fs::read_to_string(&p).unwrap(), "this is = not [valid toml");
+        let _ = fs::remove_file(&p);
+    }
+}
+
+#[cfg(test)]
+mod mcp_settings_tests {
+    use super::*;
+    use crate::mcp::policy::McpSettings;
+
+    fn temp(name: &str) -> PathBuf {
+        let p = std::env::temp_dir().join(format!("omalook-mcpset-{}-{}.toml", name, std::process::id()));
+        let _ = fs::remove_file(&p);
+        p
+    }
+
+    #[test]
+    fn missing_file_or_section_is_everything_off() {
+        assert_eq!(read_mcp_settings(&temp("missing")), Some(McpSettings::default()));
+        let p = temp("nosection");
+        fs::write(&p, "[sync]\nrun_in_background = true\n").unwrap();
+        assert_eq!(read_mcp_settings(&p), Some(McpSettings::default()));
+        let _ = fs::remove_file(&p);
+    }
+
+    #[test]
+    fn unparseable_file_or_section_reads_as_none_so_mcp_locks() {
+        let p = temp("broken");
+        fs::write(&p, "not [toml").unwrap();
+        assert_eq!(read_mcp_settings(&p), None);
+        fs::write(&p, "[mcp]\nenabled = \"yes please\"\n").unwrap();
+        assert_eq!(read_mcp_settings(&p), None);
+        let _ = fs::remove_file(&p);
+    }
+
+    #[test]
+    fn write_round_trips_and_keeps_other_sections() {
+        let p = temp("rt");
+        fs::write(&p, "[font]\nfamily = \"monospace\"\nbase_size = 10\nscale_factor = 1.0\n[color]\nbg_dark = \"#000\"\nbg_surface = \"#111\"\nborder = \"#222\"\ntext_primary = \"#fff\"\ntext_secondary = \"#888\"\naccent_purple = \"#70f\"\ndanger_red = \"#f00\"\nsuccess_green = \"#0f0\"\n[ui]\nwindow_width = 1\nwindow_height = 1\nuse_tui_style = true\nanimation_enabled = true\nsidebar_expanded = false\n[sync]\npoll_interval_secs = 77\nauto_sync = true\ncache_retention_days = 30\nrun_in_background = true\n[keys]\npreset = \"outlook\"\n").unwrap();
+        let mut s = McpSettings { enabled: true, accounts: vec!["graph-1".into()], ..Default::default() };
+        s.domains.insert("mail".into(), "write".into());
+        s.tools.insert("mail_send".into(), "ask".into());
+        let stored = write_mcp_settings(&p, &s).unwrap();
+        assert_eq!(read_mcp_settings(&p), Some(stored));
+        assert!(read_run_in_background(&p));
+        assert_eq!(read_poll_interval(&p), 77);
+        assert!(fs::read_to_string(&p).unwrap().contains("preset = \"outlook\""));
+        let _ = fs::remove_file(&p);
+    }
+
+    #[test]
+    fn other_settings_writers_do_not_drop_the_mcp_section() {
+        let p = temp("keep");
+        let mut s = McpSettings { enabled: true, ..Default::default() };
+        s.domains.insert("sms".into(), "read".into());
+        write_mcp_settings(&p, &s).unwrap();
+        write_send_delay(&p, 9).unwrap();
+        write_run_in_background(&p, true).unwrap();
+        let back = read_mcp_settings(&p).unwrap();
+        assert!(back.enabled);
+        assert_eq!(back.domains.get("sms").map(String::as_str), Some("read"));
+        let _ = fs::remove_file(&p);
+    }
+
+    #[test]
+    fn default_mcp_is_not_written_into_the_file() {
+        let p = temp("quiet");
+        write_run_in_background(&p, true).unwrap();
+        assert!(!fs::read_to_string(&p).unwrap().contains("mcp"));
+        let _ = fs::remove_file(&p);
+    }
+
+    #[test]
+    fn an_unparseable_file_is_not_overwritten() {
+        let p = temp("guard");
+        fs::write(&p, "this is = not [valid toml").unwrap();
+        assert!(write_mcp_settings(&p, &McpSettings::default()).is_err());
         assert_eq!(fs::read_to_string(&p).unwrap(), "this is = not [valid toml");
         let _ = fs::remove_file(&p);
     }

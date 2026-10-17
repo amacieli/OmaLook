@@ -30,8 +30,12 @@ pub mod calendar_daemon;
 pub mod invites;
 pub mod attachments;
 pub mod contacts_daemon;
+pub mod sms_daemon;
+pub mod sms_names;
 pub mod providers;
 pub mod search;
+pub mod background;
+pub mod mcp;
 
 pub use auth::AuthManager;
 pub use db::Database;

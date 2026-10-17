@@ -34,6 +34,7 @@ Item {
 
   // ---- motion -----------------------------------------------------------
   function move(dx, dy) {
+    if (dx > 0 && enterSettingsPage()) return
     var m = mod()
     if (m && m.keyMove && m.keyMove(dx, dy) === true) return
     if (app.focusPane === "reader") {
@@ -71,7 +72,13 @@ Item {
     app.moveVertical(bottom ? 1000000 : -1000000)
   }
 
+  // Settings: l / Right / Enter on a category moves the keyboard into that page's controls.
+  function enterSettingsPage() {
+    return app.currentView === "settings" && app.focusPane === "msg" && content && content.enterPage ? content.enterPage() === true : false
+  }
+
   function activate() {
+    if (enterSettingsPage()) return
     var m = mod()
     if (m && m.keyActivate) m.keyActivate()
     else app.activate()
@@ -83,6 +90,7 @@ Item {
   function deleteItem() {
     var m = mod()
     if (onMessages) app.deleteSelected()
+    else if (app.currentView === "sms") say("texts can't be deleted from here: KDE Connect has no delete")
     else if (m && m.keyDelete) m.keyDelete()
     else say("delete: nothing selected here")
   }
@@ -204,6 +212,7 @@ Item {
   function runSearch(text) { app.applySearch(text, function(why) { say("search: " + why) }) }
 
   function pickSearch(q) {
+    if (app.currentView === "sms") return pickSmsSearch(q)
     var query = q.trim()
     if (query !== "") {
       return [{ id: "search.run", title: "Search " + app.selectedFolderName + ":  " + query, keys: [],
@@ -228,6 +237,20 @@ Item {
       h("after:7d", "also before:, date:2026-10-01, today, 2w, 3m"), h("cat:", "category name"),
       { id: "search.h.tip", title: "   plain words match subject, sender and preview; \"quotes\" for phrases, -word to exclude", keys: [], run: function() {} }
     ])
+  }
+
+  // SMS: one row runs the search; with nothing typed, offer to clear the active one.
+  function pickSmsSearch(q) {
+    var query = q.trim()
+    var run = function(t) { return function() { if (content && content.applySearch) content.applySearch(t) } }
+    if (query !== "") return [{ id: "search.sms.run", title: "Search texts:  " + query, keys: [], run: run(query) }]
+    var out = []
+    if (app.smsSearch !== "") {
+      out.push({ id: "search.sms.clear", title: "Clear current search  (" + app.smsSearch + ")", keys: [], run: run("") })
+      out.push({ id: "search.sms.edit", title: "Edit current search", keys: [], run: function() { root.paletteRequested("search " + app.smsSearch) } })
+    }
+    out.push({ id: "search.sms.tip", title: "   type a name, a phone number, or words from a message", keys: [], run: function() {} })
+    return out
   }
 
   // `:filter` — quick filters built from the selected message. Each row toggles its term in the
@@ -298,6 +321,7 @@ Item {
     { id: "pane.back",  title: "Back / cancel",       scope: "global", keys: ["Esc"],        run: function() {
       if (app.markCount > 0) app.clearMarks()
       else if (app.searchQuery !== "" && inMail && app.focusPane === "msg") app.clearSearch()
+      else if (app.smsSearch !== "" && app.currentView === "sms" && app.focusPane === "msg" && content) content.applySearch("")
       else app.back()
     } },
     // Pane numbers follow what is on screen: with the folder pane hidden, list = 1, reader = 2.
@@ -307,6 +331,7 @@ Item {
     { id: "pane.list.nf",   title: "Focus list",        scope: "mail", keys: ["1"], when: function() { return !app.showFolderPane }, helpWhen: function() { return !app.showFolderPane }, run: function() { app.focusPaneNamed("msg") } },
     { id: "pane.reader.nf", title: "Focus reading pane", scope: "mail", keys: ["2"], when: function() { return !app.showFolderPane }, helpWhen: function() { return !app.showFolderPane }, run: function() { app.focusPaneNamed("reader") } },
     { id: "view.folders", title: "Show / hide folder pane", scope: "mail", keys: ["F"], ex: ["folders"], run: function() { app.toggleFolderPane() } },
+    { id: "pane.reader.sms", title: "Focus conversation", scope: "global", keys: ["2"], hidden: true, when: function() { return app.currentView === "sms" }, run: function() { app.focusPaneNamed("reader") } },
     { id: "pane.list2",   title: "Focus list",        scope: "global", keys: ["1"], hidden: true, when: function() { return !inMail }, run: function() { app.focusPaneNamed("msg") } },
     { id: "view.close", title: "Back (one pane left)", scope: "global", keys: ["q"],          run: function() { app.back() } },
     { id: "app.quit",   title: "Quit OmaLook",    scope: "global", keys: ["Q"], ex: ["q", "quit"], run: function() { root.quitRequested() } },
@@ -326,7 +351,7 @@ Item {
     { id: "palette",    title: "Show commands",   scope: "global", keys: [":", "C-p"], run: function() { root.paletteRequested("") } },
     { id: "help",       title: "Keyboard help",   scope: "global", keys: ["?"], ex: ["help"], run: function() { root.helpRequested() } },
     { id: "app.sync",   title: "Sync now",        scope: "global", keys: [], ex: ["sync", "refresh"], run: function() { sync() } },
-    { id: "app.search", title: "Search mail…",    scope: "global", keys: ["/"], ex: ["search"], pick: pickSearch, run: function() { if (!inMail) app.gotoView("mail"); root.paletteRequested("search ") } },
+    { id: "app.search", title: "Search mail / texts…",    scope: "global", keys: ["/"], ex: ["search"], pick: pickSearch, run: function() { if (!inMail && app.currentView !== "sms") app.gotoView("mail"); root.paletteRequested("search ") } },
     { id: "search.filter", title: "Filter by this message…", scope: "mail", keys: [], ex: ["filter"], pick: pickFilters, run: function() { root.paletteRequested("filter ") } },
     { id: "search.clear", title: "Clear search",   scope: "global", keys: [], ex: ["clear"], when: function() { return app.searchQuery !== "" }, run: function() { app.clearSearch() } },
 
@@ -356,6 +381,12 @@ Item {
     { id: "mail.tag",      title: "Set category / tag\u2026", scope: "mail", keys: ["t"], ex: ["tag", "category", "cat"], pick: pickTags, when: function() { return onMessages }, run: function() { openTagPicker() } },
     { id: "mail.tagcolor", title: "Colour for the new category\u2026", scope: "mail", keys: [], hidden: true, ex: ["tagcolor"], pick: pickColors, run: function() {} },
     { id: "mail.undo",     title: "Undo last archive / delete / move, or unsend", scope: "mail", keys: ["u"], run: function() { if (!app.undoAction()) app.undoLatest() } },
+
+    // sms (the view's own item is `content`)
+    { id: "sms.read",   title: "Mark conversation read / unread", scope: "sms", keys: ["z"], run: function() { if (content && content.toggleRead) content.toggleRead() } },
+    { id: "sms.reply",  title: "Reply (write in the conversation)", scope: "sms", keys: ["r", "i"], ex: ["reply"], run: function() { if (content && content.replyHere) content.replyHere() } },
+    { id: "sms.new",    title: "New text message", scope: "sms", keys: ["c", "C-n"], ex: ["compose", "new"], run: function() { if (content && content.newConversation) content.newConversation() } },
+    { id: "sms.retry",  title: "Retry failed texts", scope: "sms", keys: ["R"], ex: ["retry"], run: function() { if (content && content.retryFailed) content.retryFailed() } },
 
     // calendar
     { id: "cal.next",  title: "Next period",     scope: "calendar/list", keys: ["j", "Down", "]"], run: function() { content.step(1) } },

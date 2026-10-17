@@ -189,15 +189,18 @@ if [ "$LIVE" = true ]; then
 
     install -m 644 "$PROJECT_DIR/packaging/omalook.svg" "$LIVE_DIR/share/omalook.svg"
 
-    # Launcher: points the app at the installed UI, and refuses to start a second
-    # copy (they would fight over port 27182 and the database): it focuses the
-    # window of the one that is running instead.
+    # Launcher: points the app at the installed UI, and refuses to open a second
+    # window: it focuses the one that is open instead. A backend running without a
+    # window (Settings → General → Keep running in background) is not a window; the
+    # binary detects it on port 27182 and attaches a UI to it.
     cat > "$LIVE_DIR/omalook" <<'LAUNCHER'
 #!/bin/bash
 # OmaLook launcher (written by build.sh --live)
 DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 
-if pgrep -f "^$DIR/bin/omalook" > /dev/null; then
+# A backend alone (kept running in the background after the window closed) does not count: the
+# binary then attaches a new window to it. Only an open window means "already running".
+if pgrep -f "^quickshell -p $DIR/qml" > /dev/null; then
     addr=$(hyprctl clients -j 2>/dev/null | jq -r '.[] | select(.class=="org.quickshell" and .title=="OmaLook") | .address' | head -n1)
     [ -n "$addr" ] && hyprctl dispatch focuswindow "address:$addr" > /dev/null 2>&1
     exit 0

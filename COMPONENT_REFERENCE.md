@@ -21,6 +21,7 @@
 | ureq | 2.9 | HTTP Client | [docs.rs](https://docs.rs/ureq/latest/ureq/) | Graph API calls |
 | oauth2 | 4.4 | OAuth2 | [docs.rs](https://docs.rs/oauth2/latest/oauth2/) | Device Flow auth |
 | rusqlite | 0.30 | SQLite Bindings | [docs.rs](https://docs.rs/rusqlite/latest/rusqlite/) | Database access |
+| zbus | 3.15 | D-Bus (KDE Connect SMS) | [docs.rs](https://docs.rs/zbus/3.15.2/zbus/) | Blocking API; already in tree via keyring |
 | keyring | 2.1 | Keyring | [docs.rs](https://docs.rs/keyring/latest/keyring/) | SecretService (Linux) |
 | Microsoft Graph | v1.0 | External API | [learn.microsoft.com](https://learn.microsoft.com/en-us/graph/) | Mail, user data |
 
@@ -218,6 +219,10 @@
 - [JSON API](https://docs.rs/serde_json/latest/serde_json/)
 
 **Notes:** Serialization framework; JSON parsing for Graph API responses
+
+### zbus
+**Docs:** https://docs.rs/zbus/3.15.2/zbus/ · **Crates.io:** https://crates.io/crates/zbus  
+**Notes:** Used by `sms_daemon.rs` (blocking `Connection`/`MessageIterator`) to talk to `kdeconnectd` on the session bus. SMS design, schema and routes: `docs/SMS.md`.
 
 ### keyring
 

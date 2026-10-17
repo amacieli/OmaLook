@@ -324,6 +324,9 @@ pub struct Settings {
     /// settings (sidebar, folder pane, send delay…) never drop what the user wrote there.
     #[serde(default)]
     pub keys: KeySettings,
+    /// MCP server permissions (`[mcp]`). Kept in the struct so other settings' rewrites keep it.
+    #[serde(default, skip_serializing_if = "crate::mcp::policy::McpSettings::is_default")]
+    pub mcp: crate::mcp::policy::McpSettings,
 }
 
 /// `[keys]` in settings.toml. `preset` adds a family of extra bindings ("outlook"); every other
@@ -444,8 +447,12 @@ impl Default for CalendarSettings {
 pub struct FontSettings {
     pub family: String,
     pub base_size: i32,
+    /// Whole-UI scale (Settings -> Appearance). Missing in older files -> 1.0.
+    #[serde(default = "default_scale_factor")]
     pub scale_factor: f64,
 }
+
+fn default_scale_factor() -> f64 { 1.0 }
 
 impl FontSettings {
     /// Calculate effective font size: base_size * scale_factor
@@ -498,6 +505,10 @@ pub struct SyncSettings {
     pub auto_sync: bool,
     /// Keep messages cached for N days (0 = forever)
     pub cache_retention_days: i32,
+    /// Keep the backend (sync, SMS mirror, HTTP server) running after the UI window is closed.
+    /// Absent in settings files written before this setting existed.
+    #[serde(default)]
+    pub run_in_background: bool,
 }
 
 impl Default for Settings {
@@ -531,10 +542,12 @@ impl Default for Settings {
                 poll_interval_secs: 120, // 2 minute polling interval for email daemon
                 auto_sync: true,
                 cache_retention_days: 30,
+                run_in_background: false,
             },
             calendar: CalendarSettings::default(),
             mail: MailSettings::default(),
             keys: KeySettings::default(),
+            mcp: Default::default(),
         }
     }
 }

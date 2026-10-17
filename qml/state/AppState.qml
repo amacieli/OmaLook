@@ -16,7 +16,7 @@ Item {
   }
   property bool backendOnline: false
   onBackendOnlineChanged: {
-    if (backendOnline) { perfMark("backend first answered"); loadCalendarSettings(); loadUiSettings(); loadSenders(); loadMailSettings(); loadSearchHistory() }
+    if (backendOnline) { perfMark("backend first answered"); loadCalendarSettings(); loadUiSettings(); loadSenders(); loadMailSettings(); loadBackgroundSettings(); loadSearchHistory() }
   }
 
   // ---- launch timing (see src/perf.rs): marks are queued until the backend answers, then
@@ -56,6 +56,7 @@ Item {
 
   readonly property var settingsCategories: [
     { id: "account",       icon: "\uf007", label: "Accounts"      },
+    { id: "general",       icon: "\uf013", label: "General"       },
     { id: "appearance",    icon: "\uf1fc", label: "Appearance"    },
     { id: "mail",          icon: "\uf0e0", label: "Mail"          },
     { id: "senders",       icon: "\uf2bd", label: "Senders"       },
@@ -712,6 +713,27 @@ Item {
     })
   }
 
+  // ---- background running ----------------------------------------------------------------
+  // Settings -> General -> "Keep running in background": the backend (sync, SMS mirror) stays up
+  // after this window closes and the next launch reattaches to it. Persisted in settings.toml.
+  property bool runInBackground: false
+
+  function loadBackgroundSettings() {
+    request("GET", "/settings/background", function(xhr) {
+      if (xhr.status !== 200) return
+      try { runInBackground = JSON.parse(xhr.responseText).run_in_background === true } catch (e) { console.log("[Background] parse error:", e) }
+    })
+  }
+
+  function setRunInBackground(on) {
+    var before = runInBackground
+    runInBackground = on
+    request("POST", "/settings/background?enabled=" + (on ? "true" : "false"), function(xhr) {
+      if (xhr.status !== 200) { runInBackground = before; return }
+      try { runInBackground = JSON.parse(xhr.responseText).run_in_background === true } catch (e) { runInBackground = before }
+    })
+  }
+
   // Messages handed to the backend and not yet dismissed:
   // [{ id, message, sendAt (ms), state: pending|sending|sent|failed, error, doneAt }]
   property var sends: []
@@ -951,6 +973,11 @@ Item {
   // this tiny endpoint (no DB access) makes fresh mail appear within one tick of being
   // stored. Fast (500 ms) for the first 90 s after launch while the stages land, then 3 s.
   property int _syncSerial: -1
+  // SMS: bumped when the backend's sms serial moves; the SMS view reloads on it.
+  property int smsRev: 0
+  property int _smsSerial: -1
+  property string smsSearch: ""       // active SMS search (name, number or message text); "" = none
+  property bool smsHasThread: false   // the SMS view has a conversation open (the reader pane exists)
   property bool _syncFast: true
   Timer { interval: 90000; running: root.backendOnline; onTriggered: root._syncFast = false }
   Timer {
@@ -962,8 +989,9 @@ Item {
   function checkSyncSerial() {
     request("GET", "/sync/serial", function(xhr) {
       if (xhr.status !== 200) return
-      var n = -1
-      try { n = JSON.parse(xhr.responseText).mail } catch (e) { return }
+      var n = -1, sms = -1
+      try { var j = JSON.parse(xhr.responseText); n = j.mail; sms = (j.sms === undefined ? -1 : j.sms) } catch (e) { return }
+      if (sms !== root._smsSerial) { root._smsSerial = sms; root.smsRev++ }
       if (root._syncSerial === -1) { root._syncSerial = n; if (n === 0) return }
       else if (n === root._syncSerial) return
       root._syncSerial = n
@@ -1072,6 +1100,28 @@ Item {
 
   property bool _applyingSettings: false
 
+  // Whole-UI scale (Settings -> Appearance). shell.qml scales the window content by this, so
+  // a change takes effect at once; the backend clamps and stores it in settings.toml [font].
+  property real uiScale: 1.0
+  readonly property real minUiScale: 0.5
+  readonly property real maxUiScale: 3.0
+  function clampUiScale(v) {
+    var n = Number(v)
+    if (!isFinite(n)) return 1.0
+    return Math.round(Math.max(minUiScale, Math.min(maxUiScale, n)) * 100) / 100
+  }
+  function setUiScale(v) {
+    var next = clampUiScale(v)
+    if (next === uiScale) return
+    var before = uiScale
+    uiScale = next
+    request("POST", "/settings/scale_factor?value=" + next, function(xhr) {
+      var ok = false
+      try { var r = JSON.parse(xhr.responseText); ok = r.ok === true; if (ok) root.uiScale = clampUiScale(r.scale_factor) } catch (e) { ok = false }
+      if (!ok) root.uiScale = before
+    })
+  }
+
   function loadUiSettings() {
     request("GET", "/settings/ui", function(xhr) {
       if (xhr.status !== 200) return
@@ -1079,6 +1129,7 @@ Item {
         var s = JSON.parse(xhr.responseText)
         if (s.message_rendering === "html" || s.message_rendering === "system" || s.message_rendering === "system_sender")
           root.messageRendering = s.message_rendering
+        if (typeof s.scale_factor === "number") root.uiScale = root.clampUiScale(s.scale_factor)
         if (typeof s.folder_pane === "boolean") {
           root._applyingSettings = true
           root.showFolderPane = s.folder_pane
@@ -1493,8 +1544,13 @@ Item {
       msgIndex = 0
     } else if (focusPane === "msg" && currentView === "mail" && currentMessage) {
       focusPane = "reader"
+    } else if (focusPane === "msg" && currentView === "sms" && smsHasThread) {
+      focusPane = "reader"
     }
   }
+
+  // Does the view have something to show in its reader pane?
+  readonly property bool readerAvailable: currentView === "sms" ? smsHasThread : !!currentMessage
 
   function activate() { moveInto() }
 
@@ -1506,6 +1562,7 @@ Item {
 
   // Panes that exist in the current view, left to right.
   function panesInView() {
+    if (currentView === "sms") return ["msg", "reader"]
     if (currentView !== "mail") return ["msg"]
     return showFolderPane ? ["folder", "msg", "reader"] : ["msg", "reader"]
   }
@@ -1515,7 +1572,7 @@ Item {
   function focusPaneNamed(pane) {
     if (panesInView().indexOf(pane) < 0) return
     if (pane === "folder") folderIndex = Math.max(0, folderIndex)
-    if (pane === "reader" && !currentMessage) return
+    if (pane === "reader" && !readerAvailable) return
     focusPane = pane
   }
 
@@ -1526,7 +1583,7 @@ Item {
     if (i < 0) i = 0
     for (var n = 1; n <= panes.length; n++) {
       var next = panes[(i + dir * n + panes.length * n) % panes.length]
-      if (next === "reader" && !currentMessage) continue
+      if (next === "reader" && !readerAvailable) continue
       focusPaneNamed(next)
       return
     }

@@ -84,6 +84,8 @@ pub fn categories_from_json(s: Option<&str>) -> Vec<String> {
     s.and_then(|t| serde_json::from_str::<Vec<String>>(t).ok()).unwrap_or_default()
 }
 
+pub mod sms;
+
 pub struct Database {
     conn: Connection,
     /// Account that rows written through this handle belong to.
@@ -408,6 +410,7 @@ impl Database {
         }
 
         self.init_contacts_schema()?;
+        self.init_sms_schema()?;
         self.init_accounts_schema()?;
 
         Ok(())

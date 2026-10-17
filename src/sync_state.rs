@@ -17,6 +17,7 @@ use std::time::{Duration, Instant};
 static MAIL_SERIAL: AtomicU64 = AtomicU64::new(0);
 static READ_PUSH_SERIAL: AtomicU64 = AtomicU64::new(0);
 static READ_PUSH: tokio::sync::Notify = tokio::sync::Notify::const_new();
+static SMS_SERIAL: AtomicU64 = AtomicU64::new(0);
 static OUTBOX_SERIAL: AtomicU64 = AtomicU64::new(0);
 static OUTBOX: tokio::sync::Notify = tokio::sync::Notify::const_new();
 static GATE: Mutex<Option<HashSet<String>>> = Mutex::new(None);
@@ -30,6 +31,16 @@ pub fn mail_serial() -> u64 {
 pub fn bump_mail(reason: &str) {
     let n = MAIL_SERIAL.fetch_add(1, Ordering::SeqCst) + 1;
     perf::mark(&format!("sync serial -> {} ({})", n, reason));
+}
+
+pub fn sms_serial() -> u64 {
+    SMS_SERIAL.load(Ordering::SeqCst)
+}
+
+/// Tell the UI the SMS cache changed (new/updated messages, read flags, removed threads).
+pub fn bump_sms(reason: &str) {
+    let n = SMS_SERIAL.fetch_add(1, Ordering::SeqCst) + 1;
+    perf::mark(&format!("sms serial -> {} ({})", n, reason));
 }
 
 /// The one-time repopulate of message details is running (or not) for `account`.

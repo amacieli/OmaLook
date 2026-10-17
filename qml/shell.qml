@@ -22,9 +22,21 @@ ShellRoot {
     // Closing the window (or Esc at the top level) ends the app.
     onVisibleChanged: if (!visible) Qt.quit()
 
-    AppShell {
+    // Settings -> Appearance -> Scale factor: the whole UI is laid out at window/scale and
+    // then scaled up, so every size (fonts, spacing, icons) follows at once, no restart.
+    // (The Omarchy kit in Commons/Ui is a read-only symlink, so scaling happens here.)
+    Item {
       anchors.fill: parent
-      onCloseRequested: Qt.quit()
+      clip: true
+
+      AppShell {
+        id: shell
+        width: parent.width / shell.uiScale
+        height: parent.height / shell.uiScale
+        scale: shell.uiScale
+        transformOrigin: Item.TopLeft
+        onCloseRequested: Qt.quit()
+      }
     }
   }
 }

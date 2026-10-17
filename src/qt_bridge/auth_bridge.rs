@@ -320,10 +320,18 @@ mod tests {
 
     #[test]
     fn test_copy_to_clipboard() {
-        let bridge = AuthBridge::new();
-        // This test will only pass if a clipboard backend is available
-        let result = bridge.copy_to_clipboard("test");
-        // Don't assert success; just verify no panic
-        let _ = result;
+        // copy_to_clipboard has been seen to block forever (OL-005), so run it on its own thread
+        // and fail the test after 5 s instead of hanging the whole `cargo test` run.
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let bridge = AuthBridge::new();
+            // Success needs a clipboard backend; only a hang or panic is a failure here.
+            let _ = tx.send(bridge.copy_to_clipboard("test"));
+        });
+        match rx.recv_timeout(std::time::Duration::from_secs(5)) {
+            Ok(_) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => panic!("copy_to_clipboard still running after 5 s (OL-005)"),
+            Err(e) => panic!("copy_to_clipboard thread died: {e}"),
+        }
     }
 }

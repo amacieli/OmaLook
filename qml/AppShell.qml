@@ -20,6 +20,9 @@ FocusScope {
 
   function focusKeys() { keyCatcher.forceActiveFocus() }
 
+  // UI scale factor (Settings -> Appearance); shell.qml scales this whole item by it.
+  readonly property real uiScale: appState.uiScale
+
   AppState {
     id: appState
     onFocusRequested: root.focusKeys()
@@ -113,15 +116,19 @@ FocusScope {
 
         // Mail draws its own two frames (list, reader); every other view is one pane.
         Item {
+          id: viewArea
           Layout.fillWidth: true
           Layout.fillHeight: true
+
+          // Views that draw their own pane frames (mail, SMS) vs. one framed pane.
+          readonly property bool ownsFrames: appState.currentView === "mail" || appState.currentView === "sms"
 
           Loader {
             id: contentLoader
             anchors.fill: parent
             // Non-mail views sit inside the frame; mail's panes draw their own.
-            anchors.margins: appState.currentView === "mail" ? 0 : 2
-            anchors.topMargin: appState.currentView === "mail" ? 0 : Style.spacing.xl
+            anchors.margins: viewArea.ownsFrames ? 0 : 2
+            anchors.topMargin: viewArea.ownsFrames ? 0 : Style.spacing.xl
             sourceComponent: {
               switch (appState.currentView) {
                 case "settings": return settingsComponent
@@ -136,7 +143,7 @@ FocusScope {
 
           PaneFrame {
             tint: Hues.blue
-            visible: appState.currentView !== "mail"
+            visible: !viewArea.ownsFrames
             focused: appState.focusPane === "msg"
             hotkey: "\u00b9"
             title: appState.currentViewLabel
@@ -174,7 +181,7 @@ FocusScope {
     Component { id: calendarComponent; CalendarView { mode: appState.calendarMode; dataRev: appState.calendarRev; onModeChanged: appState.calendarMode = mode; monoFont: Style.font.family; accentColor: Color.accent; successColor: Color.accent; dangerColor: Color.urgent; textColor: Color.foreground } }
     Component { id: peopleComponent;   PeopleView   { viewMode: appState.peopleView; onViewModeChanged: appState.peopleView = viewMode; sortKey: appState.peopleSort; onSortKeyChanged: appState.peopleSort = sortKey; monoFont: Style.font.family; accentColor: Color.accent; successColor: Color.accent; dangerColor: Color.urgent; textColor: Color.foreground } }
     Component { id: tasksComponent;    TasksView    { monoFont: Style.font.family; accentColor: Color.accent; successColor: Color.accent; dangerColor: Color.urgent; textColor: Color.foreground } }
-    Component { id: smsComponent;      SmsView {} }
+    Component { id: smsComponent;      SmsView { app: appState } }
     Component {
       id: settingsComponent
       SettingsView {

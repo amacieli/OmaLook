@@ -5,6 +5,26 @@ IDs are stable (never reused). Status: `open` | `investigating` | `planned` | `i
 
 ## Issues
 
+### OL-006 — Harden the UI backend port 27182: no auth, CORS `*` (planned, not started)
+- **Seen:** 2026-10-16 while designing MCP. `start_http_trigger_server` (`src/main.rs`) answers every route on `127.0.0.1:27182` without authentication and with `Access-Control-Allow-Origin: *`. Any local process, or any web page open in a browser, can call `/messages/action` (archive/trash/delete), `/compose/send`, `/sms/send`, `/accounts/remove`, `/settings/*`.
+- **Why it matters for MCP:** the MCP listener (port 27183, bearer token, Origin/Host checks) enforces permissions, but they are moot while this port lets anything do the same actions directly.
+- **Sketch (not decided):** per-launch token handed to the QML UI and required on every route; drop the CORS header; check `Host`/`Origin`; later the single-instance guard on the port.
+- **Decision (2026-10-16):** do not tackle yet. Fold into OL-007.
+
+### OL-007 — Whole-app security analysis (planned, not started)
+- **Scope (user, 2026-10-16):** a separate pass over every security issue in OmaLook, not just MCP. Starting list: OL-006; unauthenticated routes; the `/fs/list` file browser; attachment save paths; token/keyring handling; the render helper's isolation; what is written to logs and `perf.log`; the MCP surface once built.
+
+### OL-008 — OS notification integration (planned, not started)
+- **Wanted (user, 2026-10-16):** hook into the desktop notification system (freedesktop `org.freedesktop.Notifications` over D-Bus, `zbus` is already a dependency): new mail/SMS/invite alerts, and MCP "ask" approval prompts as notifications with actions when the OmaLook window is closed or the daemon runs in the background.
+- **Until then:** MCP approval prompts are in-app only (keyboard-driven toast). See `notes/DESIGN-mcp-server.md` §4.3.
+
+### OL-005 — `test_copy_to_clipboard` hangs; find the root cause (open)
+- **Seen:** every full `cargo test --lib` run for weeks blocks forever at 0% CPU on `qt_bridge::auth_bridge::tests::test_copy_to_clipboard` (re-confirmed 2026-10-13); until now it was skipped with `--skip`. Predates all recent work.
+- **Stopgap (2026-10-13):** the test runs the call on a thread and panics after 5 s, so the suite finishes; the test now **fails** (red) until this is fixed. It does not fix the hang.
+- **Evidence:** the hung run leaves an orphaned `wl-copy` process (no xclip on this machine) waiting on stdin, consistent with the suspect below. `pkill -x wl-copy` clears them.
+- **Prime suspect (unconfirmed, from reading the code):** `AuthBridge::copy_to_clipboard` (`src/qt_bridge/auth_bridge.rs`) calls `child.wait()` on `xclip` while still holding the child's `stdin` pipe, so xclip never sees EOF and never exits. Likely a real bug in the app's copy-to-clipboard too, not only the test. Same pattern may exist in the `wl-copy` branch.
+- **To do:** confirm (run it under `strace -f` or run `xclip`/`wl-copy` by hand); `drop(stdin)` before `wait()`; check what `xclip` does under Wayland/XWayland; then remove the stopgap or keep it as a guard, and re-test the copy button in the UI.
+
 ### OL-001 — UI hangs at ~100% CPU on one thread (open)
 - **Seen:** 2026-10-07, `quickshell -p /opt/omalook/qml`, PID 3868852. Window stopped responding; one thread pinned at ~97% CPU
   from startup onward (4:09 CPU in 4:15 elapsed); had to be killed by hand.
