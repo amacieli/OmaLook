@@ -117,6 +117,40 @@ impl McpSettings {
     }
 }
 
+/// The one-click permission sets on the Settings → MCP page. They set domain levels and clear
+/// per-tool overrides; the master switch and the account list are left alone.
+pub const PRESETS: [&str; 3] = ["locked", "read_only", "approval"];
+
+/// `current` with a preset applied. `None` for an unknown name.
+pub fn with_preset(current: &McpSettings, name: &str) -> Option<McpSettings> {
+    let level = match name { "locked" => "off", "read_only" => "read", "approval" => "write", _ => return None };
+    let mut s = current.clone();
+    s.tools.clear();
+    s.domains = Domain::ALL
+        .iter()
+        // Accounts has no write tools: it tops out at read.
+        .map(|d| (d.key().to_string(), if *d == Domain::Accounts && level == "write" { "read" } else { level }.to_string()))
+        .collect();
+    Some(s)
+}
+
+/// Which preset the domain levels and tool overrides add up to, or "custom".
+pub fn preset_of(s: &McpSettings) -> &'static str {
+    PRESETS.iter().copied().find(|p| with_preset(s, p).map_or(false, |x| x.domains == normalized_domains(s) && s.tools.is_empty())).unwrap_or("custom")
+}
+
+/// Domain levels with every domain present (missing = off), as text.
+fn normalized_domains(s: &McpSettings) -> BTreeMap<String, String> {
+    Domain::ALL
+        .iter()
+        .map(|d| {
+            let lv = s.domains.get(d.key()).map(|v| Level::parse(v)).unwrap_or(Level::Off);
+            let lv = if *d == Domain::Accounts { lv.min(Level::Read) } else { lv };
+            (d.key().to_string(), lv.key().to_string())
+        })
+        .collect()
+}
+
 /// What the policy says about one tool call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Decision {
@@ -271,6 +305,34 @@ mod tests {
         assert!(p.account_allowed("graph-1"));
         assert!(!p.account_allowed("gmail-2"));
         assert!(!Policy::new(s, false).account_allowed("graph-1"), "inactive policy allows no account");
+    }
+
+    #[test]
+    fn presets_set_levels_and_clear_overrides_but_keep_switch_and_accounts() {
+        let mut cur = McpSettings { enabled: true, accounts: vec!["a".into()], ..Default::default() };
+        cur.tools.insert("mail_send".into(), "allow".into());
+        let ro = with_preset(&cur, "read_only").unwrap();
+        assert!(ro.enabled && ro.accounts == vec!["a".to_string()] && ro.tools.is_empty());
+        assert!(Domain::ALL.iter().all(|d| ro.domains[d.key()] == "read"));
+        let ap = with_preset(&cur, "approval").unwrap();
+        assert_eq!(ap.domains["mail"], "write");
+        assert_eq!(ap.domains["accounts"], "read", "accounts never exceeds read");
+        let lk = with_preset(&cur, "locked").unwrap();
+        assert!(Domain::ALL.iter().all(|d| lk.domains[d.key()] == "off"));
+        assert!(with_preset(&cur, "yolo").is_none());
+    }
+
+    #[test]
+    fn preset_detection_names_what_the_settings_add_up_to() {
+        let base = McpSettings::default();
+        assert_eq!(preset_of(&base), "locked", "a fresh install is the locked preset");
+        for p in PRESETS { assert_eq!(preset_of(&with_preset(&base, p).unwrap()), p); }
+        let mut custom = with_preset(&base, "approval").unwrap();
+        custom.tools.insert("mail_send".into(), "off".into());
+        assert_eq!(preset_of(&custom), "custom");
+        let mut custom = with_preset(&base, "read_only").unwrap();
+        custom.domains.insert("sms".into(), "off".into());
+        assert_eq!(preset_of(&custom), "custom");
     }
 
     #[test]

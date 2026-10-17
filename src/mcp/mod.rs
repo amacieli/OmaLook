@@ -3,6 +3,7 @@
 //! The daemon owns the policy and the tools; `omalook mcp` ([`shim`]) is only a stdio forwarder
 //! for clients that spawn a command. Design: `notes/DESIGN-mcp-server.md`.
 //!
+//! - [`admin`]: the Settings → MCP page's backend (state + changes).
 //! - [`policy`]: master switch → domain level → tool mode, fail-closed.
 //! - [`read`]: the read tools (cache only).
 //! - [`registry`]: the tool catalogue and handlers.
@@ -10,6 +11,7 @@
 //! - [`server`]: the authenticated localhost listener (separate port from the UI's).
 //! - [`token`]: the bearer token file.
 
+pub mod admin;
 pub mod policy;
 pub mod read;
 pub mod registry;

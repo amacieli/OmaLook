@@ -89,6 +89,7 @@ RowLayout {
           case "senders":       return sendersPage
           case "calendar":      return calendarPage
           case "sms":           return smsPage
+          case "mcp":           return mcpPage
           case "notifications": return notificationsPage
           default:              return aboutPage
         }
@@ -116,6 +117,7 @@ RowLayout {
   Component { id: sendersPage;       SendersPage { app: root.app } }
   Component { id: calendarPage;      CalendarPage { app: root.app } }
   Component { id: smsPage;           SmsPage {} }
+  Component { id: mcpPage;           McpPage { app: root.app } }
   Component { id: notificationsPage; NotificationsPage {} }
   Component {
     id: aboutPage

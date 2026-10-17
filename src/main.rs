@@ -1858,6 +1858,25 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                     continue;
                 }
 
+                // ── /settings/mcp… — Settings → MCP (state + changes); see src/mcp/admin.rs ──
+                if first_line.contains(" /settings/mcp") {
+                    let method = if first_line.starts_with("POST") { "POST" } else { "GET" };
+                    let path = first_line.split_whitespace().nth(1).unwrap_or("").split('?').next().unwrap_or("");
+                    let line = first_line.to_string();
+                    let dir = config_dir.clone();
+                    let path = path.to_string();
+                    std::thread::spawn(move || {
+                        let body = omalook::mcp::admin::handle(&dir, method, &path, &|k| query_param(&line, k))
+                            .unwrap_or_else(|| "{\"error\":\"unknown route\"}".to_string());
+                        let response = format!(
+                            "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                            body.len(), body
+                        );
+                        let _ = stream.write_all(response.as_bytes());
+                    });
+                    continue;
+                }
+
                 // ── GET|POST /settings/background?enabled=true|false — keep the backend running
                 // after the UI window closes. Takes effect when the window closes; no restart. ──
                 if first_line.contains("GET /settings/background") || first_line.contains("POST /settings/background") {

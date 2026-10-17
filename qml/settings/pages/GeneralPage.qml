@@ -37,5 +37,16 @@ SettingsPage {
       font.pixelSize: Style.font.caption
       text: "To stop it completely: turn this off and close the window (the background process exits at once if no window is open)."
     }
+
+    UiText {
+      visible: page.app && page.app.mcp.enabled
+      width: parent.width
+      wrapMode: Text.WordWrap
+      dim: true
+      font.pixelSize: Style.font.caption
+      text: page.app && page.app.runInBackground
+        ? "The MCP server (Settings > MCP) runs inside this background process; turning this off stops it."
+        : "The MCP server is switched on in Settings > MCP, but stays off while this is off."
+    }
   }
 }

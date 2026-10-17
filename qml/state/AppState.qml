@@ -9,14 +9,15 @@ Item {
   id: root
 
   // ------------------------------------------------------------- backend
-  readonly property string backendUrl: "http://127.0.0.1:27182"
+  // OMALOOK_PORT lets a second (test) instance's UI talk to its own backend; the default is the real one.
+  readonly property string backendUrl: "http://127.0.0.1:" + (Quickshell.env("OMALOOK_PORT") || "27182")
   readonly property string configDir: {
     var d = Quickshell.env("CONFIG_DIR")
     return (d && d.length > 0) ? d : Quickshell.env("HOME") + "/.config/omalook"
   }
   property bool backendOnline: false
   onBackendOnlineChanged: {
-    if (backendOnline) { perfMark("backend first answered"); loadCalendarSettings(); loadUiSettings(); loadSenders(); loadMailSettings(); loadBackgroundSettings(); loadSearchHistory() }
+    if (backendOnline) { perfMark("backend first answered"); loadCalendarSettings(); loadUiSettings(); loadSenders(); loadMailSettings(); loadBackgroundSettings(); loadMcp(); loadSearchHistory() }
   }
 
   // ---- launch timing (see src/perf.rs): marks are queued until the backend answers, then
@@ -62,6 +63,7 @@ Item {
     { id: "senders",       icon: "\uf2bd", label: "Senders"       },
     { id: "calendar",      icon: "\uf073", label: "Calendar"      },
     { id: "sms",           icon: "\uf27a", label: "SMS"           },
+    { id: "mcp",           icon: "\uf1e6", label: "MCP"           },
     { id: "notifications", icon: "\uf0f3", label: "Notifications" },
     { id: "about",         icon: "\uf05a", label: "About"         }
   ]
@@ -731,6 +733,36 @@ Item {
     request("POST", "/settings/background?enabled=" + (on ? "true" : "false"), function(xhr) {
       if (xhr.status !== 200) { runInBackground = before; return }
       try { runInBackground = JSON.parse(xhr.responseText).run_in_background === true } catch (e) { runInBackground = before }
+    })
+  }
+
+  // ---- MCP server (Settings -> MCP) --------------------------------------------------------
+  // State of the MCP permissions as the backend reports it (src/mcp/admin.rs): master switch,
+  // whether it is active (needs "Keep running in background"), preset, domain levels, write
+  // tools with their modes, allowed account ids. Every change goes to the backend, which
+  // validates and stores it in settings.toml [mcp] and answers with the new state.
+  property var mcp: ({ settings_readable: true, run_in_background: false, enabled: false, active: false, listening: false,
+                       preset: "locked", domains: ({}), read_tools: ({}), tools: [], accounts: [], http_url: "", command: "" })
+  property string mcpError: ""
+
+  function applyMcp(text) {
+    try {
+      var d = JSON.parse(text)
+      mcpError = d.error || ""
+      delete d.error
+      mcp = d
+    } catch (e) { console.log("[MCP] parse error:", e) }
+  }
+
+  function loadMcp() {
+    request("GET", "/settings/mcp", function(xhr) { if (xhr.status === 200) applyMcp(xhr.responseText) })
+  }
+
+  // path is the part after /settings/mcp, query included, e.g. "/domain?domain=mail&level=read".
+  function mcpPost(path, done) {
+    request("POST", "/settings/mcp" + path, function(xhr) {
+      if (xhr.status === 200) applyMcp(xhr.responseText)
+      if (done) done(xhr.status === 200 && mcpError === "")
     })
   }
 
