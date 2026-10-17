@@ -1167,6 +1167,11 @@ Item {
           root.showFolderPane = s.folder_pane
           root._applyingSettings = false
         }
+        if (typeof s.list_width_offset === "number") {
+          root._applyingSettings = true
+          root.listWidthOffset = Math.round(s.list_width_offset)
+          root._applyingSettings = false
+        }
         if (typeof s.sidebar_expanded === "boolean") {
           root._applyingSettings = true
           root.sidebarExpanded = s.sidebar_expanded
@@ -1213,6 +1218,25 @@ Item {
     if (!_applyingSettings) request("POST", "/settings/folder_pane", null, showFolderPane ? "true" : "false")
   }
   function toggleFolderPane() { showFolderPane = !showFolderPane }
+
+  // ---- list / reading pane divider --------------------------------------------------------
+  // Message list width in characters, relative to its default (`ui.list_width_offset` in
+  // settings.toml). Ctrl-Right / Ctrl-Left move the divider one character. MailView publishes
+  // the bounds that keep both panes usable.
+  property int listWidthOffset: 0
+  property int listWidthMinOffset: -40
+  property int listWidthMaxOffset: 40
+  // Set false when the reading pane can be switched off: a lone list has no divider to move.
+  property bool showReaderPane: true
+  readonly property bool canResizeList: currentView === "mail" && showReaderPane
+  onListWidthOffsetChanged: {
+    if (!_applyingSettings) request("POST", "/settings/list_width_offset", null, String(listWidthOffset))
+  }
+  function resizeList(dCols) {
+    if (!canResizeList) return
+    var n = Math.max(listWidthMinOffset, Math.min(listWidthMaxOffset, listWidthOffset + dCols))
+    if (n !== listWidthOffset) listWidthOffset = n
+  }
 
   // "Inbox" or, with several accounts, "Inbox · adam@example.com".
   readonly property string selectedFolderLabel: {

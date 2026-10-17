@@ -325,6 +325,8 @@ Item {
       else app.back()
     } },
     // Pane numbers follow what is on screen: with the folder pane hidden, list = 1, reader = 2.
+    { id: "pane.widen",   title: "Widen message list (reading pane narrower)", scope: "mail", keys: ["C-Right", "C-w >"], when: function() { return app.canResizeList }, helpWhen: function() { return app.canResizeList }, run: function(n) { app.resizeList(n || 1) } },
+    { id: "pane.narrow",  title: "Narrow message list (reading pane wider)",   scope: "mail", keys: ["C-Left", "C-w <"],  when: function() { return app.canResizeList }, helpWhen: function() { return app.canResizeList }, run: function(n) { app.resizeList(-(n || 1)) } },
     { id: "pane.folders", title: "Focus folders",     scope: "mail",   keys: ["1"], when: function() { return app.showFolderPane }, helpWhen: function() { return app.showFolderPane }, run: function() { app.focusPaneNamed("folder") } },
     { id: "pane.list",    title: "Focus list",        scope: "mail",   keys: ["2"], when: function() { return app.showFolderPane }, helpWhen: function() { return app.showFolderPane }, run: function() { app.focusPaneNamed("msg") } },
     { id: "pane.reader",  title: "Focus reading pane", scope: "mail",  keys: ["3"], when: function() { return app.showFolderPane }, helpWhen: function() { return app.showFolderPane }, run: function() { app.focusPaneNamed("reader") } },

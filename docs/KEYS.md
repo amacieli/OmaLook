@@ -25,6 +25,14 @@ preset = "outlook"                      # optional: adds a family of extra bindi
   different scopes; two commands on one key in the SAME scope, or a key that is also the start of a chord there, is reported as a problem.
 - Plain text input fields (search, compose, palette) always get their keys; bindings only apply when no text field has focus.
 
+## Resizing the message list
+
+`Ctrl-Right` / `Ctrl-Left`, or the vim chords `Ctrl-w >` / `Ctrl-w <` (commands `pane.widen`, `pane.narrow`; the chords take a count: `Ctrl-w 5 >` moves the divider five characters) move the divider between the message list and the
+reading pane one character at a time; the other pane gives or takes the same width. They do nothing outside the mail view,
+and will do nothing when the reading pane is switched off (`showReaderPane`). The width is kept across launches as
+`[ui] list_width_offset` in `settings.toml`: characters relative to the default list width (0 = default, negative = narrower;
+you can edit it by hand). Both panes keep a minimum width, so the offset stops growing at those limits.
+
 ## Presets
 
 `outlook` keeps the vim keys and adds: Ctrl-R reply, Ctrl-Shift-R reply all, Ctrl-F forward, Delete delete, Backspace archive,

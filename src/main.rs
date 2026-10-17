@@ -1840,15 +1840,16 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                         .and_then(|s| toml::from_str::<omalook::models::Settings>(&s).ok())
                     {
                         Some(settings) => format!(
-                            "{{\"sidebar_expanded\":{},\"window_width\":{},\"window_height\":{},\"message_rendering\":\"{}\",\"folder_pane\":{},\"scale_factor\":{}}}",
+                            "{{\"sidebar_expanded\":{},\"window_width\":{},\"window_height\":{},\"message_rendering\":\"{}\",\"folder_pane\":{},\"list_width_offset\":{},\"scale_factor\":{}}}",
                             settings.ui.sidebar_expanded,
                             settings.ui.window_width,
                             settings.ui.window_height,
                             omalook::settings::normalize_message_rendering(&settings.ui.message_rendering).unwrap_or("system_sender"),
                             settings.ui.folder_pane,
+                            settings.ui.list_width_offset,
                             omalook::settings::normalize_scale_factor(settings.font.scale_factor),
                         ),
-                        None => "{\"sidebar_expanded\":true,\"window_width\":1280,\"window_height\":800,\"message_rendering\":\"system_sender\",\"folder_pane\":false,\"scale_factor\":1.0}".to_string(),
+                        None => "{\"sidebar_expanded\":true,\"window_width\":1280,\"window_height\":800,\"message_rendering\":\"system_sender\",\"folder_pane\":false,\"list_width_offset\":0,\"scale_factor\":1.0}".to_string(),
                     };
                     let response = format!(
                         "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
@@ -2012,6 +2013,25 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                         })
                         .is_some();
                     debug!("POST /settings/folder_pane {} → {}", shown, ok);
+                    let response = "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\nok";
+                    let _ = stream.write_all(response.as_bytes());
+                    continue;
+                }
+
+                // ── POST /settings/list_width_offset (body: integer, characters) — message list width ──
+                if first_line.contains("POST /settings/list_width_offset") {
+                    let body_start = request.find("\r\n\r\n").map(|i| i + 4).unwrap_or(0);
+                    let cols: i32 = request[body_start..].trim().parse::<i32>().unwrap_or(0).clamp(-200, 400);
+                    let settings_path = config_dir.join("settings.toml");
+                    let ok = std::fs::read_to_string(&settings_path)
+                        .ok()
+                        .and_then(|s| toml::from_str::<omalook::models::Settings>(&s).ok())
+                        .and_then(|mut settings| {
+                            settings.ui.list_width_offset = cols;
+                            toml::to_string_pretty(&settings).ok().map(|content| std::fs::write(&settings_path, content))
+                        })
+                        .is_some();
+                    debug!("POST /settings/list_width_offset {} → {}", cols, ok);
                     let response = "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\nok";
                     let _ = stream.write_all(response.as_bytes());
                     continue;

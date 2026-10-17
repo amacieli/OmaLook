@@ -17,6 +17,18 @@ RowLayout {
 
   spacing: Style.spacing.sm
 
+  // One character of the list's font: the step Ctrl-Left / Ctrl-Right move the divider by.
+  TextMetrics { id: charMetrics; text: "0"; font.family: Style.font.family; font.pixelSize: Style.font.body }
+  readonly property real charWidth: Math.max(1, charMetrics.advanceWidth)
+  readonly property real defaultListWidth: Style.space(360)
+  readonly property real minListWidth: Style.space(200)
+  readonly property real minReaderWidth: Style.space(320)
+  readonly property real listWidthWanted: defaultListWidth + root.app.listWidthOffset * charWidth
+  Binding { target: root.app; property: "listWidthMinOffset"
+    value: Math.ceil((root.minListWidth - root.defaultListWidth) / root.charWidth) }
+  Binding { target: root.app; property: "listWidthMaxOffset"
+    value: Math.max(0, Math.floor((root.width - root.minReaderWidth - root.spacing - root.defaultListWidth) / root.charWidth)) }
+
   // Reader pane keyboard scrolling (called by the key registry).
   function scrollReader(px) { preview.scrollBy(px) }
   function pageReader(frac) { preview.scrollPages(frac) }
@@ -24,7 +36,8 @@ RowLayout {
 
   MessageList {
     id: messages
-    Layout.preferredWidth: implicitWidth
+    Layout.preferredWidth: Math.max(root.minListWidth,
+      Math.min(root.listWidthWanted, root.width - root.minReaderWidth - root.spacing))
     Layout.fillHeight: true
     model: root.app.messageModel
     folderName: root.app.selectedFolderName

@@ -18,12 +18,15 @@ Item {
   property var interceptor: null
 
   property var pending: []
-  readonly property string pendingText: pending.join(" ")
+  // Vim-style count typed between Ctrl-w and its key (`Ctrl-w 5 >`); handed to the command's run().
+  property int count: 0
+  readonly property string pendingText: pending.join(" ") + (count > 0 ? " " + count : "")
   readonly property var pendingOptions: pending.length > 0 ? Cmd.resolve(commands, scopes, pending).prefixes : []
 
   focus: true
   Keys.priority: Keys.BeforeItem
 
+  onPendingChanged: if (pending.length === 0) count = 0
   onScopesChanged: pending = []
   onBlockedChanged: pending = []
 
@@ -36,6 +39,8 @@ Item {
       var prefix = (m & Qt.ShiftModifier) ? "C-S-" : "C-"
       if (e.key >= Qt.Key_A && e.key <= Qt.Key_Z) return prefix + String.fromCharCode(e.key + 32)
       if (e.key >= Qt.Key_0 && e.key <= Qt.Key_9) return prefix + String.fromCharCode(e.key)
+      if (e.key === Qt.Key_Left)  return prefix + "Left"
+      if (e.key === Qt.Key_Right) return prefix + "Right"
       return ""
     }
     if (e.key >= Qt.Key_F1 && e.key <= Qt.Key_F12) return "F" + (e.key - Qt.Key_F1 + 1)
@@ -66,12 +71,20 @@ Item {
     var t = token(e)
     if (t === "") return
 
+    // A count is only taken right after the Ctrl-w prefix; a leading 0 is not part of one.
+    if (pending.length === 1 && pending[0] === "C-w" && t.length === 1 && t >= "0" && t <= "9" && (count > 0 || t !== "0")) {
+      count = Math.min(999, count * 10 + Number(t))
+      chordTimer.restart()
+      e.accepted = true
+      return
+    }
     var seq = pending.concat([t])
     var r = Cmd.resolve(commands, scopes, seq)
     if (r.exact) {
+      var n = count
       pending = []; chordTimer.stop()
       e.accepted = true
-      r.exact.run()
+      r.exact.run(n > 0 ? n : undefined)
     } else if (r.prefixes.length > 0) {
       pending = seq; chordTimer.restart()
       e.accepted = true

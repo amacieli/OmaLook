@@ -110,6 +110,8 @@ function normToken(t) {
   var lower = t.toLowerCase()
   var m = /^(?:c|ctrl)-(?:(s|shift)-)?([a-z0-9])$/.exec(lower)
   if (m) return "C-" + (m[1] ? "S-" : "") + m[2]
+  m = /^(?:c|ctrl)-(left|right)$/.exec(lower)
+  if (m) return "C-" + (m[1] === "left" ? "Left" : "Right")
   if (NAMED[lower]) return NAMED[lower]
   m = /^f([1-9]|1[0-2])$/.exec(lower)
   if (m) return "F" + m[1]
