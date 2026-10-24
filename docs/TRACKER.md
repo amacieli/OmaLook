@@ -5,7 +5,13 @@ IDs are stable (never reused). Status: `open` | `investigating` | `planned` | `i
 
 ## Issues
 
-### OL-018 — Make hyperlinks clickable in both system mode and HTML mode (done 2026-10-24: mouse + keyboard; uncommitted)
+### OL-019 — Recipients (To/Cc/Bcc) blank on some messages (fixed 2026-10-24, needs `./build.sh --live`)
+- **Seen:** 2026-10-24: today's "Holiday party" from Erika showed no recipients; Graph has To = Jennifer Jackson, Gary Nusbaum, Adam. 78 other cached rows had the same (no conversation id).
+- **Cause:** `GraphEmailProvider::parse_message` marked every change-feed item `meta: true`. A read/move update can carry only the changed fields, so storing it blanked the cached recipients and flagged the row complete.
+- **Fix:** an item counts as complete only with a `conversationId`; Graph got `fetch_message_meta`; the daemon refetches stragglers one by one once the folder walks finish; a one-time flag (`sparse_meta_v1`) re-queues the 78 broken rows. Unit test `sparse_change_feed_item_is_not_complete`.
+- **Verify:** after deploy, "Holiday party" shows the three recipients; log line "N messages were stored without their details".
+
+### OL-018 — Make hyperlinks clickable in both system mode and HTML mode (done 2026-10-24: mouse + keyboard)
 - **Done:** system view (rich text, underlined, hand cursor), HTML view (WebKit link boxes + Qt fallback cursor); keyboard: Tab/]/[ , Enter/o, y, f hints, see docs/KEYS.md "Links in a message". Also fixed the white window: Qt 6.12 has its own `Color` type that shadowed the Omarchy kit's, and Omarchy 4.0.6 no longer loads the theme into `Color` by itself (shell.qml now does; all QML uses `Commons.Color`).
 - **Gotchas:** Qt paints a span's background over a following pre-wrap newline (use `<br>`); Text has no `positionToRectangle` (link positions come from `linkAt` probing); `linkColor` is ignored for rich-text anchors (colour a span inside); QML replace callbacks may get "" for unmatched groups.
 - **Original note:**
@@ -23,7 +29,8 @@ IDs are stable (never reused). Status: `open` | `investigating` | `planned` | `i
 - **Likely cause (unconfirmed):** the same message stored twice, most likely from the delta sync (`src/email_daemon.rs`, `src/providers/`) or the SQLite cache (`src/db/`), for example a re-delivered delta page or an id mismatch between the provider's id and the cache key. A copy in a second folder (e.g. Inbox and a category or folder view) is also possible.
 - **To do:** compare the two rows' provider message ids and internet message ids (`Message-ID`) in the cache; check the provider (Graph/Gmail) directly to confirm there is one message; if the ids match, find where the duplicate is inserted and make the upsert idempotent; if they differ, check whether the provider really holds two; add a test for the dedupe key; purge the duplicate row from the cache and confirm it does not come back after a re-sync.
 
-### OL-015 — Reply All: no keyboard shortcut, and Cc/Bcc recipients are dropped (open, not started)
+### OL-015 — Reply All: no keyboard shortcut, and Cc/Bcc recipients are dropped (fixed 2026-10-24, awaiting live check)
+- **Fixed:** Reply All read a non-existent `m.to_recipients`; it now builds To = sender, Cc = original To + Cc minus own addresses and duplicates, Bcc = original Bcc (`Fmt.replyAllRecipients`, `qml/mail/format.js`). Replying to your own sent mail goes to its original recipients. The compose recipient parser no longer splits `"Doe, Bob" <b@y.org>` at the comma. `R` was already bound (`mail.replyall`; Ctrl-Shift-R in the outlook preset). Checked with node only; **not yet seen in the app**.
 - **Seen:** 2026-10-19 (user report). Two faults in the mail reply flow:
   1. There is no keyboard binding for Reply All.
   2. Clicking the Reply All button does not carry over the Cc and Bcc recipients; they are missing from the compose window.

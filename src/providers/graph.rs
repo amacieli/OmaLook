@@ -256,7 +256,10 @@ impl GraphEmailProvider {
         let non_empty = |v: &serde_json::Value| v.as_str().map(str::trim).filter(|s| !s.is_empty()).map(String::from);
         EmailMessage {
             id, from, subject, received, body: preview, folder_id: parent_folder_id, is_read,
-            meta: true,
+            // A change-feed item for a message that only changed (read, moved) can carry just the
+            // changed fields. Without `conversationId` the details are not there, and storing the
+            // item as complete would blank the recipients already cached.
+            meta: !msg["conversationId"].is_null(),
             from_name: non_empty(&msg["from"]["emailAddress"]["name"]),
             to_text: Self::recipients_text(&msg["toRecipients"]),
             cc_text: Self::recipients_text(&msg["ccRecipients"]),
@@ -275,6 +278,22 @@ impl super::EmailProvider for GraphEmailProvider {
     /// Fetch emails from a specific folder (defaults to inbox)
     async fn fetch_inbox(&self, limit: usize) -> Result<Vec<EmailMessage>> {
         self.fetch_folder_messages("inbox", limit).await
+    }
+
+    /// Full details of messages whose change-feed item arrived without them (see `parse_message`).
+    async fn fetch_message_meta(&self, ids: &[String]) -> Vec<EmailMessage> {
+        let Ok(token) = self.get_token().await else { return Vec::new() };
+        let client = reqwest::Client::new();
+        let mut out = Vec::new();
+        for id in ids {
+            let url = format!("https://graph.microsoft.com/v1.0/me/messages/{}?$select={}", urlencoding::encode(id), MSG_SELECT);
+            let Ok(resp) = client.get(url).header("Authorization", format!("Bearer {}", token)).send().await else { continue };
+            let Ok(body) = Self::check_response(resp).await else { continue };
+            let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) else { continue };
+            let m = Self::parse_message(&json);
+            if m.meta && m.id == *id { out.push(m); }
+        }
+        out
     }
 
     async fn fetch_folder_messages(&self, folder_id: &str, limit: usize) -> Result<Vec<EmailMessage>> {
@@ -826,6 +845,16 @@ fn infer_well_known_name(display_name: &str) -> Option<String> {
 mod detail_parse_tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn sparse_change_feed_item_is_not_complete() {
+        // a read/move update can arrive with only the changed fields: it must not count as a
+        // full message, or storing it would blank the cached recipients
+        let sparse = GraphEmailProvider::parse_message(&json!({"id": "x", "isRead": true, "parentFolderId": "F1"}));
+        assert!(!sparse.meta);
+        let full = GraphEmailProvider::parse_message(&json!({"id": "x", "conversationId": "c", "toRecipients": []}));
+        assert!(full.meta);
+    }
 
     #[test]
     fn graph_message_details_are_parsed() {

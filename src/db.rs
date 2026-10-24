@@ -1184,6 +1184,15 @@ impl Database {
         Ok(n > 0)
     }
 
+    /// Mark rows stored as complete although their details never arrived (no conversation id)
+    /// as waiting for details again. Returns how many.
+    pub fn requeue_sparse_meta(&self) -> Result<usize> {
+        Ok(self.conn.execute(
+            "UPDATE messages SET meta_ok = 0 WHERE account_id = ?1 AND meta_ok = 1\n               AND (conversation_id IS NULL OR conversation_id = '')",
+            params![self.account_id],
+        )?)
+    }
+
     /// Ids (newest first) of this account's messages still waiting for the detail repopulate.
     pub fn messages_needing_meta(&self, limit: usize) -> Result<Vec<(String, Option<String>)>> {
         let mut stmt = self.conn.prepare(

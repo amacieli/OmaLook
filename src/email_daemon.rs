@@ -21,6 +21,7 @@ use tokio::time::sleep;
 /// Marker that this account's change feeds were reset for the extended field list
 /// (bump the suffix when `providers::graph::MSG_SELECT` changes again).
 const FIELDS_FLAG: &str = "fields_v1";
+const SPARSE_META_FLAG: &str = "sparse_meta_v1";
 
 /// Configuration for the email daemon
 pub struct DaemonConfig {
@@ -439,6 +440,12 @@ impl EmailDaemon {
     ///  * Others: details are fetched message by message in the background, throttled.
     async fn prepare_meta_backfill(&self) {
         let acct = self.db.account_id().to_string();
+        if !self.db.flag_is_set(SPARSE_META_FLAG).unwrap_or(true) {
+            match self.db.requeue_sparse_meta() {
+                Ok(n) => { info!("{} messages were stored without their details; fetching them again", n); let _ = self.db.set_flag(SPARSE_META_FLAG); }
+                Err(e) => warn!("Could not requeue messages without details: {}", e),
+            }
+        }
         let remaining = self.db.meta_remaining().unwrap_or(0);
         if remaining == 0 {
             sync_state::set_meta_active(&acct, false);
@@ -463,7 +470,10 @@ impl EmailDaemon {
     /// Per-message repopulate for providers without a change feed. Works for at most
     /// `budget`, then yields so mail sync and pushes keep their rhythm; the next cycle carries on.
     async fn backfill_meta_per_message(&self, budget: Duration) {
-        if !self.provider.repopulates_meta_per_message() { return; }
+        // Change-feed providers fill details through the feed; only stragglers (items that came
+        // without them) are fetched one by one, and only once the folder walks are done.
+        let straggler_mode = self.provider.supports_delta() && self.db.delta_walk_incomplete().unwrap_or(1) == 0;
+        if !self.provider.repopulates_meta_per_message() && !straggler_mode { return; }
         let acct = self.db.account_id().to_string();
         let started = Instant::now();
         let mut skip: std::collections::HashSet<String> = std::collections::HashSet::new();
