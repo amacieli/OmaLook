@@ -667,8 +667,10 @@ Item {
       } else {
         init.subject = /^re:/i.test(subj) ? subj : "Re: " + subj
         init.to = _addr(m)
-        // Reply-all keeps the original To list; the backend phase will drop our own address.
-        if (kind === "replyAll") init.cc = String(m.to_recipients || m.to || "")
+        if (kind === "replyAll") {
+          var r = Fmt.replyAllRecipients(m, accounts.map(function(a) { return a.email }).concat([m.account_email]))
+          init.to = r.to; init.cc = r.cc; init.bcc = r.bcc
+        }
       }
     }
     composeStatus = ""

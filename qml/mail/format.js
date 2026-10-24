@@ -262,6 +262,54 @@ function textToHtml(text) {
   return s.replace(/\r?\n/g, "<br>")
 }
 
+// "Ann <a@x.org>, \"Doe, Bob\" <b@y.org>, c@z.org" -> [{ name, email, text }]. Commas inside quotes or
+// <...> do not split.
+function parseAddresses(text) {
+  var out = [], cur = "", q = false, ang = false, s = String(text || "")
+  function push() {
+    var t = cur.trim(); cur = ""
+    if (t === "") return
+    var m = /<([^<>]*)>\s*$/.exec(t)
+    var email = (m ? m[1] : t).trim()
+    var name = m ? t.slice(0, m.index).trim().replace(/^"(.*)"$/, "$1") : ""
+    if (email.indexOf("@") < 0) return
+    out.push({ name: name, email: email, text: name !== "" ? (/[,;"]/.test(name) ? "\"" + name.replace(/"/g, "") + "\"" : name) + " <" + email + ">" : email })
+  }
+  for (var i = 0; i < s.length; i++) {
+    var c = s.charAt(i)
+    if (c === '"') q = !q
+    else if (!q && c === "<") ang = true
+    else if (!q && c === ">") ang = false
+    if ((c === "," || c === ";") && !q && !ang) push(); else cur += c
+  }
+  push()
+  return out
+}
+
+// Reply all to message row `m`: { to, cc, bcc } as address text. To is the sender; Cc is everyone
+// else on the original To and Cc; Bcc is the original Bcc (only known on mail you sent). Your own
+// addresses (`own`: every signed-in account) are left out, and nobody appears twice. Replying to a
+// message you sent yourself goes to its original recipients instead.
+function replyAllRecipients(m, own) {
+  var mine = {}
+  ;(own || []).forEach(function(e) { if (e) mine[String(e).toLowerCase()] = true })
+  var seen = {}
+  function take(list) {
+    return list.filter(function(a) {
+      var k = a.email.toLowerCase()
+      if (mine[k] || seen[k]) return false
+      seen[k] = true
+      return true
+    }).map(function(a) { return a.text }).join(", ")
+  }
+  var from = m.from_email ? [{ name: m.from_name || "", email: String(m.from_email), text: m.from_name ? m.from_name + " <" + m.from_email + ">" : String(m.from_email) }] : []
+  var toL = parseAddresses(m.to_text), ccL = parseAddresses(m.cc_text), bccL = parseAddresses(m.bcc_text)
+  var fromMine = from.length > 0 && mine[from[0].email.toLowerCase()]
+  var to = fromMine ? take(toL) : take(from)
+  var cc = fromMine ? take(ccL) : take(toL.concat(ccL))
+  return { to: to, cc: cc, bcc: take(bccL) }
+}
+
 // "2.1 MB", "340 KB", "12 B"
 function bytes(n) {
   n = Number(n) || 0
