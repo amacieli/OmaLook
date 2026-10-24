@@ -13,7 +13,7 @@ Renamed from "omarchylook" on 2026-10-12. **README.md is stale** (describes the 
 - `docs/` plans and specs (KEYS.md, PLAN-*.md, TRACKER.md); `notes/` is **gitignored** personal notes.
 
 ## Build / run / test
-- `./build.sh [--release] [--live] [--clean]` — builds to `/mnt/d/omalook-build` (set in `.cargo/config.toml`; the project lives on NFS, building in-tree is very slow).
+- `./build.sh [--release] [--live] [--clean]` — builds to `./target` unless `OMALOOK_BUILD_DIR` is set (env, or `~/.config/omalook/build.env`; nothing machine-specific is committed). On the main PC that file points at `/mnt/d/omalook-build` because the project lives on NFS and building in-tree is very slow.
 - `./build.sh --live` installs to `/opt/omalook` (first run asks sudo once). The running app uses `/opt/omalook/qml`, **not** the working tree: QML-only changes need deploy/relaunch to show up.
 - Dev and live copies share port **27182**, `~/.config/omalook`, and the cache — close one before starting the other.
 - Tests: `cargo test --lib -- --skip test_copy_to_clipboard`; node tests: `node tests/commands.test.js`, `node tests/search.test.js`.
@@ -31,7 +31,7 @@ Renamed from "omarchylook" on 2026-10-12. **README.md is stale** (describes the 
 
 ## Git
 - Remote `origin` = github.com/amacieli/OmarchyLook. **No feature branches needed (user decision, 2026-10-16): lump all work together on the current branch (`main`) and commit there. Push only when the user asks.** Verify upstream is current before pushing or rebasing.
-- `build.sh` is part of the project: **commit and push it with every other change** (user decision, 2026-10-24). The working tree may still hold other uncommitted work of the user's (staged deletions of the old Python backend): **stage selectively, never `git add -A`, and leave that out unless asked.** (There is no `omalook` symlink in the project root any more; there is no `run.sh` either: run the dev build with `QML_DIR=$PWD/qml /mnt/d/omalook-build/debug/omalook`, after closing the live app.) `packaging/` is tracked; include its changes when they are part of the work.
+- `build.sh` is part of the project: **commit and push it with every other change** (user decision, 2026-10-24). The working tree may still hold other uncommitted work of the user's (staged deletions of the old Python backend): **stage selectively, never `git add -A`, and leave that out unless asked.** (There is no `omalook` symlink in the project root any more; there is no `run.sh` either: run the dev build with `QML_DIR=$PWD/qml <build dir>/debug/omalook` (the build script prints the exact line), after closing the live app.) `packaging/` is tracked; include its changes when they are part of the work.
 - Update `docs/TRACKER.md` (stable IDs, never reuse) when fixing or finding issues. Commit message states what was verified.
 - Asking before restarting the running app or `--live` deploys is expected.
 

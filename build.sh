@@ -10,6 +10,11 @@
 #            again whatever was running: the window (with its backend) or, if only the backend
 #            was up (Settings → General → Keep running in background), just the backend.
 #            `omalook mcp` helpers belong to the AI apps that started them: left alone.
+#
+# Where cargo builds: ./target by default. To build elsewhere (a fast local disk when the
+# clone is on a network share), set OMALOOK_BUILD_DIR, either in the environment or as a line
+#   OMALOOK_BUILD_DIR=/some/fast/disk/omalook-build
+# in ${XDG_CONFIG_HOME:-~/.config}/omalook/build.env (kept per machine, never committed).
 
 set -e
 
@@ -36,6 +41,14 @@ CLEAN_BUILD=false
 DEV_SETUP=false
 LIVE=false
 LIVE_DIR="${OMALOOK_LIVE_DIR:-/opt/omalook}"
+
+# Per-machine build location (see the header). An environment value wins over the file.
+BUILD_ENV_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/omalook/build.env"
+if [ -z "${OMALOOK_BUILD_DIR:-}" ] && [ -f "$BUILD_ENV_FILE" ]; then
+    OMALOOK_BUILD_DIR=$(sed -n 's/^[[:space:]]*OMALOOK_BUILD_DIR=//p' "$BUILD_ENV_FILE" | tail -n1 | sed -e 's/^["'"'"']//' -e 's/["'"'"']$//' -e "s|^~|$HOME|")
+fi
+BUILD_DIR="${OMALOOK_BUILD_DIR:-$PROJECT_DIR/target}"
+export CARGO_TARGET_DIR="$BUILD_DIR"
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -94,6 +107,7 @@ stop_pids() {
 echo -e "${GREEN}🔨 OmaLook Build System${NC}"
 echo "Build type: $BUILD_TYPE"
 echo "Project dir: $PROJECT_DIR"
+echo "Build dir:   $BUILD_DIR"
 
 # === DEV SETUP ===
 if [ "$DEV_SETUP" = true ]; then
@@ -131,10 +145,10 @@ echo -e "\n${YELLOW}🏗️  Building ($BUILD_TYPE)...${NC}"
 # masked by `tee` (the old binary would otherwise still exist and be reported as a success).
 set -o pipefail
 if [ "$BUILD_TYPE" = "release" ]; then
-    BINARY="/mnt/d/omalook-build/release/omalook"
+    BINARY="$BUILD_DIR/release/omalook"
     cargo build --release 2>&1 | tee build.log || { echo -e "${RED}❌ Build failed. See build.log.${NC}"; exit 1; }
 else
-    BINARY="/mnt/d/omalook-build/debug/omalook"
+    BINARY="$BUILD_DIR/debug/omalook"
     cargo build 2>&1 | tee build.log || { echo -e "${RED}❌ Build failed. See build.log.${NC}"; exit 1; }
 fi
 
@@ -186,7 +200,7 @@ if [ "$LIVE" = true ]; then
     UI_WAS_UP=false; BACKEND_WAS_UP=false
     LIVE_UI=$(pids_of_ui "$LIVE_DIR/qml"); LIVE_BACKEND=$(pids_of_exe "$LIVE_DIR/bin/omalook")
     DEV_UI=$(pids_of_ui "$PROJECT_DIR/qml")
-    DEV_BACKEND=$(for b in /mnt/d/omalook-build/release/omalook /mnt/d/omalook-build/debug/omalook "$PROJECT_DIR/omalook"; do pids_of_exe "$b"; done)
+    DEV_BACKEND=$(for b in "$BUILD_DIR/release/omalook" "$BUILD_DIR/debug/omalook"; do pids_of_exe "$b"; done)
     [ -n "$LIVE_UI" ] && UI_WAS_UP=true
     [ -n "$LIVE_BACKEND" ] && BACKEND_WAS_UP=true
     if [ -n "$LIVE_UI$LIVE_BACKEND$DEV_UI$DEV_BACKEND" ]; then
@@ -212,6 +226,11 @@ if [ "$LIVE" = true ]; then
     # <parent of qml>/plugin/omalook-compose/build/qml, so mirror that layout. Without it the
     # reply / reply all / forward / new buttons cannot open the editor.
     PLUGIN_SRC="$PROJECT_DIR/plugin/omalook-compose"
+    if [ ! -d "$PLUGIN_SRC/build" ]; then
+        # Fresh clone: configure the plugin (needs cmake and the Qt 6 declarative dev files).
+        cmake -S "$PLUGIN_SRC" -B "$PLUGIN_SRC/build" -DCMAKE_BUILD_TYPE=Release > /dev/null \
+            || { echo -e "${RED}❌ Could not configure the compose plugin (is cmake + Qt 6 declarative installed?).${NC}"; exit 1; }
+    fi
     if [ -d "$PLUGIN_SRC/build" ]; then
         cmake --build "$PLUGIN_SRC/build" -j"$(nproc)" > /dev/null || { echo -e "${RED}❌ Compose plugin build failed.${NC}"; exit 1; }
     fi
