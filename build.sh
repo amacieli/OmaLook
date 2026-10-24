@@ -151,7 +151,8 @@ echo -e "${GREEN}Size: $(du -h "$BINARY" | cut -f1)${NC}"
 # === SUMMARY ===
 echo -e "\n${GREEN}=== Build Summary ===${NC}"
 echo "Output binary: $BINARY"
-echo "To run the dev build: ./run.sh [--release]   (the installed app: ./build.sh --live, then /opt/omalook/omalook)"
+echo "To run the dev build (close the live app first):  QML_DIR=\$PWD/qml $BINARY"
+echo "To install the live app:  ./build.sh --live   (then /opt/omalook/omalook)"
 
 # === WEBKIT HTML RENDERER (optional) ===
 # omalook-render draws HTML mail with WebKitGTK in its own process. Without it (or without

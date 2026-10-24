@@ -5,7 +5,7 @@ import qs.Commons
 import qs.Commons as Commons
 
 // OmaLook entry point. Run standalone with:
-//   quickshell -p <this dir>        (the Rust launcher / run.sh do this)
+//   quickshell -p <this dir>        (the Rust launcher does this)
 //
 // Quickshell is used as a plain Qt Quick host here, not as a shell plugin:
 // it gives us the Omarchy UI kit (qs.Commons / qs.Ui) and live theming.

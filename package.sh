@@ -110,4 +110,4 @@ esac
 
 echo ""
 echo -e "${BLUE}ℹ️  Phase 6 will implement full packaging${NC}"
-echo "   For now, local development uses: ./build.sh && ./run.sh"
+echo "   For now, local development uses: ./build.sh, then QML_DIR=$PWD/qml <binary> (see the end of build.sh output)"
