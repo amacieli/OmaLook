@@ -5,7 +5,11 @@
 #   --live   build a release binary and install it as the live app in /opt/omalook
 #            (override with OMALOOK_LIVE_DIR). Implies --release. The first run
 #            asks for sudo once, to create /opt/omalook owned by you; after that no
-#            sudo is needed. Does not touch the menu entry or a running instance.
+#            sudo is needed. Does not touch the menu entry. Stops every running OmaLook UI and
+#            backend (live and dev copies) before the new files go in, and afterwards starts
+#            again whatever was running: the window (with its backend) or, if only the backend
+#            was up (Settings → General → Keep running in background), just the backend.
+#            `omalook mcp` helpers belong to the AI apps that started them: left alone.
 
 set -e
 
@@ -60,6 +64,32 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+
+# === RUNNING INSTANCES ===
+# pids of processes whose command line is exactly `<exe>` or `<exe> <args>` (not `omalook mcp`).
+pids_of_exe() {
+    local exe="$1" pid args
+    for pid in $(pgrep -f "^$exe( |\$)" 2>/dev/null); do
+        args=$(ps -o args= -p "$pid" 2>/dev/null) || continue
+        [[ "$args" == "$exe mcp"* ]] && continue
+        echo "$pid"
+    done
+}
+pids_of_ui() { pgrep -f "^quickshell -p $1( |\$)" 2>/dev/null || true; }
+
+# Ask politely (TERM), wait up to 8 s, then KILL what is left.
+stop_pids() {
+    [ $# -gt 0 ] || return 0
+    kill "$@" 2>/dev/null || true
+    for _ in $(seq 1 40); do
+        local alive=0 p
+        for p in "$@"; do kill -0 "$p" 2>/dev/null && alive=1; done
+        [ $alive = 0 ] && return 0
+        sleep 0.2
+    done
+    kill -9 "$@" 2>/dev/null || true
+}
 
 echo -e "${GREEN}🔨 OmaLook Build System${NC}"
 echo "Build type: $BUILD_TYPE"
@@ -156,6 +186,23 @@ if [ "$LIVE" = true ]; then
     fi
     mkdir -p "$LIVE_DIR/bin" "$LIVE_DIR/qml" "$LIVE_DIR/share"
 
+    # Remember what is running, then stop all of it (windows first, then backends; the live and
+    # the dev copies share port 27182 and the config dir, so none may be left over).
+    UI_WAS_UP=false; BACKEND_WAS_UP=false
+    LIVE_UI=$(pids_of_ui "$LIVE_DIR/qml"); LIVE_BACKEND=$(pids_of_exe "$LIVE_DIR/bin/omalook")
+    DEV_UI=$(pids_of_ui "$PROJECT_DIR/qml")
+    DEV_BACKEND=$(for b in /mnt/d/omalook-build/release/omalook /mnt/d/omalook-build/debug/omalook "$PROJECT_DIR/omalook"; do pids_of_exe "$b"; done)
+    [ -n "$LIVE_UI" ] && UI_WAS_UP=true
+    [ -n "$LIVE_BACKEND" ] && BACKEND_WAS_UP=true
+    if [ -n "$LIVE_UI$LIVE_BACKEND$DEV_UI$DEV_BACKEND" ]; then
+        echo -e "${YELLOW}Stopping running OmaLook (window: $UI_WAS_UP, backend: $BACKEND_WAS_UP)...${NC}"
+        # shellcheck disable=SC2086
+        stop_pids $LIVE_UI $DEV_UI
+        # shellcheck disable=SC2086
+        stop_pids $LIVE_BACKEND $DEV_BACKEND
+        sleep 0.5
+    fi
+
     # Replace the binary by renaming a fresh copy over it: copying onto a running
     # executable fails ("Text file busy"), a rename does not and the running
     # instance keeps its old inode until it is restarted.
@@ -215,7 +262,34 @@ LAUNCHER
     echo -e "${GREEN}✓ Live install complete${NC}"
     echo "Launcher: $LIVE_DIR/omalook"
     echo "Binary:   $LIVE_DIR/bin/omalook ($(du -h "$LIVE_DIR/bin/omalook" | cut -f1))"
-    if pgrep -f "^$LIVE_DIR/bin/omalook" > /dev/null; then
-        echo -e "${YELLOW}OmaLook is running: restart it to pick up this build.${NC}"
+
+    # Put back what was running. The launcher starts the backend and a window together.
+    if [ "$UI_WAS_UP" = true ] || [ "$BACKEND_WAS_UP" = true ]; then
+        RESTART_LOG="${XDG_RUNTIME_DIR:-/tmp}/omalook-restart.log"
+        echo -e "${YELLOW}Restarting OmaLook...${NC}"
+        setsid -f "$LIVE_DIR/omalook" > "$RESTART_LOG" 2>&1 < /dev/null
+        if [ "$UI_WAS_UP" = false ]; then
+            # Only the backend was running (no window): there is no backend-only start, so let
+            # the launcher bring up both, then close the window again. The backend stays
+            # because "keep running in background" is what kept it alive before.
+            for _ in $(seq 1 100); do
+                [ -n "$(pids_of_ui "$LIVE_DIR/qml")" ] && [ -n "$(pids_of_exe "$LIVE_DIR/bin/omalook")" ] && break
+                sleep 0.2
+            done
+            sleep 1
+            # shellcheck disable=SC2046
+            stop_pids $(pids_of_ui "$LIVE_DIR/qml")
+            sleep 1
+            if [ -n "$(pids_of_exe "$LIVE_DIR/bin/omalook")" ]; then
+                echo -e "${GREEN}✓ Backend restarted (no window, as before)${NC}"
+            else
+                echo -e "${RED}⚠ The backend did not stay up; see $RESTART_LOG (is Settings → General → Keep running in background on?)${NC}"
+            fi
+        else
+            for _ in $(seq 1 100); do [ -n "$(pids_of_ui "$LIVE_DIR/qml")" ] && break; sleep 0.2; done
+            [ -n "$(pids_of_ui "$LIVE_DIR/qml")" ] \
+                && echo -e "${GREEN}✓ OmaLook restarted${NC}" \
+                || echo -e "${RED}⚠ OmaLook did not come back; see $RESTART_LOG${NC}"
+        fi
     fi
 fi

@@ -1,5 +1,6 @@
 import QtQuick
 import qs.Commons
+import qs.Commons as Commons
 import qs.Ui
 import "../../common"
 import ".."
@@ -78,7 +79,7 @@ SettingsPage {
     implicitHeight: warn.implicitHeight + Style.spacing.lg * 2
     color: "transparent"
     radius: Style.cornerRadius
-    borderSpec: Border.controlSpec("normal", Color.foreground, Color.accent)
+    borderSpec: Border.controlSpec("normal", Commons.Color.foreground, Commons.Color.accent)
 
     Column {
       id: warn
@@ -107,7 +108,7 @@ SettingsPage {
     visible: page.st.settings_readable === false
     width: parent.width
     wrapMode: Text.WordWrap
-    color: Color.urgent
+    color: Commons.Color.urgent
     font.pixelSize: Style.font.bodySmall
     text: "settings.toml could not be read, so MCP stays locked and cannot be changed here. Fix the file first."
   }
@@ -116,7 +117,7 @@ SettingsPage {
     visible: page.app && page.app.mcpError !== ""
     width: parent.width
     wrapMode: Text.WordWrap
-    color: Color.urgent
+    color: Commons.Color.urgent
     font.pixelSize: Style.font.bodySmall
     text: page.app ? "Not changed: " + page.app.mcpError : ""
   }

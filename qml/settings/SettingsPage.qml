@@ -1,5 +1,6 @@
 import QtQuick
 import qs.Commons
+import qs.Commons as Commons
 import qs.Ui
 import "../common"
 
@@ -18,9 +19,9 @@ Item {
 
   // PanelSlider wants a `bar`-like object for its colours.
   readonly property QtObject sliderBar: QtObject {
-    readonly property color foreground: Color.foreground
-    readonly property color background: Color.background
-    readonly property color urgent: Color.urgent
+    readonly property color foreground: Commons.Color.foreground
+    readonly property color background: Commons.Color.background
+    readonly property color urgent: Commons.Color.urgent
   }
 
   default property alias content: body.data
@@ -48,7 +49,7 @@ Item {
         implicitHeight: badge.implicitHeight + Style.spacing.xs * 2
         color: "transparent"
         radius: Style.cornerRadius
-        borderSpec: Border.controlSpec("normal", Color.foreground, Color.accent)
+        borderSpec: Border.controlSpec("normal", Commons.Color.foreground, Commons.Color.accent)
 
         UiText {
           id: badge

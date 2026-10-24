@@ -33,10 +33,30 @@ and will do nothing when the reading pane is switched off (`showReaderPane`). Th
 `[ui] list_width_offset` in `settings.toml`: characters relative to the default list width (0 = default, negative = narrower;
 you can edit it by hand). Both panes keep a minimum width, so the offset stops growing at those limits.
 
+## Links in a message (reading pane)
+
+In the reading pane, in both the system-font and the HTML view (needs the pane focused, and at least one link):
+
+| Key | Command | Action |
+|-----|---------|--------|
+| `Tab` / `]` | `reader.link.next` | next link (the first press picks the first link on screen); wraps |
+| `Shift-Tab` / `[` | `reader.link.prev` | previous link |
+| `Enter` / `o` | `reader.link.open` | open the current link in the browser |
+| `y` | `reader.link.copy` | copy the current link's address (`wl-copy`) |
+| `Esc` | `reader.link.clear` | drop the selection |
+| `f` | `reader.link.hints` | label every link (`a s d f g h j k l`, two letters when there are more than 9); type a label to open it, `Backspace` undoes a letter, `Esc` cancels |
+
+The current link is shown in inverse video (system view) or as an outlined box (HTML view), and the status bar shows
+`link 3/8 · <address>`. These keys apply only while there is a link to act on, so `Tab` (next pane), `Enter`, `y` (accept
+invitation), `f` (forward) and `Esc` keep their usual meaning in a message without links or with no link selected; with links,
+use `h` / `Left` to leave the reading pane and the `Forward` button or `Ctrl-F` (outlook preset) to forward.
+Links in the system view are underlined with a hand cursor; the mouse works as before. In the HTML view's Qt fallback
+renderer (used only when the WebKit helper fails) there are no keyboard links.
+
 ## Presets
 
 `outlook` keeps the vim keys and adds: Ctrl-R reply, Ctrl-Shift-R reply all, Ctrl-F forward, Delete delete, Backspace archive,
-Ctrl-Q read/unread, Ctrl-Shift-V move, Ctrl-Z undo, F9 sync, Ctrl-1..4 Mail / Calendar / People / Tasks.
+Ctrl-Q read/unread, Ctrl-Shift-V move, Ctrl-Z undo, F9 sync, F5 refresh mail from the server (same as the Refresh button in the message list; `:refreshmail`), Ctrl-1..4 Mail / Calendar / People / Tasks.
 
 ## Meeting invitations (Microsoft accounts)
 

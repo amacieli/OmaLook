@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Layouts
 import qs.Commons
+import qs.Commons as Commons
 import qs.Ui
 import "../common"
 import "../mail/format.js" as Fmt
@@ -121,7 +122,7 @@ FocusScope {
 
   Rectangle {
     anchors.fill: parent
-    color: Util.alpha(Color.background, 0.8)
+    color: Util.alpha(Commons.Color.background, 0.8)
     MouseArea { anchors.fill: parent; onClicked: root.canceled() }
   }
 
@@ -131,9 +132,9 @@ FocusScope {
     height: Math.min(parent.height - Style.space(32), Style.space(520))
     anchors.centerIn: parent
     radius: Style.cornerRadius
-    color: Qt.rgba(Color.popups.background.r, Color.popups.background.g, Color.popups.background.b, 1)
+    color: Qt.rgba(Commons.Color.popups.background.r, Commons.Color.popups.background.g, Commons.Color.popups.background.b, 1)
     border.width: Style.normalBorderWidth
-    border.color: Color.popups.border
+    border.color: Commons.Color.popups.border
 
     MouseArea { anchors.fill: parent }
 
@@ -208,13 +209,13 @@ FocusScope {
             anchors.leftMargin: Style.spacing.md
             anchors.rightMargin: Style.spacing.md
             spacing: Style.spacing.md
-            UiText { Layout.preferredWidth: Style.space(16); text: row.ticked ? "\uf00c" : ""; foreground: Color.accent }
+            UiText { Layout.preferredWidth: Style.space(16); text: row.ticked ? "\uf00c" : ""; foreground: Commons.Color.accent }
             UiText { Layout.preferredWidth: Style.space(18); text: row.modelData.dir ? "\uf07b" : "\uf15b"; dim: !row.modelData.dir }
             UiText {
               Layout.fillWidth: true
               text: row.modelData.dir && !row.modelData.up ? row.modelData.name + "/" : row.modelData.name
               elide: Text.ElideMiddle
-              foreground: Color.popups.text
+              foreground: Commons.Color.popups.text
               dim: root._isAttached(row.full)
             }
             UiText {
@@ -242,7 +243,7 @@ FocusScope {
         Layout.fillWidth: true
         visible: text !== ""
         text: root.error !== "" ? root.error : (root.truncated ? "Only the first entries are shown; type to filter." : "")
-        foreground: root.error !== "" ? Color.urgent : Color.foreground
+        foreground: root.error !== "" ? Commons.Color.urgent : Commons.Color.foreground
         dim: root.error === ""
         font.pixelSize: Style.font.caption
         elide: Text.ElideRight

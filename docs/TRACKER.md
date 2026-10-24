@@ -5,6 +5,56 @@ IDs are stable (never reused). Status: `open` | `investigating` | `planned` | `i
 
 ## Issues
 
+### OL-018 — Make hyperlinks clickable in both system mode and HTML mode (done 2026-10-24: mouse + keyboard; uncommitted)
+- **Done:** system view (rich text, underlined, hand cursor), HTML view (WebKit link boxes + Qt fallback cursor); keyboard: Tab/]/[ , Enter/o, y, f hints, see docs/KEYS.md "Links in a message". Also fixed the white window: Qt 6.12 has its own `Color` type that shadowed the Omarchy kit's, and Omarchy 4.0.6 no longer loads the theme into `Color` by itself (shell.qml now does; all QML uses `Commons.Color`).
+- **Gotchas:** Qt paints a span's background over a following pre-wrap newline (use `<br>`); Text has no `positionToRectangle` (link positions come from `linkAt` probing); `linkColor` is ignored for rich-text anchors (colour a span inside); QML replace callbacks may get "" for unmatched groups.
+- **Original note:**
+- **Wanted (user, 2026-10-23):** links in mail bodies must be clickable in both the system-font view and the HTML view. Extends OL-003 (system view only) to the HTML view as well.
+- **To do:** scope with the user first (see OL-003 open question: bare URLs only, not link text that differs from its target). For the system view, follow OL-003. For the HTML view, check how `tools/render/omalook-render.c` already reports link boxes and whether bare-text URLs that the HTML does not wrap in `<a>` are missed; add them to the link list. Only http(s) and mailto. Verify with a message containing both kinds of link in each mode.
+
+### OL-017 — Refresh mail button only re-reads the cache; add an F5 shortcut for it (in progress)
+- **Wanted (user, 2026-10-20):** map a keyboard shortcut to the message list's "refresh emails" button, and make the button fetch new mail from the server immediately.
+- **Cause (confirmed by reading the code):** `MailView.qml` wired the button to `app.loadMessages()`, which only re-reads `messages.db`. Nothing woke the daemon, so new mail waited for the 2-minute poll. F9 "sync" had the same gap.
+- **Done in working tree (not committed):** `sync_state::request_mail_sync()` + `POST /mail/sync` wake the mail daemon loop (`src/email_daemon.rs`) for an immediate message sync; `AppState.syncMail()` used by the button, F9 and the new `mail.refresh` command on **F5**; `docs/KEYS.md` updated.
+- **To verify:** `cargo test` for the new wake (sync_state), build, deploy and check that new mail appears without waiting for the poll interval.
+
+### OL-016 — Duplicate mail: two messages from Brayden Wells on 2026-10-19 that are really one (open, not started)
+- **Seen:** 2026-10-19 (user report). OmaLook shows two emails from Brayden Wells dated October 19; the user believes the mailbox holds only one.
+- **Likely cause (unconfirmed):** the same message stored twice, most likely from the delta sync (`src/email_daemon.rs`, `src/providers/`) or the SQLite cache (`src/db/`), for example a re-delivered delta page or an id mismatch between the provider's id and the cache key. A copy in a second folder (e.g. Inbox and a category or folder view) is also possible.
+- **To do:** compare the two rows' provider message ids and internet message ids (`Message-ID`) in the cache; check the provider (Graph/Gmail) directly to confirm there is one message; if the ids match, find where the duplicate is inserted and make the upsert idempotent; if they differ, check whether the provider really holds two; add a test for the dedupe key; purge the duplicate row from the cache and confirm it does not come back after a re-sync.
+
+### OL-015 — Reply All: no keyboard shortcut, and Cc/Bcc recipients are dropped (open, not started)
+- **Seen:** 2026-10-19 (user report). Two faults in the mail reply flow:
+  1. There is no keyboard binding for Reply All.
+  2. Clicking the Reply All button does not carry over the Cc and Bcc recipients; they are missing from the compose window.
+- **To do:** find the Reply All action in the mail/compose QML (`qml/mail/`, `qml/compose/`) and its keybinding in the keys model; add a key and document it in `docs/KEYS.md`; check how the reply recipient list is built (original To/Cc/Bcc, minus the user's own address) and fix the Cc/Bcc copy; verify with a message that has Cc and Bcc on both the button and the key, and confirm the recipients in the compose window before sending.
+
+### OL-014 — Remember the last selected view per area (open, not started)
+- **Wanted (user, 2026-10-17):** remember the view the user last selected in each area, so it is restored when the app opens again: the mail folder (including "all folders"), the calendar view, the mail view, the people (contacts) view and the task view.
+- **To do:** list the current view state for each area in QML (`qml/mail/`, `qml/views/`, and the calendar/contacts/tasks screens); decide where to persist it (likely `~/.config/omalook` settings or the SQLite cache, not the keyring); save on each change and restore on startup; handle a remembered folder or view that no longer exists (fall back to the default, e.g. Inbox); verify by changing each view, quitting, relaunching and checking the view comes back. Note that `--live` deploys reload QML only after relaunch (see AGENTS.md).
+
+### OL-013 — Status indicator in the bottom-right corner: daemon, MCP server, KDE Connect (open, not started)
+- **Wanted (user, 2026-10-17):** a coded "online" indicator in the bottom-right corner of the window. One letter per service: `D`/`d` = daemon, `M`/`m` = MCP server, `S`/`s` = KDE Connect. Capital = online, lower = offline.
+- **Colours:** fixed (not theme-adjustable) green for online and red for offline, in colour-blind-friendly shades. Do not take them from the Omarchy theme.
+- **To do:** find the existing health signals for the daemon (backend HTTP on 27182), the MCP listener (27183) and `kdeconnectd` (reuse the SMS daemon's check; see OL-009 for the parse issue); add the indicator to the shell chrome in QML; verify each letter flips case when its service is stopped and started.
+
+### OL-012 — Distribution lists (open, not started)
+- **Wanted (user, 2026-10-17):** add distribution lists. No design details recorded yet; scope to be discussed before planning.
+
+### OL-011 — Per-element colours: choose theme colour and intensity for each interface element (planned, not started)
+- **Wanted (user, 2026-10-17):** name every element of the OmaLook interface (box edges, titles, subject lines, dates, …) and let the user pick a theme colour and an intensity for each, with one dropdown per choice and a live preview; keyboard-driven with vim-style chords.
+- **Plan:** `docs/PLAN-colours.md` (element catalogue, intensity model, `[colours]` in settings.toml, Settings → Colours screen, key chords, phases 0-5; decisions settled 2026-10-17 in §9: live apply, theme keys only, one shared border colour (focused `accent`, idle `accent@-2`), no per-theme overrides, per-sender Auto, blend intensity).
+- **Next:** phase 0 (inventory of hard-wired colours, no visible change).
+
+### OL-009 — SMS settings say "KDE Connect is installed, but no phone is paired" when SMS works (open)
+- **Seen:** 2026-10-16 (user report). The SMS settings page reports the unpaired state, but SMS is working, including inside OmaLook.
+- **Likely cause (from reading the code, unconfirmed):** `qml/settings/pages/SmsPage.qml` decides "paired" by parsing `kdeconnect-cli -l` lines for the `paired` flag (`parseDevices`). The check is either not matching the real output format or is reading a device list that differs from the one the SMS daemon (`src/sms_daemon.rs`, talks to `kdeconnectd`) uses.
+- **To do:** run `kdeconnect-cli -l` by hand and compare its output with the regex in `parseDevices`; confirm which device the SMS daemon actually uses; fix the parse or the source of truth so the page matches reality; re-check with the phone paired and with it unpaired.
+
+### OL-010 — Online meeting providers: set up and detect several (open, not started)
+- **Wanted (user, 2026-10-16):** support more than one online meeting provider, with each one configurable: Microsoft Teams (work/school account), Microsoft Teams (personal/consumer account), Zoom, and other common ones (Google Meet, Webex, and similar).
+- **To do:** decide how each provider is set up (Teams work/school via the existing Graph account; Teams personal and Zoom need their own sign-in or OAuth app, to be checked); detect the meeting link in calendar events and invitations per provider; per-provider settings page with status (configured / not configured); join action per event. Check which of these already work with the existing calendar code before building.
+
 ### OL-006 — Harden the UI backend port 27182: no auth, CORS `*` (planned, not started)
 - **Seen:** 2026-10-16 while designing MCP. `start_http_trigger_server` (`src/main.rs`) answers every route on `127.0.0.1:27182` without authentication and with `Access-Control-Allow-Origin: *`. Any local process, or any web page open in a browser, can call `/messages/action` (archive/trash/delete), `/compose/send`, `/sms/send`, `/accounts/remove`, `/settings/*`.
 - **Why it matters for MCP:** the MCP listener (port 27183, bearer token, Origin/Host checks) enforces permissions, but they are moot while this port lets anything do the same actions directly.
@@ -67,6 +117,7 @@ IDs are stable (never reused). Status: `open` | `investigating` | `planned` | `i
 | Plan | File | Status |
 |---|---|---|
 | Compose: system-font / HTML modes, drafts, send | `docs/PLAN-compose.md` | planned; Phase D spike passed 2026-10-07; UI first draft + Phase A (send, outbox, undo delay) built 2026-10-08 |
+| Per-element colours: theme colour + intensity per interface element, preview, vim chords (OL-011) | `docs/PLAN-colours.md` | planned (plan written 2026-10-17; decisions settled) |
 | Mail list views / field chooser | `notes/PLAN-mail-list-views.md` (gitignored `notes/`) | not started |
 | Keyboard model: vim nav, `g` modules, palette, mail actions | `docs/PLAN-keyboard.md` | planned (plan written 2026-10-09; decisions Q1-Q6 settled) |
 | Mail details (sender name, To/Cc/Bcc, categories, sent, importance, attachments) + categories key `t` | `docs/PLAN-mail-fields.md` | built 2026-10-09 (branch `feature/mail-fields`) |

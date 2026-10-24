@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Layouts
 import qs.Commons
+import qs.Commons as Commons
 import "../common"
 
 // After a pause on a half-typed chord ("g"), lists what can follow it. Quick typists
@@ -24,9 +25,9 @@ Item {
     anchors.fill: parent
     implicitWidth: col.implicitWidth + Style.spacing.xl * 2
     implicitHeight: col.implicitHeight + Style.spacing.lg * 2
-    color: Color.background
+    color: Commons.Color.background
     border.width: 2
-    border.color: Color.accent
+    border.color: Commons.Color.accent
 
     Column {
       id: col
@@ -35,7 +36,7 @@ Item {
 
       UiText {
         text: root.pendingText + " …"
-        foreground: Color.accent
+        foreground: Commons.Color.accent
         font.bold: true
       }
 
@@ -44,7 +45,7 @@ Item {
         Row {
           required property var modelData
           spacing: Style.spacing.lg
-          UiText { width: Style.space(28); text: modelData.next; foreground: Color.accent; font.bold: true }
+          UiText { width: Style.space(28); text: modelData.next; foreground: Commons.Color.accent; font.bold: true }
           UiText { text: modelData.cmd.title }
         }
       }

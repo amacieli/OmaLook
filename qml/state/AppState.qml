@@ -564,6 +564,16 @@ Item {
     xhr.send(body)
   }
 
+  // Refresh (button, F5): ask the backend to poll the provider now. Show the cache at once;
+  // whatever the poll stores reaches the list through the sync serial (checkSyncSerial).
+  function syncMail() {
+    request("POST", "/mail/sync", function(xhr) {
+      if (xhr.status !== 200) notify("Refresh failed: backend not reachable")
+    })
+    loadFolders()
+    loadMessages()
+  }
+
   function loadFolders() {
     request("GET", "/folders", function(xhr) {
       if (xhr.status !== 200) return

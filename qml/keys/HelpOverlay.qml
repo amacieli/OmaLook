@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Layouts
 import qs.Commons
+import qs.Commons as Commons
 import "../common"
 import "Commands.js" as Cmd
 
@@ -45,9 +46,9 @@ FocusScope {
     anchors.centerIn: parent
     width: Math.min(parent.width - Style.space(60), Style.space(900))
     height: parent.height - Style.space(80)
-    color: Color.background
+    color: Commons.Color.background
     border.width: 2
-    border.color: Color.accent
+    border.color: Commons.Color.accent
 
     MouseArea { anchors.fill: parent }
 
@@ -57,7 +58,7 @@ FocusScope {
       text: "Keyboard help"
       font.bold: true
       font.pixelSize: Style.font.subtitle
-      foreground: Color.accent
+      foreground: Commons.Color.accent
     }
     UiText {
       anchors.right: parent.right; anchors.rightMargin: Style.spacing.xl
@@ -91,9 +92,9 @@ FocusScope {
           UiText {
             text: "Key configuration" + (root.preset !== "" ? "   preset: " + root.preset : "")
             font.bold: true
-            foreground: root.problems.length > 0 ? Color.urgent : Color.accent
+            foreground: root.problems.length > 0 ? Commons.Color.urgent : Commons.Color.accent
           }
-          Rectangle { width: parent.width; height: 1; color: Qt.rgba(Color.foreground.r, Color.foreground.g, Color.foreground.b, 0.2) }
+          Rectangle { width: parent.width; height: 1; color: Qt.rgba(Commons.Color.foreground.r, Commons.Color.foreground.g, Commons.Color.foreground.b, 0.2) }
           Repeater {
             model: root.problems
             UiText {
@@ -101,7 +102,7 @@ FocusScope {
               width: body.width
               text: "\u2022 " + modelData
               wrapMode: Text.WordWrap
-              foreground: Color.urgent
+              foreground: Commons.Color.urgent
               font.pixelSize: Style.font.caption
             }
           }
@@ -124,9 +125,9 @@ FocusScope {
             UiText {
               text: modelData.name + (modelData.active ? "   ← active here" : "")
               font.bold: true
-              foreground: modelData.active ? Color.accent : Color.foreground
+              foreground: modelData.active ? Commons.Color.accent : Commons.Color.foreground
             }
-            Rectangle { width: parent.width; height: 1; color: Qt.rgba(Color.foreground.r, Color.foreground.g, Color.foreground.b, 0.2) }
+            Rectangle { width: parent.width; height: 1; color: Qt.rgba(Commons.Color.foreground.r, Commons.Color.foreground.g, Commons.Color.foreground.b, 0.2) }
 
             Repeater {
               model: modelData.commands
@@ -136,7 +137,7 @@ FocusScope {
                 UiText {
                   width: Style.space(190)
                   text: Cmd.keyLabel(modelData.keys)
-                  foreground: Color.accent
+                  foreground: Commons.Color.accent
                   elide: Text.ElideRight
                 }
                 UiText {

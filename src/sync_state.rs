@@ -17,6 +17,8 @@ use std::time::{Duration, Instant};
 static MAIL_SERIAL: AtomicU64 = AtomicU64::new(0);
 static READ_PUSH_SERIAL: AtomicU64 = AtomicU64::new(0);
 static READ_PUSH: tokio::sync::Notify = tokio::sync::Notify::const_new();
+static MAIL_SYNC_SERIAL: AtomicU64 = AtomicU64::new(0);
+static MAIL_SYNC: tokio::sync::Notify = tokio::sync::Notify::const_new();
 static SMS_SERIAL: AtomicU64 = AtomicU64::new(0);
 static OUTBOX_SERIAL: AtomicU64 = AtomicU64::new(0);
 static OUTBOX: tokio::sync::Notify = tokio::sync::Notify::const_new();
@@ -98,6 +100,23 @@ pub fn read_push_requested() -> tokio::sync::futures::Notified<'static> {
     READ_PUSH.notified()
 }
 
+/// The user asked for mail now (Refresh button, F5): wake the mail daemons to poll at once
+/// instead of waiting out the poll interval.
+pub fn request_mail_sync() {
+    MAIL_SYNC_SERIAL.fetch_add(1, Ordering::SeqCst);
+    MAIL_SYNC.notify_waiters();
+}
+
+pub fn mail_sync_serial() -> u64 {
+    MAIL_SYNC_SERIAL.load(Ordering::SeqCst)
+}
+
+/// Resolves on the next `request_mail_sync()`. Compare `mail_sync_serial()` to catch requests
+/// made while nobody was waiting.
+pub fn mail_sync_requested() -> tokio::sync::futures::Notified<'static> {
+    MAIL_SYNC.notified()
+}
+
 /// A message was queued (or its timing changed): wake the outbox workers so they send it the
 /// moment it is due instead of at the next poll.
 pub fn request_outbox_run() {
@@ -124,6 +143,19 @@ mod read_push_tests {
             request_read_push();
             tokio::time::timeout(Duration::from_secs(1), wake).await.expect("waiter was not woken");
             assert!(read_push_serial() > before);
+        });
+    }
+
+    #[test]
+    fn request_mail_sync_wakes_a_waiting_daemon_and_bumps_the_serial() {
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        rt.block_on(async {
+            let before = mail_sync_serial();
+            let mut wake = Box::pin(mail_sync_requested());
+            let _ = wake.as_mut().enable();
+            request_mail_sync();
+            tokio::time::timeout(Duration::from_secs(1), wake).await.expect("waiter was not woken");
+            assert!(mail_sync_serial() > before);
         });
     }
 }

@@ -2,6 +2,7 @@ import QtQuick
 import QtQuick.Layouts
 import QtQuick.Controls
 import qs.Commons
+import qs.Commons as Commons
 import qs.Ui
 import "../common"
 import "sms.js" as Sms
@@ -67,7 +68,7 @@ Item {
         text: root.title
         Layout.fillWidth: true
         elide: Text.ElideRight
-        foreground: root.paneFocused ? Color.accent : Color.foreground
+        foreground: root.paneFocused ? Commons.Color.accent : Commons.Color.foreground
         font.pixelSize: Style.font.subtitle
         font.bold: true
       }
@@ -152,8 +153,8 @@ Item {
               height: inner.implicitHeight + Style.spacing.lg * 2
               x: msg.mine ? parent.width - width - Style.spacing.xl : Style.spacing.xl
               radius: Style.space(10)
-              color: msg.mine ? Qt.rgba(Color.accent.r, Color.accent.g, Color.accent.b, 0.28)
-                              : Qt.rgba(Color.foreground.r, Color.foreground.g, Color.foreground.b, 0.10)
+              color: msg.mine ? Qt.rgba(Commons.Color.accent.r, Commons.Color.accent.g, Commons.Color.accent.b, 0.28)
+                              : Qt.rgba(Commons.Color.foreground.r, Commons.Color.foreground.g, Commons.Color.foreground.b, 0.10)
               border.width: msg.failed ? 1 : 0
               border.color: Hues.red
               opacity: msg.queued ? 0.6 : 1
@@ -220,8 +221,8 @@ Item {
           width: flick.width
           wrapMode: TextEdit.Wrap
           color: Hues.brightForeground
-          selectionColor: Color.accent
-          selectedTextColor: Color.background
+          selectionColor: Commons.Color.accent
+          selectedTextColor: Commons.Color.background
           font.family: Style.font.family
           font.pixelSize: Style.font.body
           activeFocusOnTab: false

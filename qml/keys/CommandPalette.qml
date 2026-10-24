@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Layouts
 import qs.Commons
+import qs.Commons as Commons
 import qs.Ui
 import "../common"
 import "Commands.js" as Cmd
@@ -76,9 +77,9 @@ Item {
     y: Math.round(parent.height * 0.14)
     width: Math.min(parent.width - Style.space(40), Style.space(560))
     height: Math.min(parent.height - y - Style.space(40), Style.space(60) + list.contentHeight + Style.spacing.lg * 2)
-    color: Color.background
+    color: Commons.Color.background
     border.width: 2
-    border.color: Color.accent
+    border.color: Commons.Color.accent
     radius: Style.cornerRadius
 
     MouseArea { anchors.fill: parent }   // swallow clicks on the card
@@ -149,7 +150,7 @@ Item {
               Layout.fillWidth: true
               text: modelData.title
               elide: Text.ElideRight
-              foreground: list.currentIndex === index ? Color.accent : Color.foreground
+              foreground: list.currentIndex === index ? Commons.Color.accent : Commons.Color.foreground
             }
             UiText {
               text: Cmd.keyLabel(modelData.keys)

@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Layouts
 import qs.Commons
+import qs.Commons as Commons
 import qs.Ui
 import "../common"
 import "modes.js" as Modes
@@ -99,7 +100,7 @@ FocusScope {
       Layout.fillHeight: true
       radius: Style.cornerRadius
       color: Style.normalFill
-      borderSpec: Border.controlSpec(field.activeFocus ? "focus" : "normal", Color.foreground, Color.accent)
+      borderSpec: Border.controlSpec(field.activeFocus ? "focus" : "normal", Commons.Color.foreground, Commons.Color.accent)
 
       MouseArea { anchors.fill: parent; onClicked: field.forceActiveFocus() }
 
@@ -118,8 +119,8 @@ FocusScope {
             implicitWidth: chipRow.implicitWidth + Style.spacing.lg * 2
             implicitHeight: chipRow.implicitHeight + Style.spacing.xs * 2
             radius: Style.cornerRadius
-            color: Style.selectedFillFor(chip.modelData.valid ? Color.accent : Color.urgent, Color.accent)
-            borderSpec: Border.flat(chip.modelData.valid ? Color.accent : Color.urgent, Style.normalBorderWidth)
+            color: Style.selectedFillFor(chip.modelData.valid ? Commons.Color.accent : Commons.Color.urgent, Commons.Color.accent)
+            borderSpec: Border.flat(chip.modelData.valid ? Commons.Color.accent : Commons.Color.urgent, Style.normalBorderWidth)
 
             Row {
               id: chipRow
@@ -127,7 +128,7 @@ FocusScope {
               spacing: Style.spacing.md
               UiText {
                 text: chip.modelData.name !== "" ? chip.modelData.name : chip.modelData.email
-                foreground: chip.modelData.valid ? Color.accent : Color.urgent
+                foreground: chip.modelData.valid ? Commons.Color.accent : Commons.Color.urgent
                 font.pixelSize: Style.font.caption
               }
               UiText {
@@ -146,7 +147,7 @@ FocusScope {
           width: root.recipients.length === 0 ? flow.width - 4 : Math.min(Style.space(220), flow.width - 4)
           height: Style.font.body + Style.spacing.md
           verticalAlignment: TextInput.AlignVCenter
-          color: Color.foreground
+          color: Commons.Color.foreground
           selectionColor: Style.selectionFill
           font.family: Style.font.family
           font.pixelSize: Style.font.body
@@ -197,9 +198,9 @@ FocusScope {
     width: Math.min(box.width, Style.space(420))
     height: suggCol.implicitHeight + Style.spacing.sm * 2
     radius: Style.cornerRadius
-    color: Qt.rgba(Color.popups.background.r, Color.popups.background.g, Color.popups.background.b, 1)
+    color: Qt.rgba(Commons.Color.popups.background.r, Commons.Color.popups.background.g, Commons.Color.popups.background.b, 1)
     border.width: Style.normalBorderWidth
-    border.color: Color.popups.border
+    border.color: Commons.Color.popups.border
 
     Column {
       id: suggCol
@@ -220,7 +221,7 @@ FocusScope {
             x: Style.spacing.lg
             width: parent.width - Style.spacing.lg * 2
             elide: Text.ElideRight
-            foreground: Color.popups.text
+            foreground: Commons.Color.popups.text
             text: row.modelData.name ? row.modelData.name + "  <" + row.modelData.email + ">" : row.modelData.email
           }
           MouseArea {

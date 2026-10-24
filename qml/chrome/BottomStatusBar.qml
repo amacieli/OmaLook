@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Layouts
 import qs.Commons
+import qs.Commons as Commons
 import qs.Ui
 import "../common"
 
@@ -27,6 +28,11 @@ Item {
   property var pendingOptions: []
   property string notice: ""
   property int markCount: 0
+  // Keyboard links in the reading pane (mail): how many, which is current, where it goes.
+  property int linkCount: 0
+  property int linkIndex: -1
+  property string linkHref: ""
+  property bool hintMode: false
   property bool metaActive: false
   property int metaRemaining: 0
   // keyOf(commandId) -> the key currently bound to it, so hints follow rebinding.
@@ -39,6 +45,12 @@ Item {
     if (focusPane === "folder") return hintLine([k("move.down", "move"), k("move.right", "select"), k("move.left", "back"), k("pane.next", "next pane")])
     if (focusPane === "reader" && currentView === "sms") return hintLine([k("move.down", "scroll"), k("sms.reply", "reply"), k("sms.read", "read/unread"), k("sms.retry", "retry"), k("move.left", "back")])
     if (currentView === "sms") return hintLine([k("move.down", "move"), k("move.right", "open"), k("sms.reply", "reply"), k("sms.new", "new"), k("sms.read", "read/unread"), k("app.search", "search"), k("pane.next", "next pane")])
+    if (focusPane === "reader" && hintMode) return "type a link's letters to open it   Backspace undo   Esc cancel"
+    if (focusPane === "reader" && linkCount > 0 && linkIndex >= 0) {
+      var u = linkHref.length > 90 ? linkHref.slice(0, 89) + "…" : linkHref
+      return "link " + (linkIndex + 1) + "/" + linkCount + " · " + u + "   " + hintLine([k("reader.link.open", "open"), k("reader.link.copy", "copy"), k("reader.link.next", "next"), k("reader.link.clear", "done")])
+    }
+    if (focusPane === "reader" && linkCount > 0) return hintLine([k("move.down", "scroll"), k("reader.link.next", linkCount + (linkCount === 1 ? " link" : " links")), k("reader.link.hints", "label links"), k("reader.pagedown", "page"), k("mail.reply", "reply"), k("move.left", "back")])
     if (focusPane === "reader") return hintLine([k("move.down", "scroll"), k("reader.pagedown", "page"), k("mail.reply", "reply"), k("move.left", "back")])
     if (currentView === "settings") return hintLine([k("move.down", "category"), k("move.left", "back"), k("pane.next", "next pane")])
     if (currentView === "mail") return hintLine([k("move.down", "move"), k("move.right", "read"), k("mail.reply", "reply"), k("mail.archive", "archive"), k("item.delete", "delete"), k("mail.move", "move"), k("mail.mark", "mark"), k("mail.read", "read/unread"), k("app.search", "search")])
@@ -109,7 +121,7 @@ Item {
     UiText {
       text: root.pendingText !== "" ? root.pendingHelp : (root.notice !== "" ? root.notice : root.hints)
       dim: root.pendingText === "" && root.notice === ""
-      foreground: root.pendingText !== "" ? Hues.cyan : (root.notice !== "" ? Hues.yellow : Color.foreground)
+      foreground: root.pendingText !== "" ? Hues.cyan : (root.notice !== "" ? Hues.yellow : Commons.Color.foreground)
       font.pixelSize: Style.font.caption
     }
 

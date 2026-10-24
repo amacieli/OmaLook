@@ -84,6 +84,11 @@ Item {
     else app.activate()
   }
 
+  // The mail view while the reading pane has the keyboard, else null: owner of the keyboard links.
+  function lk() { return (inMail && app.focusPane === "reader" && content && content.linkCount !== undefined) ? content : null }
+  function linkCount() { var c = lk(); return c ? c.linkCount : 0 }
+  function linkCurrent() { var c = lk(); return !!c && c.linkIndex >= 0 && c.linkIndex < c.linkCount }
+
   // Mail actions work on the message list and the reading pane only.
   readonly property bool onMessages: inMail && (app.focusPane === "msg" || app.focusPane === "reader")
 
@@ -279,7 +284,7 @@ Item {
     return rows
   }
 
-  function sync() { app.loadFolders(); app.loadMessages(); say("syncing…") }
+  function sync() { app.syncMail(); say("syncing…") }
 
   function soon(what) { return function() { say(what + ": not implemented yet") } }
 
@@ -360,9 +365,18 @@ Item {
     // reader
     { id: "reader.pagedown", title: "Scroll page down", scope: "reader", keys: ["Space"], run: function() { page(1, 1) } },
     { id: "reader.pageup",   title: "Scroll page up",   scope: "reader", keys: ["b"],     run: function() { page(-1, 1) } },
+    // Links in the open message (system and HTML view). Each applies only while there is a link to act on,
+    // so Tab, Enter, y, f and Esc keep their other meanings otherwise.
+    { id: "reader.link.next",  title: "Next link",     scope: "reader", keys: ["Tab", "]"],   when: function() { return linkCount() > 0 }, run: function() { lk().linkStep(1) } },
+    { id: "reader.link.prev",  title: "Previous link", scope: "reader", keys: ["S-Tab", "["], when: function() { return linkCount() > 0 }, run: function() { lk().linkStep(-1) } },
+    { id: "reader.link.open",  title: "Open link",     scope: "reader", keys: ["Enter", "o"], when: function() { return linkCurrent() }, run: function() { lk().linkOpen() } },
+    { id: "reader.link.copy",  title: "Copy link address", scope: "reader", keys: ["y"],      when: function() { return linkCurrent() }, run: function() { lk().linkCopy() } },
+    { id: "reader.link.clear", title: "Drop link selection", scope: "reader", keys: ["Esc"],   when: function() { return linkCurrent() }, run: function() { lk().linkClear() } },
+    { id: "reader.link.hints", title: "Label links (type a label to open)", scope: "reader", keys: ["f"], when: function() { return linkCount() > 0 }, run: function() { lk().linkHints() } },
 
     // mail
     { id: "mail.new",      title: "New message",   scope: "mail", keys: ["c", "C-n"], ex: ["compose", "new"], run: function() { if (!inMail) app.gotoView("mail"); app.openCompose("new") } },
+    { id: "mail.refresh",  title: "Refresh mail from server", scope: "mail", keys: ["F5"], ex: ["refreshmail"], run: function() { app.syncMail() } },
     { id: "mail.reply",    title: "Reply",         scope: "mail", keys: ["r"], run: function() { app.openCompose("reply") } },
     { id: "mail.replyall", title: "Reply all",     scope: "mail", keys: ["R"], run: function() { app.openCompose("replyAll") } },
     { id: "mail.forward",  title: "Forward",       scope: "mail", keys: ["f"], run: function() { app.openCompose("forward") } },

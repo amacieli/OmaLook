@@ -78,7 +78,7 @@ function escapeHtml(s) {
 
 // HTML mail as readable plain text for the system-font view: no markup, block
 // elements become line breaks, list items get bullets, links keep their address.
-function htmlToText(html) {
+function htmlToText(html, keepLinks) {
   var s = String(html || "")
   s = s.replace(/<!--[\s\S]*?-->/g, "")
   s = s.replace(/<(head|style|script|title)\b[\s\S]*?<\/\1\s*>/gi, "")
@@ -88,6 +88,12 @@ function htmlToText(html) {
   s = s.replace(/<\/t[dh]\s*>/gi, "  ")
   s = s.replace(/<a\b[^>]*href\s*=\s*["']([^"']+)["'][^>]*>([\s\S]*?)<\/a\s*>/gi, function(all, href, label) {
     var text = label.replace(/<[^>]+>/g, "").trim()
+    if (keepLinks && /^(https?|mailto):/i.test(decodeEntities(href)) && text !== "") {
+      // Marked so linkedHtml() can turn it back into a live link once the text is escaped.
+      var mark = "\u0001" + decodeEntities(href).replace(/[\u0001-\u0003]/g, "") + "\u0002" + text.replace(/[\u0001-\u0003]/g, "").replace(/\s+/g, " ").trim() + "\u0003"
+      if (!/^https?:/i.test(href) || href.length > 80 || text === href || text.indexOf(href) >= 0) return mark
+      return mark + " (" + href + ")"
+    }
     // Tracking links run to hundreds of characters; only a readable address is worth showing.
     if (!/^https?:/i.test(href) || href.length > 80 || text === "" || text === href || text.indexOf(href) >= 0) return label
     return label + " (" + href + ")"
@@ -97,6 +103,86 @@ function htmlToText(html) {
   s = s.replace(/[ \t\u00a0]+\n/g, "\n").replace(/\n[ \t]+/g, "\n")
   s = s.replace(/[ \t]{3,}/g, "  ").replace(/\n{3,}/g, "\n\n")
   return s.trim()
+}
+
+// Text from htmlToText(html, true) (or plain mail text) as rich text for the system-font view:
+// escaped, line breaks and spacing kept, marked links and bare web addresses made clickable.
+// Qt underlines links in rich text; the colour is the Text's linkColor.
+// Returns { html, links: [{href, label}], offsets }. Each link's text is wrapped in tokens
+// (open \u0007N\u0008, close \u0009N\u000a) that markLinks() turns into the current-link
+// highlight and hint labels without redoing the conversion. offsets[N] is the link's character
+// position in the displayed text, to find where it sits on screen.
+function linkedHtml(text) {
+  var parts = String(text || "").split(/(\u0001[^\u0002]*\u0002[\s\S]*?\u0003)/)
+  var out = "", links = [], offsets = [], vis = 0, lastEnd = -9
+  // Line breaks as <br>, runs of spaces kept with &nbsp;. (Not white-space: pre-wrap: Qt paints a
+  // span's background over the newline that follows it, down to the next line of text.)
+  function esc(t) {
+    return escapeHtml(t).replace(/\r?\n/g, "<br>").replace(/ {2,}/g, function(m) { return " " + new Array(m.length).join("&nbsp;") })
+      .replace(/<br> /g, "<br>&nbsp;")
+  }
+  function add(href, label) {
+    var i = links.length
+    links.push({ href: href, label: label })
+    offsets.push(vis)
+    lastEnd = vis + label.length
+    // The anchor's own target is a stand-in, "omalook-link:N": Text can then say which link is under
+    // a point (linkAt / hoveredLink), and the real address is links[N].href.
+    out += "\u0007" + i + "\u0008" + esc(label) + "\u0009"
+    vis += label.length
+  }
+  function plain(p) {
+    var re = /\bhttps?:\/\/[^\s<>"]+/g, last = 0, m
+    while ((m = re.exec(p)) !== null) {
+      var url = m[0]
+      while (url.length > 8 && /[.,;:!?)\]']$/.test(url)) url = url.slice(0, -1)
+      var pre = p.slice(last, m.index)
+      out += esc(pre); vis += pre.length
+      // "label (https://…)": the address after a link to it is shown, not a second link to tab to.
+      if (links.length > 0 && links[links.length - 1].href === url && vis - lastEnd <= 2) { out += esc(url); vis += url.length }
+      else add(url, url)
+      last = m.index + url.length
+      re.lastIndex = last
+    }
+    var rest = p.slice(last)
+    out += esc(rest); vis += rest.length
+  }
+  for (var i = 0; i < parts.length; i++) {
+    var p = parts[i]
+    if (p.charAt(0) === "\u0001") {
+      var m = /^\u0001([^\u0002]*)\u0002([\s\S]*)\u0003$/.exec(p)
+      if (m) { add(m[1], m[2]); continue }
+    }
+    plain(p)
+  }
+  return { html: out, links: links, offsets: offsets }
+}
+
+// The linkedHtml() template for one moment: every link as an anchor in the link colour, link `cur`
+// highlighted (inverse video), and (in hint mode) each link whose label starts with `typed`
+// preceded by the rest of its label. hl = { link, curBg, curFg, hintBg, hintFg }.
+// The colour sits on a span inside the anchor: Text's own linkColor is ignored for rich text.
+function markLinks(tpl, cur, hints, typed, hl) {
+  return String(tpl || "").replace(/\u0007(\d+)\u0008([\s\S]*?)\u0009/g, function(all, n, label) {
+    var i = Number(n), isCur = i === cur, t = typed || "", s = ""
+    if (hints && hints[i] !== undefined && hints[i].indexOf(t) === 0)
+      s += "<span style=\"background-color:" + hl.hintBg + ";color:" + hl.hintFg + "\"> " + hints[i].slice(t.length) + " </span> "
+    // The highlight span wraps the anchor: Qt mis-paints it when it is inside.
+    if (isCur) s += "<span style=\"background-color:" + hl.curBg + "\">"
+    s += "<a href=\"omalook-link:" + i + "\"><span style=\"color:" + (isCur ? hl.curFg : hl.link) + "\">" + label + "</span></a>"
+    if (isCur) s += "</span>"
+    return s
+  })
+}
+
+// Hint labels for n links: one home-row letter each up to 9, else two letters (fixed width, so no
+// label is the start of another). Links beyond 81 get none.
+function hintLabels(n) {
+  var al = "asdfghjkl", out = []
+  if (n <= al.length) { for (var i = 0; i < n; i++) out.push(al[i]); return out }
+  for (var a = 0; a < al.length && out.length < n; a++)
+    for (var b = 0; b < al.length && out.length < n; b++) out.push(al[a] + al[b])
+  return out
 }
 
 // HTML mail prepared for Qt's rich-text engine, which is the closest thing to a

@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Layouts
 import qs.Commons
+import qs.Commons as Commons
 import qs.Ui
 import "../common"
 
@@ -28,9 +29,9 @@ Column {
         ? Math.max(0, Math.min(1, (modelData.sendAt - root.app.sendNow) / (modelData.delaySecs * 1000))) : 0
 
       // Solid, not translucent: it floats over the lists.
-      color: Qt.rgba(Color.popups.background.r, Color.popups.background.g, Color.popups.background.b, 1)
+      color: Qt.rgba(Commons.Color.popups.background.r, Commons.Color.popups.background.g, Commons.Color.popups.background.b, 1)
       border.width: Style.normalBorderWidth
-      border.color: failed ? Color.urgent : Color.popups.border
+      border.color: failed ? Commons.Color.urgent : Commons.Color.popups.border
       radius: Style.cornerRadius
       implicitWidth: row.implicitWidth + Style.spacing.lg * 2
       implicitHeight: row.implicitHeight + Style.spacing.md * 2 + bar.height
@@ -46,7 +47,7 @@ Column {
         UiText {
           Layout.fillWidth: true
           elide: Text.ElideRight
-          foreground: pill.failed ? Color.urgent : Color.popups.text
+          foreground: pill.failed ? Commons.Color.urgent : Commons.Color.popups.text
           font.pixelSize: Style.font.caption
           text: pill.failed ? "Not sent: " + pill.modelData.error
             : pill.modelData.state === "sent" ? "\uf00c  Sent"
@@ -95,7 +96,7 @@ Column {
         anchors.bottom: parent.bottom
         anchors.leftMargin: pill.radius
         width: (pill.width - pill.radius * 2) * pill.fraction
-        color: Color.accent
+        color: Commons.Color.accent
       }
     }
   }

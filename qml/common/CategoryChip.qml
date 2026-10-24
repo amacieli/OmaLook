@@ -1,12 +1,13 @@
 import QtQuick
 import qs.Commons
+import qs.Commons as Commons
 
 // A category / tag: its name on a tint of its own colour, with a solid strip on the left.
 Rectangle {
   id: root
 
   property string label: ""
-  property color tint: Color.accent
+  property color tint: Commons.Color.accent
   property int maxTextWidth: Style.space(160)
 
   implicitWidth: Math.min(text.implicitWidth, maxTextWidth) + Style.spacing.md * 2 + Style.space(4)
@@ -32,7 +33,7 @@ Rectangle {
     width: Math.min(implicitWidth, root.maxTextWidth)
     text: root.label
     elide: Text.ElideRight
-    color: Color.foreground
+    color: Commons.Color.foreground
     font.family: Style.font.family
     font.pixelSize: Style.font.caption
   }

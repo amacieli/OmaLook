@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Layouts
 import qs.Commons
+import qs.Commons as Commons
 import qs.Ui
 import "../common"
 
@@ -14,9 +15,9 @@ Rectangle {
   readonly property int secondsLeft: action ? Math.max(0, Math.ceil((action.until - app.actionNow) / 1000)) : 0
 
   visible: action !== null
-  color: Qt.rgba(Color.popups.background.r, Color.popups.background.g, Color.popups.background.b, 1)
+  color: Qt.rgba(Commons.Color.popups.background.r, Commons.Color.popups.background.g, Commons.Color.popups.background.b, 1)
   border.width: Style.normalBorderWidth
-  border.color: Color.popups.border
+  border.color: Commons.Color.popups.border
   radius: Style.cornerRadius
   implicitWidth: row.implicitWidth + Style.spacing.lg * 2
   implicitHeight: row.implicitHeight + Style.spacing.md * 2
@@ -32,7 +33,7 @@ Rectangle {
     UiText {
       Layout.fillWidth: true
       elide: Text.ElideRight
-      foreground: Color.popups.text
+      foreground: Commons.Color.popups.text
       font.pixelSize: Style.font.caption
       text: (root.action ? root.action.label : "") + "   u undo · " + root.secondsLeft + "s"
     }

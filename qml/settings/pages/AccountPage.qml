@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Layouts
 import qs.Commons
+import qs.Commons as Commons
 import qs.Ui
 import "../../common"
 import ".."
@@ -129,7 +130,7 @@ SettingsPage {
           }
           UiText {
             text: modelData.signed_in ? "signed in" : "signed out — cached data kept"
-            foreground: modelData.signed_in ? Color.accent : Color.foreground
+            foreground: modelData.signed_in ? Commons.Color.accent : Commons.Color.foreground
             dim: !modelData.signed_in
           }
           // Signed out → "Log in": the kept token is reused (no sign-in prompt). Only if it is
@@ -149,7 +150,7 @@ SettingsPage {
             bordered: true
             iconText: "\uf1f8"
             text: confirming ? "Really remove?" : "Remove"
-            foreground: confirming ? Color.urgent : Color.foreground
+            foreground: confirming ? Commons.Color.urgent : Commons.Color.foreground
             onClicked: {
               if (confirming) { confirming = false; page.removeRequested(modelData.id) }
               else confirming = true

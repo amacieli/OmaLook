@@ -98,6 +98,8 @@ impl EmailDaemon {
         let mut last_folder_sync: Option<Instant> = None;
         let mut last_message_sync: Option<Instant> = None;
         let mut message_interval = self.poll_interval();
+        // Last `mail_sync_serial` this loop has acted on; a change means the user asked for mail now.
+        let mut seen_mail_sync = sync_state::mail_sync_serial();
 
         // Poll every 5s while waiting for auth; switch to normal interval once synced
         let mut authenticated_once = false;
@@ -107,6 +109,8 @@ impl EmailDaemon {
         loop {
             // Re-read each cycle so a change in settings.toml applies without a restart.
             message_interval = self.poll_interval();
+            let manual_sync = sync_state::mail_sync_serial() != seen_mail_sync;
+            seen_mail_sync = sync_state::mail_sync_serial();
             let tok_t = Instant::now();
             let token_check = self.provider.is_token_valid().await;
             if !authenticated_once {
@@ -146,7 +150,7 @@ impl EmailDaemon {
                     }
 
                     // Sync messages: on first authenticated run, or when interval elapsed
-                    let should_sync_messages = is_first_run || last_message_sync
+                    let should_sync_messages = manual_sync || is_first_run || last_message_sync
                         .map(|t| t.elapsed() >= message_interval)
                         .unwrap_or(true);
 
@@ -181,10 +185,16 @@ impl EmailDaemon {
                     // wakes this early and is pushed to the provider straight away.
                     let deadline = tokio::time::Instant::now() + message_interval;
                     loop {
+                        // A Refresh (F5) request that arrived during this cycle: run the next one now.
+                        if sync_state::mail_sync_serial() != seen_mail_sync { break; }
                         let wake = sync_state::read_push_requested();
                         tokio::pin!(wake);
                         // Registered before the serial check, so a click cannot slip between them.
                         let _ = wake.as_mut().enable();
+                        let mail_now = sync_state::mail_sync_requested();
+                        tokio::pin!(mail_now);
+                        let _ = mail_now.as_mut().enable();
+                        if sync_state::mail_sync_serial() != seen_mail_sync { break; }
                         let now_push = sync_state::read_push_serial();
                         if now_push != self.seen_push.load(std::sync::atomic::Ordering::SeqCst) {
                             self.service_pushes().await;
@@ -192,6 +202,7 @@ impl EmailDaemon {
                         tokio::select! {
                             _ = tokio::time::sleep_until(deadline) => break,
                             _ = &mut wake => {}
+                            _ = &mut mail_now => {}
                         }
                     }
                 }

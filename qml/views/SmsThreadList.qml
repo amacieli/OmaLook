@@ -2,6 +2,7 @@ import QtQuick
 import QtQuick.Layouts
 import QtQuick.Controls
 import qs.Commons
+import qs.Commons as Commons
 import qs.Ui
 import "../common"
 import "sms.js" as Sms
@@ -40,14 +41,14 @@ Item {
 
       UiText {
         text: "\uf27a"
-        foreground: root.paneFocused ? Color.accent : Color.foreground
+        foreground: root.paneFocused ? Commons.Color.accent : Commons.Color.foreground
         font.pixelSize: Style.font.icon
       }
       UiText {
         text: "SMS"
         Layout.fillWidth: true
         elide: Text.ElideRight
-        foreground: root.paneFocused ? Color.accent : Color.foreground
+        foreground: root.paneFocused ? Commons.Color.accent : Commons.Color.foreground
         font.pixelSize: Style.font.subtitle
         font.bold: true
       }
@@ -113,11 +114,11 @@ Item {
         readonly property bool unread: model.unread_count > 0
 
         radius: Style.cornerRadius
-        color: hasCursor ? Style.hoverFillFor(Color.foreground, Color.accent)
-             : isCurrent ? Style.selectedFillFor(Color.foreground, Color.accent)
-             : mouse.containsMouse ? Style.normalFillFor(Color.foreground, Color.accent)
+        color: hasCursor ? Style.hoverFillFor(Commons.Color.foreground, Commons.Color.accent)
+             : isCurrent ? Style.selectedFillFor(Commons.Color.foreground, Commons.Color.accent)
+             : mouse.containsMouse ? Style.normalFillFor(Commons.Color.foreground, Commons.Color.accent)
              : "transparent"
-        borderSpec: hasCursor ? Border.controlSpec("hover-cursor", Color.foreground, Color.accent) : Border.none()
+        borderSpec: hasCursor ? Border.controlSpec("hover-cursor", Commons.Color.foreground, Commons.Color.accent) : Border.none()
 
         Rectangle {
           visible: row.unread

@@ -3,6 +3,7 @@ import QtQuick
 import Quickshell
 import Quickshell.Io
 import qs.Commons
+import qs.Commons as Commons
 
 // The extra hues of the active Omarchy theme (what btop colours its boxes and graphs with).
 // The shell's Color singleton only exposes foreground / background / accent / urgent / muted;
@@ -34,13 +35,13 @@ QtObject {
   }
 
   // Hues. Fallbacks: warm/danger hues -> urgent, everything else -> accent.
-  readonly property color red:     pick("red",     Color.urgent)
-  readonly property color orange:  pick("orange",  pick("yellow", Color.urgent))
-  readonly property color yellow:  pick("yellow",  Color.accent)
-  readonly property color green:   pick("green",   Color.accent)
-  readonly property color cyan:    pick("cyan",    Color.accent)
-  readonly property color blue:    pick("blue",    Color.accent)
-  readonly property color magenta: pick("magenta", Color.accent)
+  readonly property color red:     pick("red",     Commons.Color.urgent)
+  readonly property color orange:  pick("orange",  pick("yellow", Commons.Color.urgent))
+  readonly property color yellow:  pick("yellow",  Commons.Color.accent)
+  readonly property color green:   pick("green",   Commons.Color.accent)
+  readonly property color cyan:    pick("cyan",    Commons.Color.accent)
+  readonly property color blue:    pick("blue",    Commons.Color.accent)
+  readonly property color magenta: pick("magenta", Commons.Color.accent)
 
   readonly property color brightRed:     pick("bright_red",     red)
   readonly property color brightYellow:  pick("bright_yellow",  yellow)
@@ -50,11 +51,11 @@ QtObject {
   readonly property color brightMagenta: pick("bright_magenta", magenta)
 
   // Neutrals, brightest to dimmest.
-  readonly property color brightForeground: pick("bright_foreground", Color.foreground)
-  readonly property color lightForeground:  pick("light_foreground",  Color.foreground)
-  readonly property color dimForeground:    pick("dark_foreground",   Color.muted)
-  readonly property color muted:            pick("muted",             Color.muted)
-  readonly property color selection:        pick("selection",         Qt.rgba(Color.foreground.r, Color.foreground.g, Color.foreground.b, 0.12))
+  readonly property color brightForeground: pick("bright_foreground", Commons.Color.foreground)
+  readonly property color lightForeground:  pick("light_foreground",  Commons.Color.foreground)
+  readonly property color dimForeground:    pick("dark_foreground",   Commons.Color.muted)
+  readonly property color muted:            pick("muted",             Commons.Color.muted)
+  readonly property color selection:        pick("selection",         Qt.rgba(Commons.Color.foreground.r, Commons.Color.foreground.g, Commons.Color.foreground.b, 0.12))
 
   // Green -> yellow -> red, as btop's meters: 0..1 in, colour out.
   function ramp(t) {
@@ -84,7 +85,7 @@ QtObject {
   // shell's own Color does change then, so re-read when it does.
   property Timer _rereadSoon: Timer { interval: 250; onTriggered: root.file.reload() }
   property Connections _themeWatch: Connections {
-    target: Color
+    target: Commons.Color
     function onAccentChanged() { root._rereadSoon.restart() }
     function onBackgroundChanged() { root._rereadSoon.restart() }
   }

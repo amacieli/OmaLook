@@ -1,5 +1,6 @@
 import QtQuick
 import qs.Commons
+import qs.Commons as Commons
 import qs.Ui
 import "../common"
 
@@ -59,8 +60,8 @@ Item {
       implicitHeight: Math.max(Style.spacing.controlHeight, input.implicitHeight + Style.spacing.controlPaddingY * 2)
       height: implicitHeight
       radius: Style.cornerRadius
-      color: Style.controlFill(input.activeFocus, hover.hovered, Color.foreground, Color.accent)
-      borderSpec: Border.controlSpec(input.activeFocus ? "focus" : (hover.hovered ? "hover-cursor" : "normal"), Color.foreground, Color.accent)
+      color: Style.controlFill(input.activeFocus, hover.hovered, Commons.Color.foreground, Commons.Color.accent)
+      borderSpec: Border.controlSpec(input.activeFocus ? "focus" : (hover.hovered ? "hover-cursor" : "normal"), Commons.Color.foreground, Commons.Color.accent)
 
       HoverHandler { id: hover }
 
@@ -71,9 +72,9 @@ Item {
         horizontalAlignment: Text.AlignHCenter
         verticalAlignment: Text.AlignVCenter
         text: root.fmt(root.value)
-        color: Color.foreground
+        color: Commons.Color.foreground
         selectionColor: Style.selectionFill
-        selectedTextColor: Color.foreground
+        selectedTextColor: Commons.Color.foreground
         font.family: Style.font.family
         font.pixelSize: Style.font.body
         inputMethodHints: Qt.ImhFormattedNumbersOnly

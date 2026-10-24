@@ -34,6 +34,18 @@ RowLayout {
   function pageReader(frac) { preview.scrollPages(frac) }
   function readerEdge(bottom) { preview.scrollEdge(bottom) }
 
+  // Keyboard links in the reading pane (see MessagePreview).
+  readonly property int linkCount: preview.linkCount
+  readonly property int linkIndex: preview.linkIndex
+  readonly property string linkHref: preview.currentHref
+  readonly property bool hintMode: preview.hintMode
+  function linkStep(dir) { preview.linkStep(dir) }
+  function linkOpen() { preview.linkOpen() }
+  function linkCopy() { preview.linkCopy() }
+  function linkClear() { preview.linkClear() }
+  function linkHints() { preview.linkHints() }
+  function hintInput(key, text) { return preview.hintInput(key, text) }
+
   MessageList {
     id: messages
     Layout.preferredWidth: Math.max(root.minListWidth,
@@ -49,7 +61,7 @@ RowLayout {
     hotkey: root.app.showFolderPane ? "\u00b2" : "\u00b9"
     onRowClicked: function(i) { root.app.clickMessage(i) }
     onEndReached: root.app.loadMoreMessages()
-    onRefreshRequested: { root.app.loadMessages(); root.app.focusRequested() }
+    onRefreshRequested: { root.app.syncMail(); root.app.focusRequested() }
   }
 
   // Compose takes the reading pane's slot. Loaded on demand: the editor needs the native
@@ -115,6 +127,7 @@ RowLayout {
     imagesAllowed: root.app.currentImagesAllowed
     onUnblockRequested: function(scope) { root.app.unblockImages(scope); root.app.focusRequested() }
     onFocusRequested: root.app.focusRequested()
+    onNotice: function(text) { root.app.notify(text) }
     body: root.app.currentBody
   }
 }

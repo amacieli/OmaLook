@@ -2,6 +2,7 @@ import QtQuick
 import QtQuick.Layouts
 import QtQuick.Controls
 import qs.Commons
+import qs.Commons as Commons
 import qs.Ui
 import "../common"
 import "format.js" as Fmt
@@ -44,7 +45,7 @@ Item {
 
       UiText {
         text: "\uf0e0"
-        foreground: root.paneFocused ? Color.accent : Color.foreground
+        foreground: root.paneFocused ? Commons.Color.accent : Commons.Color.foreground
         font.pixelSize: Style.font.icon
       }
 
@@ -52,7 +53,7 @@ Item {
         text: root.folderName
         Layout.fillWidth: true
         elide: Text.ElideRight
-        foreground: root.paneFocused ? Color.accent : Color.foreground
+        foreground: root.paneFocused ? Commons.Color.accent : Commons.Color.foreground
         font.pixelSize: Style.font.subtitle
         font.bold: true
       }
@@ -65,7 +66,7 @@ Item {
 
       PanelActionButton {
         iconText: "\uf021"
-        tooltipText: "Refresh messages"
+        tooltipText: "Refresh mail from server (F5)"
         onClicked: root.refreshRequested()
       }
     }
@@ -108,12 +109,12 @@ Item {
         readonly property var cats: Fmt.categories(model)
 
         radius: Style.cornerRadius
-        color: hasCursor ? Style.hoverFillFor(Color.foreground, Color.accent)
+        color: hasCursor ? Style.hoverFillFor(Commons.Color.foreground, Commons.Color.accent)
              : marked ? Style.selectedAccentFill
-             : isCurrent ? Style.selectedFillFor(Color.foreground, Color.accent)
-             : mouse.containsMouse ? Style.normalFillFor(Color.foreground, Color.accent)
+             : isCurrent ? Style.selectedFillFor(Commons.Color.foreground, Commons.Color.accent)
+             : mouse.containsMouse ? Style.normalFillFor(Commons.Color.foreground, Commons.Color.accent)
              : "transparent"
-        borderSpec: hasCursor ? Border.controlSpec("hover-cursor", Color.foreground, Color.accent) : Border.none()
+        borderSpec: hasCursor ? Border.controlSpec("hover-cursor", Commons.Color.foreground, Commons.Color.accent) : Border.none()
 
         // unread strip
         Rectangle {

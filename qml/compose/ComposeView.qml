@@ -2,6 +2,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 import qs.Commons
+import qs.Commons as Commons
 import qs.Ui
 import OmaLook.Compose
 import "../common"
@@ -207,7 +208,7 @@ FocusScope {
       UiText {
         text: root.status
         visible: text !== ""
-        foreground: root.status.indexOf("…") >= 0 ? Color.foreground : Color.urgent
+        foreground: root.status.indexOf("…") >= 0 ? Commons.Color.foreground : Commons.Color.urgent
         dim: root.status.indexOf("…") >= 0
         font.pixelSize: Style.font.caption
         elide: Text.ElideRight
@@ -343,7 +344,7 @@ FocusScope {
             UiText { text: Fmt.bytes(chip.modelData.size); dim: true; font.pixelSize: Style.font.caption }
             UiText {
               text: "\uf00d"
-              foreground: Color.urgent
+              foreground: Commons.Color.urgent
               MouseArea { anchors.fill: parent; anchors.margins: -Style.spacing.xs; cursorShape: Qt.PointingHandCursor; onClicked: root.removeAttachment(chip.index) }
             }
           }
@@ -365,7 +366,7 @@ FocusScope {
       ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
       ScrollBar.vertical: ThemedScrollBar {
         parent: scroll
-        tint: root.mode === Modes.HTML ? "#000000" : Color.foreground
+        tint: root.mode === Modes.HTML ? "#000000" : Commons.Color.foreground
         x: scroll.width - width
         y: 0
         height: scroll.height
@@ -388,9 +389,9 @@ FocusScope {
           wrapMode: TextEdit.Wrap
           selectByMouse: true
           persistentSelection: true
-          color: root.mode === Modes.HTML ? "#000000" : Color.foreground
+          color: root.mode === Modes.HTML ? "#000000" : Commons.Color.foreground
           selectionColor: root.mode === Modes.HTML ? "#b3d4fc" : Style.selectionFill
-          selectedTextColor: root.mode === Modes.HTML ? "#000000" : Color.foreground
+          selectedTextColor: root.mode === Modes.HTML ? "#000000" : Commons.Color.foreground
           font.family: root.mode === Modes.HTML ? "Calibri" : Style.font.family
           font.pixelSize: root.mode === Modes.HTML ? 15 : Style.font.body
           onLinkActivated: function(l) { Qt.openUrlExternally(l) }

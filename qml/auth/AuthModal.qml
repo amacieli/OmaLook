@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Layouts
 import qs.Commons
+import qs.Commons as Commons
 import qs.Ui
 import "../common"
 
@@ -16,7 +17,7 @@ Item {
 
   Rectangle {
     anchors.fill: parent
-    color: Util.alpha(Color.background, 0.7)
+    color: Util.alpha(Commons.Color.background, 0.7)
 
     MouseArea { anchors.fill: parent; onClicked: root.auth.cancel() }
 
@@ -25,10 +26,10 @@ Item {
       anchors.centerIn: parent
       width: Math.min(parent.width - Style.space(60), Style.space(520))
       height: content.implicitHeight + card.contentTopInset + card.contentBottomInset
-      color: Color.background
+      color: Commons.Color.background
       padding: Style.space(18)
       radius: Style.cornerRadius
-      borderSpec: Border.flat(Color.accent, Style.normalBorderWidth)
+      borderSpec: Border.flat(Commons.Color.accent, Style.normalBorderWidth)
 
       MouseArea { anchors.fill: parent }   // swallow clicks so the scrim doesn't cancel
 
@@ -44,7 +45,7 @@ Item {
           Layout.fillWidth: true
           text: root.auth.loginProvider === "gmail" ? "Google Authentication" : "Microsoft Authentication"
           horizontalAlignment: Text.AlignHCenter
-          foreground: Color.accent
+          foreground: Commons.Color.accent
           font.pixelSize: Style.font.title
           font.bold: true
         }
@@ -82,7 +83,7 @@ Item {
             Layout.fillWidth: true
             visible: root.auth.errorMessage !== ""
             text: root.auth.errorMessage
-            foreground: Color.urgent
+            foreground: Commons.Color.urgent
             wrapMode: Text.Wrap
             horizontalAlignment: Text.AlignHCenter
           }
@@ -161,14 +162,14 @@ Item {
             implicitHeight: urlText.implicitHeight + Style.spacing.lg * 2
             color: "transparent"
             radius: Style.cornerRadius
-            borderSpec: Border.controlSpec("normal", Color.foreground, Color.accent)
+            borderSpec: Border.controlSpec("normal", Commons.Color.foreground, Commons.Color.accent)
 
             UiText {
               id: urlText
               anchors.fill: parent
               anchors.margins: Style.spacing.lg
               text: root.auth.verificationUri
-              foreground: Color.accent
+              foreground: Commons.Color.accent
               elide: Text.ElideRight
               horizontalAlignment: Text.AlignHCenter
             }
@@ -179,9 +180,9 @@ Item {
           BorderSurface {
             Layout.fillWidth: true
             implicitHeight: codeText.implicitHeight + Style.spacing.xxxl * 2
-            color: Style.selectedFillFor(Color.foreground, Color.accent)
+            color: Style.selectedFillFor(Commons.Color.foreground, Commons.Color.accent)
             radius: Style.cornerRadius
-            borderSpec: Border.flat(Color.accent, Style.normalBorderWidth)
+            borderSpec: Border.flat(Commons.Color.accent, Style.normalBorderWidth)
 
             UiText {
               id: codeText
@@ -201,7 +202,7 @@ Item {
               var ss = s % 60
               return "Code expires in " + Math.floor(s / 60) + ":" + (ss < 10 ? "0" + ss : ss)
             }
-            foreground: root.auth.secondsRemaining < 60 ? Color.urgent : Color.foreground
+            foreground: root.auth.secondsRemaining < 60 ? Commons.Color.urgent : Commons.Color.foreground
             dim: root.auth.secondsRemaining >= 60
             font.pixelSize: Style.font.caption
           }
@@ -224,7 +225,7 @@ Item {
           UiText {
             Layout.fillWidth: true
             text: root.auth.errorMessage
-            foreground: Color.urgent
+            foreground: Commons.Color.urgent
             wrapMode: Text.Wrap
             horizontalAlignment: Text.AlignHCenter
           }

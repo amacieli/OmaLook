@@ -1,5 +1,6 @@
 import QtQuick
 import qs.Commons
+import qs.Commons as Commons
 
 // btop-style panel outline: a box with the pane's title set into the top edge,
 // prefixed by the key that jumps to it ("³ Inbox"). Idle panes are dim and thin; the
@@ -16,7 +17,7 @@ Item {
   property string title: ""
   property string hotkey: ""
   // The pane's own hue (a Hues colour), as btop gives each box one. Dimmed until focused.
-  property color tint: Color.accent
+  property color tint: Commons.Color.accent
 
   property color lineColor: focused
     ? tint

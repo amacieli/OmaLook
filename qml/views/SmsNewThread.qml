@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Layouts
 import qs.Commons
+import qs.Commons as Commons
 import qs.Ui
 import "../common"
 import "sms.js" as Sms
@@ -138,7 +139,7 @@ Item {
             height: chipText.implicitHeight + Style.spacing.sm * 2
             width: chipText.implicitWidth + Style.spacing.lg * 2
             radius: height / 2
-            color: Qt.rgba(Color.accent.r, Color.accent.g, Color.accent.b, 0.22)
+            color: Qt.rgba(Commons.Color.accent.r, Commons.Color.accent.g, Commons.Color.accent.b, 0.22)
             UiText {
               id: chipText
               anchors.centerIn: parent
@@ -155,8 +156,8 @@ Item {
           height: Style.font.body * 2
           verticalAlignment: TextInput.AlignVCenter
           color: Hues.brightForeground
-          selectionColor: Color.accent
-          selectedTextColor: Color.background
+          selectionColor: Commons.Color.accent
+          selectedTextColor: Commons.Color.background
           font.family: Style.font.family
           font.pixelSize: Style.font.body
           clip: true
@@ -199,7 +200,7 @@ Item {
           required property int index
           width: parent.width
           height: row.implicitHeight + Style.spacing.md * 2
-          color: root.suggestIndex === index ? Style.hoverFillFor(Color.foreground, Color.accent) : "transparent"
+          color: root.suggestIndex === index ? Style.hoverFillFor(Commons.Color.foreground, Commons.Color.accent) : "transparent"
           RowLayout {
             id: row
             anchors.fill: parent; anchors.leftMargin: Style.spacing.lg; anchors.rightMargin: Style.spacing.lg
@@ -232,8 +233,8 @@ Item {
           height: Math.max(implicitHeight, bodyFlick.height)
           wrapMode: TextEdit.Wrap
           color: Hues.brightForeground
-          selectionColor: Color.accent
-          selectedTextColor: Color.background
+          selectionColor: Commons.Color.accent
+          selectedTextColor: Commons.Color.background
           font.family: Style.font.family
           font.pixelSize: Style.font.body
           onCursorRectangleChanged: {

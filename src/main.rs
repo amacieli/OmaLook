@@ -1355,6 +1355,19 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                     continue;
                 }
 
+                // ── POST /mail/sync — the Refresh button / F5: poll the provider now, not at the next interval.
+                // Returns at once; new mail reaches the UI through the mail sync serial. ──
+                if first_line.contains("POST /mail/sync") {
+                    omalook::sync_state::request_mail_sync();
+                    let body = "ok";
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                        body.len(), body
+                    );
+                    let _ = stream.write_all(response.as_bytes());
+                    continue;
+                }
+
                 // ── POST /messages/read?id=ID&read=true|false — mark a message read/unread.
                 // Updates the local cache at once; the daemon pushes it to the provider. ──
                 if first_line.contains("POST /messages/read") {

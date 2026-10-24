@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Layouts
 import qs.Commons
+import qs.Commons as Commons
 import qs.Ui
 import "mail"
 import "chrome"
@@ -74,6 +75,9 @@ FocusScope {
 
     // A yes/no question (permanent delete) takes every key until it is answered.
     interceptor: function(e) {
+      // Link hint labels (f in the reading pane) take every key until a label is typed or Esc.
+      var ci = contentLoader.item
+      if (ci && ci.hintMode === true && !appState.pendingConfirm) return ci.hintInput(e.key, e.text) === true
       if (!appState.pendingConfirm) return false
       confirmDialog.handleKey(e)
       return true
@@ -174,13 +178,17 @@ FocusScope {
         metaActive: appState.metaActive
         metaRemaining: appState.metaRemaining
         keyOf: commands.keyOf
+        linkCount: contentLoader.item && contentLoader.item.linkCount !== undefined ? contentLoader.item.linkCount : 0
+        linkIndex: contentLoader.item && contentLoader.item.linkIndex !== undefined ? contentLoader.item.linkIndex : -1
+        linkHref: contentLoader.item && contentLoader.item.linkHref !== undefined ? contentLoader.item.linkHref : ""
+        hintMode: !!contentLoader.item && contentLoader.item.hintMode === true
       }
     }
 
     Component { id: mailComponent;     MailView { app: appState } }
-    Component { id: calendarComponent; CalendarView { mode: appState.calendarMode; dataRev: appState.calendarRev; onModeChanged: appState.calendarMode = mode; monoFont: Style.font.family; accentColor: Color.accent; successColor: Color.accent; dangerColor: Color.urgent; textColor: Color.foreground } }
-    Component { id: peopleComponent;   PeopleView   { viewMode: appState.peopleView; onViewModeChanged: appState.peopleView = viewMode; sortKey: appState.peopleSort; onSortKeyChanged: appState.peopleSort = sortKey; monoFont: Style.font.family; accentColor: Color.accent; successColor: Color.accent; dangerColor: Color.urgent; textColor: Color.foreground } }
-    Component { id: tasksComponent;    TasksView    { monoFont: Style.font.family; accentColor: Color.accent; successColor: Color.accent; dangerColor: Color.urgent; textColor: Color.foreground } }
+    Component { id: calendarComponent; CalendarView { mode: appState.calendarMode; dataRev: appState.calendarRev; onModeChanged: appState.calendarMode = mode; monoFont: Style.font.family; accentColor: Commons.Color.accent; successColor: Commons.Color.accent; dangerColor: Commons.Color.urgent; textColor: Commons.Color.foreground } }
+    Component { id: peopleComponent;   PeopleView   { viewMode: appState.peopleView; onViewModeChanged: appState.peopleView = viewMode; sortKey: appState.peopleSort; onSortKeyChanged: appState.peopleSort = sortKey; monoFont: Style.font.family; accentColor: Commons.Color.accent; successColor: Commons.Color.accent; dangerColor: Commons.Color.urgent; textColor: Commons.Color.foreground } }
+    Component { id: tasksComponent;    TasksView    { monoFont: Style.font.family; accentColor: Commons.Color.accent; successColor: Commons.Color.accent; dangerColor: Commons.Color.urgent; textColor: Commons.Color.foreground } }
     Component { id: smsComponent;      SmsView { app: appState } }
     Component {
       id: settingsComponent

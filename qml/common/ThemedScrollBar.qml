@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import qs.Commons
+import qs.Commons as Commons
 
 // Always-visible vertical scroll bar for lists. Shown whenever the content
 // overflows its view (the stock bar hides itself until you scroll, so a long
@@ -16,7 +17,7 @@ ScrollBar {
 
   // The colour the bar is drawn in (translucent). Light foreground on the dark
   // shell by default; the HTML view sets it dark, since that sits on a white page.
-  property color tint: Color.foreground
+  property color tint: Commons.Color.foreground
 
   contentItem: Rectangle {
     implicitWidth: 6

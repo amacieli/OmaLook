@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Layouts
 import qs.Commons
+import qs.Commons as Commons
 import qs.Ui
 import "../../common"
 import ".."
@@ -58,7 +59,7 @@ SettingsPage {
       visible: !!page.app && page.app.senderNotice !== ""
       width: parent.width
       text: page.app ? page.app.senderNotice : ""
-      foreground: Color.urgent
+      foreground: Commons.Color.urgent
       wrapMode: Text.WordWrap
     }
   }
@@ -149,7 +150,7 @@ SettingsPage {
           bordered: true
           iconText: "\uf1f8"
           text: confirming ? "Sure?" : "Remove"
-          foreground: confirming ? Color.urgent : Color.foreground
+          foreground: confirming ? Commons.Color.urgent : Commons.Color.foreground
           onClicked: {
             if (confirming) { confirming = false; page.app.removeSender(row.email) }
             else confirming = true

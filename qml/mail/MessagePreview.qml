@@ -4,6 +4,7 @@ import Quickshell
 import Quickshell.Io
 import QtQuick.Layouts
 import qs.Commons
+import qs.Commons as Commons
 import qs.Ui
 import "../common"
 import "format.js" as Fmt
@@ -123,9 +124,105 @@ Item {
 
   property bool renderPending: false
   property string plainText: ""
+  // Colours of the current link (inverse video) and of the hint labels, for the system view.
+  readonly property var hl: ({ link: String(Hues.cyan), curBg: String(Commons.Color.accent), curFg: String(Commons.Color.background),
+                               hintBg: String(Hues.yellow), hintFg: String(Commons.Color.background) })
+  property string plainHtml: ""          // linkedHtml() template of the system view
+  property var sysLinks: []              // [{href, label}] in the system view
+  property var sysOffsets: []            // their character positions, to scroll to them
   property var rendered: ({ html: "", blocked: 0 })
   property int _seq: 0
   readonly property real _htmlWidth: Math.max(0, htmlScroll.width - Style.spacing.huge * 2)
+
+  // ---- keyboard links -------------------------------------------------------------------
+  // Tab / ] and Shift-Tab / [ step through the links of whichever view shows, Enter / o opens the
+  // current one, y copies it, f labels them all (type the label to open). The key commands live in
+  // keys/AppCommands.qml; the shell routes hint-label keys to hintInput().
+  readonly property var navLinks: htmlMode ? (shotShown ? shotLinks : []) : sysLinks
+  readonly property int linkCount: navLinks.length
+  property int linkIndex: -1
+  property bool hintMode: false
+  property string hintTyped: ""
+  readonly property var hintList: hintMode ? Fmt.hintLabels(linkCount) : []
+  readonly property string currentHref: (linkIndex >= 0 && linkIndex < linkCount) ? String(navLinks[linkIndex].href) : ""
+  // The highlighted link only shows while the reading pane has the keyboard.
+  readonly property int shownLink: paneFocused ? linkIndex : -1
+  signal notice(string text)
+
+  // Where link i sits in the scrolled content: { y, h }.
+  function _linkRect(i) {
+    if (htmlMode) {
+      var l = shotLinks[i], k = root.shotScale * shot.k
+      return { y: l.y * k, h: Math.max(1, l.h * k) }
+    }
+    var ys = _sysRects()
+    return ys[i] || { y: -1, h: 1 }
+  }
+  // Where each system-view link sits, found by probing the laid-out text (Text cannot report the
+  // position of a character). Done once per layout, only when a link is first stepped to.
+  property var _sysY: null
+  function _sysRects() {
+    if (_sysY !== null) return _sysY
+    var ys = [], found = 0
+    var step = Math.max(4, Math.round(sysText.font.pixelSize * 0.6))
+    var x0 = sysText.leftPadding, x1 = sysText.width - sysText.rightPadding
+    for (var y = sysText.topPadding; y < sysText.height && found < linkCount; y += step) {
+      for (var x = x0; x < x1; x += 5) {
+        var l = sysText.linkAt(x, y)
+        if (l.indexOf("omalook-link:") !== 0) continue
+        var n = Number(l.slice(13))
+        if (ys[n] === undefined) { ys[n] = { y: y - step / 2, h: step * 2 }; found++ }
+      }
+    }
+    _sysY = ys
+    return ys
+  }
+  function _showLink(i) {
+    var f = _flick(), r = _linkRect(i)
+    if (r.y < 0) return
+    var m = Math.min(40, f.height / 4)
+    if (r.y < f.contentY + m || r.y + r.h > f.contentY + f.height - m) f.contentY = _clamp(f, r.y - f.height * 0.3)
+  }
+  // The first link on screen (going forward) or the last one (going back), for the first Tab.
+  function _edgeLink(dir) {
+    var f = _flick(), top = f.contentY, bot = top + f.height
+    if (dir > 0) { for (var i = 0; i < linkCount; i++) if (_linkRect(i).y >= top - 1) return i; return linkCount - 1 }
+    for (var j = linkCount - 1; j >= 0; j--) { var r = _linkRect(j); if (r.y + r.h <= bot + 1) return j }
+    return 0
+  }
+  function linkStep(dir) {
+    if (linkCount === 0) return
+    linkIndex = (linkIndex < 0 || linkIndex >= linkCount) ? _edgeLink(dir) : (linkIndex + dir + linkCount) % linkCount
+    _showLink(linkIndex)
+  }
+  function linkClear() { linkIndex = -1; hintMode = false; hintTyped = "" }
+  function linkOpen() { if (currentHref !== "") Qt.openUrlExternally(currentHref) }
+  function linkCopy() {
+    if (currentHref === "") return
+    Quickshell.execDetached(["wl-copy", currentHref])
+    root.notice("copied " + currentHref)
+  }
+  function linkHints() { if (linkCount > 0) { hintTyped = ""; hintMode = true } }
+  // Keys while the hint labels show. Returns true when consumed (all of them: the mode is modal).
+  function hintInput(key, text) {
+    if (key === Qt.Key_Escape) { linkClear(); return true }
+    if (key === Qt.Key_Backspace) { hintTyped = hintTyped.slice(0, -1); return true }
+    var c = String(text || "").toLowerCase()
+    if (c.length !== 1 || "asdfghjkl".indexOf(c) < 0) return true
+    var typed = hintTyped + c
+    var matches = hintList.filter(function(h) { return h.indexOf(typed) === 0 })
+    if (matches.length === 0) return true
+    hintTyped = typed
+    var hit = hintList.indexOf(typed)
+    if (hit >= 0 && matches.length === 1) {
+      hintMode = false; hintTyped = ""
+      linkIndex = hit
+      _showLink(hit)
+      linkOpen()
+    }
+    return true
+  }
+  onPaneFocusedChanged: if (!paneFocused) { hintMode = false; hintTyped = "" }
 
   // ---- WebKit view -------------------------------------------------------------------------
   // HTML mail is drawn by omalook-render (WebKitGTK, its own process, see tools/render): full
@@ -222,6 +319,11 @@ Item {
     _seq++
     _stopShot()
     plainText = ""
+    plainHtml = ""
+    sysLinks = []
+    sysOffsets = []
+    _sysY = null
+    linkClear()
     rendered = { html: "", blocked: 0 }
     shotSource = ""
     shotLinks = []
@@ -257,6 +359,9 @@ Item {
     onMessage: function(r) {
       if (r.seq !== root._seq) return   // scrolled on: this message is no longer the one shown
       root.plainText = r.plain
+      root.plainHtml = r.plainHtml
+      root.sysLinks = r.plainLinks || []
+      root.sysOffsets = r.plainOffsets || []
       // With the WebKit view showing (or about to), Qt never lays the HTML out: only the count of
       // blocked images is kept.
       var qtHtml = (root.shotFailed || !root._wantShotIgnoringFailure()) ? r.html : ""
@@ -409,7 +514,7 @@ Item {
           id: importanceMark
           visible: root.showImportance
           text: "\uf06a  high importance"
-          foreground: Color.urgent
+          foreground: Commons.Color.urgent
           font.pixelSize: Style.font.caption
         }
         UiText {
@@ -541,17 +646,32 @@ Item {
           }
 
           UiText {
+            id: sysText
+            readonly property bool linked: root.statusText === "" && !root.renderPending && root.plainHtml !== ""
             width: scroll.availableWidth
             leftPadding: Style.spacing.huge
             rightPadding: Style.spacing.huge
             topPadding: Style.spacing.xxxl
             bottomPadding: Style.spacing.huge * 1.3
+            textFormat: linked ? Text.RichText : Text.PlainText
+            linkColor: Hues.cyan
             text: root.statusText !== ""
               ? root.statusText + (root.fallbackText !== "" ? "\n\n" + root.fallbackText : "")
-              : (root.renderPending ? "rendering…" : root.plainText)
+              : (root.renderPending ? "rendering…" : (linked ? Fmt.markLinks(root.plainHtml, root.shownLink, root.hintMode ? root.hintList : null, root.hintTyped, root.hl) : root.plainText))
             dim: root.statusText !== "" || root.renderPending
             wrapMode: Text.WordWrap
             lineHeight: 1.4
+            onLinkActivated: function(link) {
+              var n = link.indexOf("omalook-link:") === 0 ? Number(link.slice(13)) : -1
+              if (n >= 0 && n < root.sysLinks.length) Qt.openUrlExternally(root.sysLinks[n].href)
+            }
+            onWidthChanged: root._sysY = null
+            // Hand cursor over a link (links are underlined by the rich-text renderer).
+            MouseArea {
+              anchors.fill: parent
+              acceptedButtons: Qt.NoButton
+              cursorShape: sysText.hoveredLink !== "" ? Qt.PointingHandCursor : Qt.ArrowCursor
+            }
           }
         }
       }
@@ -642,13 +762,48 @@ Item {
               Repeater {
                 model: root.shotLinks
                 MouseArea {
+                  id: linkBox
                   required property var modelData
+                  required property int index
+                  readonly property bool current: index === root.shownLink
+                  readonly property string hint: root.hintMode && root.hintList[index] !== undefined && root.hintList[index].indexOf(root.hintTyped) === 0
+                    ? root.hintList[index].slice(root.hintTyped.length) : ""
                   x: modelData.x * root.shotScale * shot.k
                   y: modelData.y * root.shotScale * shot.k
                   width: modelData.w * root.shotScale * shot.k
                   height: modelData.h * root.shotScale * shot.k
                   cursorShape: Qt.PointingHandCursor
                   onClicked: Qt.openUrlExternally(modelData.href)
+
+                  // Keyboard cursor: an outlined, lightly filled box over the link.
+                  Rectangle {
+                    visible: linkBox.current
+                    anchors.fill: parent
+                    anchors.margins: -2
+                    radius: 2
+                    color: Qt.rgba(Commons.Color.accent.r, Commons.Color.accent.g, Commons.Color.accent.b, 0.22)
+                    border.color: Commons.Color.accent
+                    border.width: 2
+                  }
+                  // Hint label (f): typed letters are removed from it as they match.
+                  Rectangle {
+                    visible: linkBox.hint !== ""
+                    x: 0
+                    y: -height / 2
+                    width: hintText.implicitWidth + 8
+                    height: hintText.implicitHeight + 2
+                    radius: 2
+                    color: Hues.yellow
+                    Text {
+                      id: hintText
+                      anchors.centerIn: parent
+                      text: linkBox.hint
+                      color: Commons.Color.background
+                      font.family: Style.font.family
+                      font.pixelSize: Style.font.caption
+                      font.bold: true
+                    }
+                  }
                 }
               }
             }
@@ -673,6 +828,11 @@ Item {
                 font.pixelSize: 15
                 text: root.rendered.html
                 onLinkActivated: function(link) { Qt.openUrlExternally(link) }
+                MouseArea {
+                  anchors.fill: parent
+                  acceptedButtons: Qt.NoButton
+                  cursorShape: htmlText.hoveredLink !== "" ? Qt.PointingHandCursor : Qt.ArrowCursor
+                }
               }
 
               Text {

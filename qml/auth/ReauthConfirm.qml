@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Layouts
 import qs.Commons
+import qs.Commons as Commons
 import qs.Ui
 import "../common"
 
@@ -17,7 +18,7 @@ Item {
 
   Rectangle {
     anchors.fill: parent
-    color: Util.alpha(Color.background, 0.7)
+    color: Util.alpha(Commons.Color.background, 0.7)
 
     // clicking outside backs out — the safe choice
     MouseArea { anchors.fill: parent; onClicked: root.auth.answerReauth("cancel") }
@@ -27,10 +28,10 @@ Item {
       anchors.centerIn: parent
       width: Math.min(parent.width - Style.space(60), Style.space(520))
       height: content.implicitHeight + card.contentTopInset + card.contentBottomInset
-      color: Color.background
+      color: Commons.Color.background
       padding: Style.space(18)
       radius: Style.cornerRadius
-      borderSpec: Border.flat(Color.urgent, Style.normalBorderWidth)
+      borderSpec: Border.flat(Commons.Color.urgent, Style.normalBorderWidth)
 
       MouseArea { anchors.fill: parent }   // swallow clicks so the scrim doesn't cancel
 
@@ -46,7 +47,7 @@ Item {
           Layout.fillWidth: true
           text: "Account already signed in"
           horizontalAlignment: Text.AlignHCenter
-          foreground: Color.urgent
+          foreground: Commons.Color.urgent
           font.pixelSize: Style.font.title
           font.bold: true
         }
@@ -90,7 +91,7 @@ Item {
             text: "Replace sign-in"
             iconText: "\uf021"
             bordered: true
-            foreground: Color.urgent
+            foreground: Commons.Color.urgent
             onClicked: root.auth.answerReauth("replace")
           }
         }
