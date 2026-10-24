@@ -5,6 +5,10 @@ IDs are stable (never reused). Status: `open` | `investigating` | `planned` | `i
 
 ## Issues
 
+### OL-020 — One toggle for how a message is shown: HTML / system, this message / this sender (open, not started)
+- **Wanted (user, 2026-10-24):** streamline the rendering choices — "view as HTML for this message", "for this sender", "HTML" and "system" — into one toggle-able button or setting that can be driven from the keyboard.
+- **To do (design first, no code yet):** list what exists today (the per-message view-as-HTML control, the per-sender "always load images"/rendering choice, the global `message_rendering` setting with `html` | `system` | `system_sender`) and how they interact; propose a single control (e.g. one key that cycles message → sender → default, or one picker) and a clear indicator of which level is in force; get the user's approval before building.
+
 ### OL-019 — Recipients (To/Cc/Bcc) blank on some messages (fixed 2026-10-24, needs `./build.sh --live`)
 - **Seen:** 2026-10-24: today's "Holiday party" from Erika showed no recipients; Graph has To = Jennifer Jackson, Gary Nusbaum, Adam. 78 other cached rows had the same (no conversation id).
 - **Cause:** `GraphEmailProvider::parse_message` marked every change-feed item `meta: true`. A read/move update can carry only the changed fields, so storing it blanked the cached recipients and flagged the row complete.
@@ -36,9 +40,11 @@ IDs are stable (never reused). Status: `open` | `investigating` | `planned` | `i
   2. Clicking the Reply All button does not carry over the Cc and Bcc recipients; they are missing from the compose window.
 - **To do:** find the Reply All action in the mail/compose QML (`qml/mail/`, `qml/compose/`) and its keybinding in the keys model; add a key and document it in `docs/KEYS.md`; check how the reply recipient list is built (original To/Cc/Bcc, minus the user's own address) and fix the Cc/Bcc copy; verify with a message that has Cc and Bcc on both the button and the key, and confirm the recipients in the compose window before sending.
 
-### OL-014 — Remember the last selected view per area (open, not started)
-- **Wanted (user, 2026-10-17):** remember the view the user last selected in each area, so it is restored when the app opens again: the mail folder (including "all folders"), the calendar view, the mail view, the people (contacts) view and the task view.
-- **To do:** list the current view state for each area in QML (`qml/mail/`, `qml/views/`, and the calendar/contacts/tasks screens); decide where to persist it (likely `~/.config/omalook` settings or the SQLite cache, not the keyring); save on each change and restore on startup; handle a remembered folder or view that no longer exists (fall back to the default, e.g. Inbox); verify by changing each view, quitting, relaunching and checking the view comes back. Note that `--live` deploys reload QML only after relaunch (see AGENTS.md).
+### OL-014 — Remember the last selected view per area (done 2026-10-24, needs `./build.sh --live`)
+- **Wanted (user, 2026-10-17):** remember the view the user last selected in each area, so it is restored when the app opens again.
+- **Done:** the module (Settings is not restored: the last other module is), the mail folder (an \"all accounts\" row too), the calendar view (day / work week / week / month), the people view and sort, and the task filter. Stored in `~/.config/omalook/view_state.json` (backend `GET`/`POST /settings/view_state`, `src/view_state.rs`; a flat JSON object, separate from `settings.toml`). `AppState.qml`: `loadViewState()` on first backend answer, saves 300 ms after a change, and not before the stored state was read. A folder that no longer exists or an unknown value is ignored and the default stays.
+- **Checked on a scratch instance (own config dir, port 27999):** calendar/week, people favorites + last name and task filter `done` came back; saving after `g t`, `g p` and `f` rewrote the file; a stored \"Sent - all accounts\" folder was reopened; a bogus view/folder/mode fell back to Mail / Inbox. Unit test `view_state::tests::round_trip_and_refusals`.
+- **Not covered:** the selected message, scroll position, calendar date and search are not remembered (only the views).
 
 ### OL-013 — Status indicator in the bottom-right corner: daemon, MCP server, KDE Connect (open, not started)
 - **Wanted (user, 2026-10-17):** a coded "online" indicator in the bottom-right corner of the window. One letter per service: `D`/`d` = daemon, `M`/`m` = MCP server, `S`/`s` = KDE Connect. Capital = online, lower = offline.

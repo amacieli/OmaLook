@@ -17,7 +17,7 @@ Item {
   }
   property bool backendOnline: false
   onBackendOnlineChanged: {
-    if (backendOnline) { perfMark("backend first answered"); loadCalendarSettings(); loadUiSettings(); loadSenders(); loadMailSettings(); loadBackgroundSettings(); loadMcp(); loadSearchHistory() }
+    if (backendOnline) { perfMark("backend first answered"); loadCalendarSettings(); loadUiSettings(); loadSenders(); loadMailSettings(); loadBackgroundSettings(); loadMcp(); loadSearchHistory(); loadViewState() }
   }
 
   // ---- launch timing (see src/perf.rs): marks are queued until the backend answers, then
@@ -42,6 +42,8 @@ Item {
   // People view dropdowns: all | favorites | lists   and   first | last | company | recent
   property string peopleView: "all"
   property string peopleSort: "first"
+  // Tasks list filter: all | active | done
+  property string tasksFilter: "all"
   readonly property alias auth: authController
 
   // ---------------------------------------------------------- navigation
@@ -581,6 +583,7 @@ Item {
         var folders = JSON.parse(xhr.responseText)
         folderModelObj.clear()
         for (var i = 0; i < folders.length; i++) folderModelObj.append(folders[i])
+        root._applyWantedFolder()
         if (root.selectedFolderId === "") {
           for (var k = 0; k < folderModelObj.count; k++)
             if (!folderModelObj.get(k).all_accounts) { root.selectedFolderId = folderModelObj.get(k).id; break }
@@ -1198,7 +1201,69 @@ Item {
       request("POST", "/settings/sidebar_expanded", null, sidebarExpanded ? "true" : "false")
   }
 
-  onSelectedFolderIdChanged: { searchQuery = ""; clearMarks(); loadMessages() }
+  onSelectedFolderIdChanged: { searchQuery = ""; clearMarks(); loadMessages(); _saveViewSoon() }
+
+  // ---- remembered view (OL-014) ------------------------------------------------------------
+  // Where the user was is kept in ~/.config/omalook/view_state.json (backend: /settings/view_state)
+  // and put back on the next start: the module, the mail folder (an "all accounts" row too), the
+  // calendar view, the people view and sort, and the task filter. Anything stored that no longer
+  // exists (a removed account's folder, an unknown value) is ignored and the default stays.
+  // Nothing is saved until the stored state has been read, so the defaults chosen during start-up
+  // never overwrite it.
+  property bool _viewRestored: false
+  property string _wantFolderId: ""
+  property string _lastModule: "mail"   // last module that was not Settings (a start in Settings would surprise)
+  onCurrentViewChanged: { if (currentView !== "settings") _lastModule = currentView; _saveViewSoon() }
+  onCalendarModeChanged: _saveViewSoon()
+  onPeopleViewChanged: _saveViewSoon()
+  onPeopleSortChanged: _saveViewSoon()
+  onTasksFilterChanged: _saveViewSoon()
+
+  Timer { id: viewSaveTimer; interval: 300; onTriggered: root._saveViewState() }
+  function _saveViewSoon() { if (_viewRestored) viewSaveTimer.restart() }
+  function _saveViewState() {
+    request("POST", "/settings/view_state", null, JSON.stringify({
+      view: _lastModule, folder: selectedFolderId, calendar_mode: calendarMode,
+      people_view: peopleView, people_sort: peopleSort, tasks_filter: tasksFilter }))
+  }
+
+  // Select the remembered folder once the folder list has it. Returns true when it was dealt with
+  // (selected, or not there at all); false while the list is still empty.
+  function _applyWantedFolder() {
+    if (_wantFolderId === "") return true
+    if (folderModelObj.count === 0) return false
+    for (var i = 0; i < folderModelObj.count; i++) {
+      if (folderModelObj.get(i).id === _wantFolderId) {
+        folderIndex = i
+        selectedFolderId = _wantFolderId
+        break
+      }
+    }
+    _wantFolderId = ""
+    return true
+  }
+
+  function loadViewState() {
+    request("GET", "/settings/view_state", function(xhr) {
+      if (xhr.status === 200) {
+        try {
+          var s = JSON.parse(xhr.responseText)
+          function pick(v, allowed, cur) { return allowed.indexOf(v) >= 0 ? v : cur }
+          root.calendarMode = pick(s.calendar_mode, ["day", "workweek", "week", "month"], root.calendarMode)
+          root.peopleView = pick(s.people_view, ["all", "favorites", "lists"], root.peopleView)
+          root.peopleSort = pick(s.people_sort, ["first", "last", "company", "recent"], root.peopleSort)
+          root.tasksFilter = pick(s.tasks_filter, ["all", "active", "done"], root.tasksFilter)
+          if (typeof s.folder === "string" && s.folder !== "") { root._wantFolderId = s.folder; root._applyWantedFolder() }
+          // Only when the user has not moved on in the meantime.
+          if (root.currentView === "mail" && typeof s.view === "string" && s.view !== "mail" && s.view !== "settings") {
+            for (var i = 0; i < root.navItems.length; i++)
+              if (root.navItems[i].view === s.view) { root.setNavIndex(i); break }
+          }
+        } catch (e) { console.log("[ViewState] parse error:", e) }
+      }
+      root._viewRestored = true
+    })
+  }
 
   // ---- keyboard bindings ([keys] in settings.toml) ---------------------------------------
   // Polled: the backend serves the table with the file's mtime as `serial`, so editing

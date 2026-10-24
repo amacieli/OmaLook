@@ -1845,6 +1845,24 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                     continue;
                 }
 
+                // ── GET/POST /settings/view_state — where the user last was (see view_state.rs) ──
+                if first_line.contains("GET /settings/view_state") || first_line.contains("POST /settings/view_state") {
+                    let path = config_dir.join("view_state.json");
+                    let (status, body) = if first_line.contains("POST ") {
+                        let body_start = request.find("\r\n\r\n").map(|i| i + 4).unwrap_or(0);
+                        if omalook::view_state::save(&path, request[body_start..].trim()) { ("200 OK", "{}".to_string()) }
+                        else { ("400 Bad Request", "{\"error\":\"not a flat JSON object\"}".to_string()) }
+                    } else {
+                        ("200 OK", omalook::view_state::load(&path))
+                    };
+                    let response = format!(
+                        "HTTP/1.1 {}\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                        status, body.len(), body
+                    );
+                    let _ = stream.write_all(response.as_bytes());
+                    continue;
+                }
+
                 // ── GET /settings/ui — return UI settings as JSON ─────────────
                 if first_line.contains("GET /settings/ui") {
                     let settings_path = config_dir.join("settings.toml");

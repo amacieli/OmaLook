@@ -34,6 +34,7 @@ pub mod sms_daemon;
 pub mod sms_names;
 pub mod providers;
 pub mod search;
+pub mod view_state;
 pub mod background;
 pub mod mcp;
 
