@@ -144,20 +144,14 @@ if [ ! -f "$BINARY" ]; then
     exit 1
 fi
 
-# Create a symlink named "omalook" (no hyphen) in the project root
-ln -sf "$(realpath "$BINARY")" "$(pwd)/omalook"
-
 echo -e "${GREEN}✓ Build successful${NC}"
 echo -e "${GREEN}Binary: $(realpath "$BINARY")${NC}"
 echo -e "${GREEN}Size: $(du -h "$BINARY" | cut -f1)${NC}"
-echo -e "${GREEN}Symlink: $(realpath ./omalook)${NC}"
 
 # === SUMMARY ===
 echo -e "\n${GREEN}=== Build Summary ===${NC}"
 echo "Output binary: $BINARY"
-echo "Executable (no hyphen): ./omalook"
-echo "To run: ./omalook"
-echo "To run with release build: QML_DIR=qml ./build.sh --release && ./omalook"
+echo "To run the dev build: ./run.sh [--release]   (the installed app: ./build.sh --live, then /opt/omalook/omalook)"
 
 # === WEBKIT HTML RENDERER (optional) ===
 # omalook-render draws HTML mail with WebKitGTK in its own process. Without it (or without

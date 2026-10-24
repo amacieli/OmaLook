@@ -69,3 +69,4 @@ google_client.json
 # built artifacts
 /bin/
 /tools/render/omalook-render
+/omalook
