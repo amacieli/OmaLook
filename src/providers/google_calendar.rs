@@ -37,6 +37,17 @@ pub(crate) fn local_stamp(v: &serde_json::Value) -> Option<String> {
     Some(format!("{}T00:00:00", d))
 }
 
+/// Google attendees -> `[{name,email,role,response}]` JSON in the same shape as the Graph provider.
+fn google_attendees_json(attendees: &serde_json::Value) -> String {
+    let list: Vec<serde_json::Value> = attendees.as_array().into_iter().flatten().map(|a| serde_json::json!({
+        "name": a["displayName"].as_str().unwrap_or(""),
+        "email": a["email"].as_str().unwrap_or(""),
+        "role": if a["resource"].as_bool().unwrap_or(false) { "resource" } else if a["optional"].as_bool().unwrap_or(false) { "optional" } else { "required" },
+        "response": match a["responseStatus"].as_str().unwrap_or("needsAction") { "needsAction" => "none", "tentative" => "tentativelyAccepted", o => o },
+    })).collect();
+    if list.is_empty() { String::new() } else { serde_json::Value::Array(list).to_string() }
+}
+
 /// Google event resource → `CalendarEvent` (None for cancelled or untimed entries).
 /// `expanded` = the list call used `singleEvents=true`.
 pub(crate) fn parse_event(account_id: &str, time_zone: &str, ev: &serde_json::Value) -> Option<CalendarEvent> {
@@ -63,6 +74,24 @@ pub(crate) fn parse_event(account_id: &str, time_zone: &str, ev: &serde_json::Va
         time_zone: time_zone.to_string(),
         event_type: event_type.to_string(),
         series_master_id: master,
+        location: ev["location"].as_str().unwrap_or("").to_string(),
+        organizer_name: ev["organizer"]["displayName"].as_str().unwrap_or("").to_string(),
+        organizer_email: ev["organizer"]["email"].as_str().unwrap_or("").to_string(),
+        is_organizer: ev["organizer"]["self"].as_bool().unwrap_or(false),
+        attendees_json: google_attendees_json(&ev["attendees"]),
+        my_response: ev["attendees"].as_array().into_iter().flatten()
+            .find(|a| a["self"].as_bool().unwrap_or(false))
+            .and_then(|a| a["responseStatus"].as_str())
+            .map(|r| match r { "needsAction" => "notResponded", "tentative" => "tentativelyAccepted", o => o })
+            .unwrap_or("").to_string(),
+        show_as: match ev["transparency"].as_str() { Some("transparent") => "free", _ => "busy" }.to_string(),
+        online_provider: if ev["hangoutLink"].is_string() { "googleMeet".to_string() } else { String::new() },
+        online_url: ev["hangoutLink"].as_str().unwrap_or("").to_string(),
+        reminder_minutes: None,
+        web_link: ev["htmlLink"].as_str().unwrap_or("").to_string(),
+        sensitivity: ev["visibility"].as_str().unwrap_or("").to_string(),
+        recurrence_json: String::new(),
+        calendar_id: String::new(),
     })
 }
 
@@ -153,6 +182,21 @@ mod tests {
         assert_eq!((e.id.as_str(), e.subject.as_str(), e.body.as_str()), ("gmail-aaaaaa:e1", "Standup", "daily"));
         assert!(!e.is_all_day);
         assert_eq!(e.event_type, "singleInstance");
+    }
+
+    #[test]
+    fn google_detail_fields_are_parsed() {
+        let ev = json!({"id": "e3", "summary": "Sync", "location": "HQ", "start": {"dateTime": "2026-10-05T13:00:00Z"}, "end": {"dateTime": "2026-10-05T13:30:00Z"},
+            "organizer": {"email": "me@gmail.com", "self": true}, "hangoutLink": "https://meet.google.com/abc-defg-hij", "transparency": "transparent",
+            "htmlLink": "https://calendar.google.com/e", "attendees": [
+                {"email": "me@gmail.com", "self": true, "responseStatus": "needsAction"},
+                {"email": "r@x.com", "displayName": "Room", "resource": true, "responseStatus": "accepted"},
+                {"email": "o@x.com", "optional": true, "responseStatus": "tentative"}]});
+        let e = parse_event("g-1", "UTC", &ev).unwrap();
+        assert_eq!((e.location.as_str(), e.is_organizer, e.my_response.as_str(), e.show_as.as_str()), ("HQ", true, "notResponded", "free"));
+        assert_eq!((e.online_provider.as_str(), e.online_url.as_str()), ("googleMeet", "https://meet.google.com/abc-defg-hij"));
+        let a: serde_json::Value = serde_json::from_str(&e.attendees_json).unwrap();
+        assert_eq!((a[1]["role"].as_str(), a[2]["role"].as_str(), a[2]["response"].as_str()), (Some("resource"), Some("optional"), Some("tentativelyAccepted")));
     }
 
     #[test]

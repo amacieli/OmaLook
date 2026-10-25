@@ -228,6 +228,27 @@ pub struct CalendarEvent {
     /// their occurrences are.
     pub event_type: String,
     pub series_master_id: Option<String>,
+    // ---- detail fields (docs/PLAN-calendar-events.md section 3); all empty when the provider has none
+    pub location: String,
+    pub organizer_name: String,
+    pub organizer_email: String,
+    pub is_organizer: bool,
+    /// JSON array of `{name, email, role: required|optional|resource, response}`; "" = none
+    pub attendees_json: String,
+    /// Own response: none | organizer | accepted | tentativelyAccepted | declined | notResponded ("" = unknown)
+    pub my_response: String,
+    /// free | tentative | busy | oof | workingElsewhere ("" = unknown)
+    pub show_as: String,
+    /// teamsForBusiness | skypeForBusiness | googleMeet ... ("" = none)
+    pub online_provider: String,
+    /// Structured join link from the provider (Graph `onlineMeeting.joinUrl`, Google `hangoutLink`)
+    pub online_url: String,
+    pub reminder_minutes: Option<i64>,
+    pub web_link: String,
+    pub sensitivity: String,
+    /// Graph `recurrence` object as JSON (series masters only); "" = none
+    pub recurrence_json: String,
+    pub calendar_id: String,
 }
 
 /// Phone number with its type ("mobile", "home", "work")

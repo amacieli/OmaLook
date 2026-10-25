@@ -10,7 +10,23 @@ use chrono::{Local, NaiveDate, TimeZone, Utc};
 use log::{debug, error};
 use tokio::sync::Mutex;
 
-const SELECT: &str = "id,subject,body,start,end,isAllDay,type,seriesMasterId";
+const SELECT: &str = "id,subject,body,start,end,isAllDay,type,seriesMasterId,location,attendees,organizer,isOrganizer,responseStatus,showAs,isOnlineMeeting,onlineMeeting,onlineMeetingProvider,isReminderOn,reminderMinutesBeforeStart,webLink,sensitivity,recurrence";
+
+/// Graph attendees -> `[{name,email,role,response}]` JSON ("" when there are none).
+pub(crate) fn attendees_json(attendees: &serde_json::Value) -> String {
+    let list: Vec<serde_json::Value> = attendees
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|a| serde_json::json!({
+            "name": a["emailAddress"]["name"].as_str().unwrap_or(""),
+            "email": a["emailAddress"]["address"].as_str().unwrap_or(""),
+            "role": a["type"].as_str().unwrap_or("required"),
+            "response": a["status"]["response"].as_str().unwrap_or("none"),
+        }))
+        .collect();
+    if list.is_empty() { String::new() } else { serde_json::Value::Array(list).to_string() }
+}
 
 #[async_trait]
 pub trait CalendarProvider: Send + Sync {
@@ -111,6 +127,22 @@ impl GraphCalendarProvider {
             time_zone: ev["start"]["timeZone"].as_str().unwrap_or(&self.time_zone).to_string(),
             event_type: ev["type"].as_str().unwrap_or("singleInstance").to_string(),
             series_master_id: ev["seriesMasterId"].as_str().map(|s| s.to_string()),
+            location: ev["location"]["displayName"].as_str().unwrap_or("").to_string(),
+            organizer_name: ev["organizer"]["emailAddress"]["name"].as_str().unwrap_or("").to_string(),
+            organizer_email: ev["organizer"]["emailAddress"]["address"].as_str().unwrap_or("").to_string(),
+            is_organizer: ev["isOrganizer"].as_bool().unwrap_or(false),
+            attendees_json: attendees_json(&ev["attendees"]),
+            my_response: ev["responseStatus"]["response"].as_str().unwrap_or("").to_string(),
+            show_as: ev["showAs"].as_str().unwrap_or("").to_string(),
+            online_provider: if ev["isOnlineMeeting"].as_bool().unwrap_or(false) || ev["onlineMeeting"].is_object() {
+                ev["onlineMeetingProvider"].as_str().unwrap_or("").to_string()
+            } else { String::new() },
+            online_url: ev["onlineMeeting"]["joinUrl"].as_str().unwrap_or("").to_string(),
+            reminder_minutes: if ev["isReminderOn"].as_bool().unwrap_or(false) { ev["reminderMinutesBeforeStart"].as_i64() } else { None },
+            web_link: ev["webLink"].as_str().unwrap_or("").to_string(),
+            sensitivity: ev["sensitivity"].as_str().unwrap_or("").to_string(),
+            recurrence_json: if ev["recurrence"].is_object() { ev["recurrence"].to_string() } else { String::new() },
+            calendar_id: String::new(),
         }
     }
 
@@ -226,5 +258,33 @@ mod tests {
         assert_eq!((occ.event_type.as_str(), occ.series_master_id.as_deref()), ("occurrence", Some("M")));
         let single = p.parse_event(&serde_json::json!({"id": "s", "start": {"dateTime": "2026-10-05T09:00:00"}, "end": {"dateTime": "2026-10-05T10:00:00"}}));
         assert_eq!(single.event_type, "singleInstance");
+    }
+
+    #[test]
+    fn graph_detail_fields_are_parsed() {
+        let p = GraphCalendarProvider::new(AuthManager::new());
+        let e = p.parse_event(&serde_json::json!({
+            "id": "x", "subject": "Review", "start": {"dateTime": "2026-10-05T09:00:00.0000000"}, "end": {"dateTime": "2026-10-05T10:00:00.0000000"},
+            "location": {"displayName": "Room 4"}, "isOrganizer": false, "responseStatus": {"response": "tentativelyAccepted"},
+            "organizer": {"emailAddress": {"name": "Ann", "address": "ann@contoso.com"}},
+            "attendees": [{"type": "required", "status": {"response": "accepted"}, "emailAddress": {"name": "Bob", "address": "bob@contoso.com"}},
+                          {"type": "optional", "status": {"response": "none"}, "emailAddress": {"address": "cy@contoso.com"}}],
+            "showAs": "busy", "isOnlineMeeting": true, "onlineMeetingProvider": "teamsForBusiness",
+            "onlineMeeting": {"joinUrl": "https://teams.microsoft.com/l/meetup-join/q"},
+            "isReminderOn": true, "reminderMinutesBeforeStart": 15, "webLink": "https://outlook.office.com/x", "sensitivity": "normal",
+            "recurrence": {"pattern": {"type": "weekly"}}
+        }));
+        assert_eq!((e.location.as_str(), e.organizer_email.as_str(), e.my_response.as_str()), ("Room 4", "ann@contoso.com", "tentativelyAccepted"));
+        assert_eq!((e.show_as.as_str(), e.online_provider.as_str(), e.reminder_minutes), ("busy", "teamsForBusiness", Some(15)));
+        assert_eq!(e.online_url, "https://teams.microsoft.com/l/meetup-join/q");
+        let att: serde_json::Value = serde_json::from_str(&e.attendees_json).unwrap();
+        assert_eq!(att.as_array().unwrap().len(), 2);
+        assert_eq!((att[0]["email"].as_str(), att[0]["response"].as_str()), (Some("bob@contoso.com"), Some("accepted")));
+        assert_eq!((att[1]["name"].as_str(), att[1]["role"].as_str()), (Some(""), Some("optional")));
+        assert!(e.recurrence_json.contains("weekly"));
+        // a reminder switched off, no attendees, no online meeting: all empty
+        let bare = p.parse_event(&serde_json::json!({"id": "y", "start": {"dateTime": "2026-10-05T09:00:00"}, "end": {"dateTime": "2026-10-05T10:00:00"},
+            "isReminderOn": false, "reminderMinutesBeforeStart": 15, "isOnlineMeeting": false, "onlineMeeting": null, "attendees": []}));
+        assert_eq!((bare.reminder_minutes, bare.attendees_json.as_str(), bare.online_provider.as_str(), bare.online_url.as_str()), (None, "", "", ""));
     }
 }

@@ -5,6 +5,20 @@ IDs are stable (never reused). Status: `open` | `investigating` | `planned` | `i
 
 ## Issues
 
+### OL-023 — External-recipient warning banner for mail and calendar invitations (open, not started)
+- **Wanted (user, 2026-10-25):** for work/school accounts, or any account on a custom email domain, show a warning when people **outside the organization** are (a) invited to a calendar entry or (b) emailed (compose, reply, reply all, forward).
+- **Behaviour asked for:** a notification banner only. It cannot be clicked away or dismissed; it stays while any external recipient is present and goes when the last one is removed. It does not block sending or ask for confirmation.
+- **To do (design before code):** decide what counts as "inside" (the account's own email domain; whether Graph can also list the tenant's verified domains, and with which permission, unverified); how consumer domains (gmail.com, outlook.com, etc.) are told apart from custom domains, so consumer accounts get no banner; which recipient fields count in mail (To, Cc, Bcc) and calendar (Required, Optional); wording, including naming the external addresses; where it sits in `ComposeView` and in the event editor (`docs/PLAN-calendar-events.md` 5.3, attendees 5.5). Add the calendar half to that plan's phase 3 (attendees) when the user schedules it.
+- **Not started; no code written.**
+
+### OL-022 — New mail takes the first signed-in account instead of the viewed or last-used one (open, not started)
+- **Seen:** 2026-10-25 while planning OL-021 (user asked whether mail has the same gap; confirmed by reading the code). `AppState.openCompose()` (`qml/state/AppState.qml`) sets a new message's account to the first signed-in account; the folder or account being viewed and the last account used are ignored. Replies and forwards use the message's own account (correct). The From dropdown in `ComposeHeader.qml` is the only workaround.
+- **Proposed:** viewed account when the mail view is filtered to one, else last used (`last_account.mail` in `view_state.json`, written when a message is actually sent), else the first signed-in account. Same mechanism as the calendar's `last_account.calendar` in `docs/PLAN-calendar-events.md` 5.1.
+
+### OL-021 — Create calendar entries: personal and meetings, attendees, free-time finder, online meetings (planned, not started)
+- **Wanted (user, 2026-10-25):** keyboard-friendly way to create a calendar entry: personal (no attendees) or a meeting with required and optional attendees, find free time, and add Teams, Zoom or other online meeting providers. Microsoft Graph first, designed for other providers.
+- **Plan:** `docs/PLAN-calendar-events.md` (findings, data model, Graph mapping, keys, finder algorithm, meeting providers, phases 0-7, open questions in section 13). Revised twice 2026-10-25 with the user's answers (work/school Graph first, account switcher, meeting accounts in Settings -> Accounts, recurrence in v1 with a 12-month default series end, undo window on every calendar write, last-used account, Zoom as a stub until the OAuth app exists). Phase 0 Graph spike done 2026-10-25 (findings in plan section 15; vendor items and attendee-on-series check still open). Waiting for the user to choose the next phases (proposed start: phase 0 spike, phase 1 read side and cursor, which also covers the join action of OL-010).
+
 ### OL-020 — One toggle for how a message is shown: HTML / system, this message / this sender (open, not started)
 - **Wanted (user, 2026-10-24):** streamline the rendering choices — "view as HTML for this message", "for this sender", "HTML" and "system" — into one toggle-able button or setting that can be driven from the keyboard.
 - **To do (design first, no code yet):** list what exists today (the per-message view-as-HTML control, the per-sender "always load images"/rendering choice, the global `message_rendering` setting with `html` | `system` | `system_sender`) and how they interact; propose a single control (e.g. one key that cycles message → sender → default, or one picker) and a clear indicator of which level is in force; get the user's approval before building.
@@ -129,6 +143,7 @@ IDs are stable (never reused). Status: `open` | `investigating` | `planned` | `i
 
 | Plan | File | Status |
 |---|---|---|
+| New calendar entries: personal + meetings, attendees, free-time finder, Teams/Zoom/other (OL-021) | `docs/PLAN-calendar-events.md` | planned (plan written 2026-10-25, decisions recorded; user to choose next phases) |
 | Compose: system-font / HTML modes, drafts, send | `docs/PLAN-compose.md` | planned; Phase D spike passed 2026-10-07; UI first draft + Phase A (send, outbox, undo delay) built 2026-10-08 |
 | Per-element colours: theme colour + intensity per interface element, preview, vim chords (OL-011) | `docs/PLAN-colours.md` | planned (plan written 2026-10-17; decisions settled) |
 | Mail list views / field chooser | `notes/PLAN-mail-list-views.md` (gitignored `notes/`) | not started |

@@ -398,7 +398,16 @@ impl Database {
             "CREATE INDEX IF NOT EXISTS idx_calendar_events_start ON calendar_events(start_at)",
             [],
         )?;
-        for (col, decl) in [("event_type", "TEXT NOT NULL DEFAULT 'singleInstance'"), ("series_master_id", "TEXT")] {
+        for (col, decl) in [
+            ("event_type", "TEXT NOT NULL DEFAULT 'singleInstance'"), ("series_master_id", "TEXT"),
+            ("location", "TEXT NOT NULL DEFAULT ''"), ("organizer_name", "TEXT NOT NULL DEFAULT ''"),
+            ("organizer_email", "TEXT NOT NULL DEFAULT ''"), ("is_organizer", "BOOLEAN NOT NULL DEFAULT 0"),
+            ("attendees_json", "TEXT NOT NULL DEFAULT ''"), ("my_response", "TEXT NOT NULL DEFAULT ''"),
+            ("show_as", "TEXT NOT NULL DEFAULT ''"), ("online_provider", "TEXT NOT NULL DEFAULT ''"),
+            ("online_url", "TEXT NOT NULL DEFAULT ''"), ("reminder_minutes", "INTEGER"),
+            ("web_link", "TEXT NOT NULL DEFAULT ''"), ("sensitivity", "TEXT NOT NULL DEFAULT ''"),
+            ("recurrence_json", "TEXT NOT NULL DEFAULT ''"), ("calendar_id", "TEXT NOT NULL DEFAULT ''"),
+        ] {
             let has: bool = self.conn.query_row(
                 "SELECT COUNT(*) FROM pragma_table_info('calendar_events') WHERE name = ?1",
                 params![col],
@@ -1872,8 +1881,12 @@ impl Database {
     pub fn upsert_event(&self, ev: &CalendarEvent) -> Result<()> {
         self.conn.execute(
             "INSERT INTO calendar_events (id, subject, body, start_at, end_at, is_all_day, time_zone, cached_at, account_id,
-                                          event_type, series_master_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, CURRENT_TIMESTAMP, ?8, ?9, ?10)
+                                          event_type, series_master_id,
+                                          location, organizer_name, organizer_email, is_organizer, attendees_json, my_response,
+                                          show_as, online_provider, online_url, reminder_minutes, web_link, sensitivity,
+                                          recurrence_json, calendar_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, CURRENT_TIMESTAMP, ?8, ?9, ?10,
+                     ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)
              ON CONFLICT(id) DO UPDATE SET
                subject    = excluded.subject,
                body       = excluded.body,
@@ -1883,11 +1896,21 @@ impl Database {
                time_zone  = excluded.time_zone,
                event_type = excluded.event_type,
                series_master_id = excluded.series_master_id,
+               location = excluded.location, organizer_name = excluded.organizer_name,
+               organizer_email = excluded.organizer_email, is_organizer = excluded.is_organizer,
+               attendees_json = excluded.attendees_json, my_response = excluded.my_response,
+               show_as = excluded.show_as, online_provider = excluded.online_provider,
+               online_url = excluded.online_url, reminder_minutes = excluded.reminder_minutes,
+               web_link = excluded.web_link, sensitivity = excluded.sensitivity,
+               recurrence_json = excluded.recurrence_json, calendar_id = excluded.calendar_id,
                cached_at  = CURRENT_TIMESTAMP",
             params![
                 ev.id, ev.subject, ev.body, ev.start, ev.end, ev.is_all_day, ev.time_zone, self.account_id,
                 if ev.event_type.is_empty() { "singleInstance" } else { ev.event_type.as_str() },
                 ev.series_master_id,
+                ev.location, ev.organizer_name, ev.organizer_email, ev.is_organizer, ev.attendees_json, ev.my_response,
+                ev.show_as, ev.online_provider, ev.online_url, ev.reminder_minutes, ev.web_link, ev.sensitivity,
+                ev.recurrence_json, ev.calendar_id,
             ],
         )?;
         Ok(())
@@ -1944,7 +1967,10 @@ impl Database {
 
         let mut stmt = self.conn.prepare(
             "SELECT e.id, e.subject, e.body, e.start_at, e.end_at, e.is_all_day, COALESCE(e.time_zone, ''), e.event_type,
-                    e.series_master_id, COALESCE(e.account_id, ''), COALESCE(a.email, '')
+                    e.series_master_id, COALESCE(e.account_id, ''), COALESCE(a.email, ''),
+                    e.location, e.organizer_name, e.organizer_email, e.is_organizer, e.attendees_json, e.my_response,
+                    e.show_as, e.online_provider, e.online_url, e.reminder_minutes, e.web_link, e.sensitivity,
+                    e.recurrence_json, e.calendar_id
              FROM calendar_events e LEFT JOIN accounts a ON a.id = e.account_id
              WHERE e.start_at < ?2 AND e.end_at >= ?1 AND e.event_type != 'seriesMaster'
                AND (?3 IS NULL OR e.account_id = ?3 OR lower(a.email) = lower(?3))
@@ -1962,6 +1988,20 @@ impl Database {
                     time_zone:  row.get(6)?,
                     event_type: row.get(7)?,
                     series_master_id: row.get(8)?,
+                    location:         row.get(11)?,
+                    organizer_name:   row.get(12)?,
+                    organizer_email:  row.get(13)?,
+                    is_organizer:     row.get(14)?,
+                    attendees_json:   row.get(15)?,
+                    my_response:      row.get(16)?,
+                    show_as:          row.get(17)?,
+                    online_provider:  row.get(18)?,
+                    online_url:       row.get(19)?,
+                    reminder_minutes: row.get(20)?,
+                    web_link:         row.get(21)?,
+                    sensitivity:      row.get(22)?,
+                    recurrence_json:  row.get(23)?,
+                    calendar_id:      row.get(24)?,
                 }, row.get(9)?, row.get(10)?))
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -1996,6 +2036,47 @@ mod calendar_tests {
             start: start.into(), end: end.into(), is_all_day: false, time_zone: "America/New_York".into(),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn calendar_detail_fields_round_trip_and_update() {
+        let db = Database::open(":memory:").unwrap();
+        let mut e = ev("d1", "2026-10-05T09:00:00", "2026-10-05T10:00:00", "Review");
+        e.location = "Room 4".into();
+        e.organizer_email = "ann@contoso.com".into();
+        e.attendees_json = r#"[{"name":"Bob","email":"bob@contoso.com","role":"required","response":"accepted"}]"#.into();
+        e.my_response = "accepted".into();
+        e.online_url = "https://teams.microsoft.com/l/meetup-join/q".into();
+        e.reminder_minutes = Some(15);
+        e.is_organizer = true;
+        db.upsert_event(&e).unwrap();
+        let got = db.get_events_for_month("2026-10").unwrap().remove(0);
+        assert_eq!((got.location.as_str(), got.organizer_email.as_str(), got.my_response.as_str()), ("Room 4", "ann@contoso.com", "accepted"));
+        assert_eq!((got.reminder_minutes, got.is_organizer, got.online_url.as_str()), (Some(15), true, "https://teams.microsoft.com/l/meetup-join/q"));
+        assert!(got.attendees_json.contains("bob@contoso.com"));
+        e.location = "Room 9".into();
+        e.reminder_minutes = None;
+        db.upsert_event(&e).unwrap();
+        let got = db.get_events_for_month("2026-10").unwrap().remove(0);
+        assert_eq!((got.location.as_str(), got.reminder_minutes), ("Room 9", None));
+    }
+
+    #[test]
+    fn old_calendar_table_gains_the_detail_columns() {
+        // a cache created before the detail fields existed is migrated in place and keeps its rows
+        let dir = std::env::temp_dir().join(format!("omalook-migr-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("m.db");
+        {
+            let c = rusqlite::Connection::open(&path).unwrap();
+            c.execute_batch("CREATE TABLE calendar_events (id TEXT PRIMARY KEY, subject TEXT NOT NULL, body TEXT NOT NULL DEFAULT '',
+                start_at TEXT NOT NULL, end_at TEXT NOT NULL, is_all_day BOOLEAN DEFAULT 0, time_zone TEXT, cached_at DATETIME DEFAULT CURRENT_TIMESTAMP);
+                INSERT INTO calendar_events (id, subject, start_at, end_at) VALUES ('old','Old','2026-10-05T09:00:00','2026-10-05T10:00:00');").unwrap();
+        }
+        let db = Database::open(path.to_str().unwrap()).unwrap();
+        let got = db.get_events_for_month("2026-10").unwrap();
+        assert_eq!((got.len(), got[0].subject.as_str(), got[0].location.as_str(), got[0].reminder_minutes), (1, "Old", "", None));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
