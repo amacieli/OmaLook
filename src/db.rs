@@ -235,10 +235,7 @@ impl Database {
             )
             .unwrap_or(0) > 0;
         if !has_folder_col {
-            self.conn.execute(
-                "ALTER TABLE messages ADD COLUMN folder_id TEXT",
-                [],
-            )?;
+            self.add_column("ALTER TABLE messages ADD COLUMN folder_id TEXT")?;
         }
 
         // read_pending: a local read/unread change not yet pushed to the provider.
@@ -250,10 +247,7 @@ impl Database {
             )
             .unwrap_or(0) > 0;
         if !has_pending_col {
-            self.conn.execute(
-                "ALTER TABLE messages ADD COLUMN read_pending INTEGER NOT NULL DEFAULT 0",
-                [],
-            )?;
+            self.add_column("ALTER TABLE messages ADD COLUMN read_pending INTEGER NOT NULL DEFAULT 0")?;
         }
 
         // Message details beyond the list basics (To/Cc/Bcc, sender name, categories, sent time,
@@ -274,7 +268,7 @@ impl Database {
                 .query_row("SELECT COUNT(*) FROM pragma_table_info('messages') WHERE name = ?1", [col], |row| row.get::<_, i32>(0))
                 .unwrap_or(0) > 0;
             if !has {
-                self.conn.execute(&format!("ALTER TABLE messages ADD COLUMN {} {}", col, decl), [])?;
+                self.add_column(&format!("ALTER TABLE messages ADD COLUMN {} {}", col, decl))?;
             }
         }
         if !had_meta {
@@ -329,7 +323,7 @@ impl Database {
                 )
                 .unwrap_or(0) > 0;
             if !has {
-                self.conn.execute(&format!("ALTER TABLE messages ADD COLUMN {} {}", col, decl), [])?;
+                self.add_column(&format!("ALTER TABLE messages ADD COLUMN {} {}", col, decl))?;
             }
         }
 
@@ -344,7 +338,7 @@ impl Database {
                 )
                 .unwrap_or(0) > 0;
             if !has {
-                self.conn.execute(&format!("ALTER TABLE messages ADD COLUMN {} {}", col, decl), [])?;
+                self.add_column(&format!("ALTER TABLE messages ADD COLUMN {} {}", col, decl))?;
             }
         }
 
@@ -414,7 +408,7 @@ impl Database {
                 |row| row.get::<_, i32>(0),
             ).unwrap_or(0) > 0;
             if !has {
-                self.conn.execute(&format!("ALTER TABLE calendar_events ADD COLUMN {} {}", col, decl), [])?;
+                self.add_column(&format!("ALTER TABLE calendar_events ADD COLUMN {} {}", col, decl))?;
             }
         }
 
@@ -509,7 +503,7 @@ impl Database {
             |row| row.get::<_, i32>(0),
         ).unwrap_or(0) > 0;
         if !has_enabled {
-            self.conn.execute("ALTER TABLE accounts ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1", [])?;
+            self.add_column("ALTER TABLE accounts ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1")?;
         }
 
         let mut backfill_needed = false;
@@ -520,7 +514,7 @@ impl Database {
                 |row| row.get::<_, i32>(0),
             ).unwrap_or(0) > 0;
             if !has_col {
-                self.conn.execute(&format!("ALTER TABLE {} ADD COLUMN account_id TEXT", table), [])?;
+                self.add_column(&format!("ALTER TABLE {} ADD COLUMN account_id TEXT", table))?;
             }
             self.conn.execute(
                 &format!("CREATE INDEX IF NOT EXISTS idx_{}_account ON {}(account_id)", table, table),
@@ -943,6 +937,19 @@ impl Database {
     }
 
     // ── outbox ───────────────────────────────────────────────────────────────────────────────
+
+    /// Run an `ALTER TABLE ... ADD COLUMN`. Every sync thread opens the database at launch, and the
+    /// first launch after an upgrade has several of them migrating at once: each checks that the
+    /// column is missing, then one wins and the rest hit "duplicate column name". That is success
+    /// (the column is there), not an error: treating it as one made `Database::open_for_account` fail
+    /// and the account's mail / calendar / outbox workers quit without a trace.
+    fn add_column(&self, sql: &str) -> Result<()> {
+        match self.conn.execute(sql, []) {
+            Ok(_) => Ok(()),
+            Err(rusqlite::Error::SqliteFailure(_, Some(msg))) if msg.contains("duplicate column name") => Ok(()),
+            Err(e) => Err(e.into()),
+        }
+    }
 
     pub fn now_ms() -> i64 {
         std::time::SystemTime::now()
@@ -2059,6 +2066,34 @@ mod calendar_tests {
         db.upsert_event(&e).unwrap();
         let got = db.get_events_for_month("2026-10").unwrap().remove(0);
         assert_eq!((got.location.as_str(), got.reminder_minutes), ("Room 9", None));
+    }
+
+    #[test]
+    fn adding_a_column_that_a_racing_thread_just_added_is_not_an_error() {
+        let db = Database::open(":memory:").unwrap();
+        db.add_column("ALTER TABLE calendar_events ADD COLUMN race_probe TEXT").unwrap();
+        db.add_column("ALTER TABLE calendar_events ADD COLUMN race_probe TEXT").unwrap(); // second thread: "duplicate column name"
+        assert!(db.add_column("ALTER TABLE no_such_table ADD COLUMN x TEXT").is_err(), "other failures still surface");
+    }
+
+    #[test]
+    fn concurrent_first_opens_of_an_old_database_all_succeed() {
+        let dir = std::env::temp_dir().join(format!("omalook-race-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("m.db");
+        {
+            let c = rusqlite::Connection::open(&path).unwrap();
+            c.execute_batch("CREATE TABLE calendar_events (id TEXT PRIMARY KEY, subject TEXT NOT NULL, body TEXT NOT NULL DEFAULT '',
+                start_at TEXT NOT NULL, end_at TEXT NOT NULL, is_all_day BOOLEAN DEFAULT 0, time_zone TEXT, cached_at DATETIME DEFAULT CURRENT_TIMESTAMP);").unwrap();
+        }
+        let p = path.to_str().unwrap().to_string();
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
+        let handles: Vec<_> = (0..8).map(|_| {
+            let (p, b) = (p.clone(), barrier.clone());
+            std::thread::spawn(move || { b.wait(); Database::open(&p).map(|_| ()).map_err(|e| e.to_string()) })
+        }).collect();
+        for h in handles { h.join().unwrap().unwrap(); }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
