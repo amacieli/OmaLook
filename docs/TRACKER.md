@@ -5,6 +5,10 @@ IDs are stable (never reused). Status: `open` | `investigating` | `planned` | `i
 
 ## Issues
 
+### OL-025 — Mailbox rules: automatic actions on incoming mail, e.g. tag by sender (open, not started)
+- **Wanted (user, 2026-10-25):** build mailbox rules like the ones Exchange offers through Microsoft Graph: conditions (sender, recipient, subject or body text, has attachment, and so on) that trigger actions (assign a category, move to a folder, mark read, delete, forward). Auto-tagging categories by sender is the first example. Also add whatever Google offers for Gmail, if it offers an equivalent.
+- **To do (research and design first, no code yet):** check the Graph `messageRules` API (per mail folder, conditions and actions, and whether rules run server-side) and the Gmail `users.settings.filters` API (criteria, actions such as label add/remove, and whether it applies to existing mail). Note where the two differ, for example rules that do not apply retroactively. Decide whether OmaLook manages the rules on the server (so they run on every client) or runs them locally in the daemon, and what the rule-editing UI looks like. Get the user's approval before building.
+
 ### OL-024 — Send (Ctrl+Enter and the Send button) appears to do nothing: backend errors never shown (fixed in tree, not yet deployed)
 - **Seen:** 2026-10-25 on the Surface: a composed message would not send; the live backend logged ten `POST /compose/send` and nothing was queued (outbox empty), yet the editor showed no message.
 - **Cause (UI):** `MailView` binds the editor's `status` to `app.composeStatus` (`Qt.binding`), but `ComposeView.trySend()` (and `addAttachments`) assigned `root.status = ""`. Assigning to a bound QML property removes the binding, so after the first attempt no backend error (for example "that account is not signed in, so it cannot send") ever reached the screen. Demonstrated with a 15-line QML harness.
