@@ -10,6 +10,8 @@ Item {
     property date   anchorDate: new Date()
     property var    events: []          // normalised (CU.normalise)
     property date   today: new Date()
+    property string selectedId: ""      // raw id of the selected event
+    property var    accounts: []        // [{id,email}]; chips take their account colour when > 1
 
     property string monoFont:     "JetBrainsMono Nerd Font"
     property color  accentColor:  "#7c6af7"
@@ -108,8 +110,13 @@ Item {
                         model: Math.min(cell.evs.length, cell.maxChips >= cell.evs.length ? cell.evs.length : Math.max(0, cell.maxChips - 1))
                         delegate: Rectangle {
                             width: parent.width; height: 15
-                            color: Qt.rgba(root.accentColor.r, root.accentColor.g, root.accentColor.b, 0.22)
-                            Rectangle { width: 2; height: parent.height; color: root.accentColor }
+                            property var cev: cell.evs[index]
+                            property bool sel: root.selectedId !== "" && cev.raw.id === root.selectedId && cell.isSel
+                            color: Qt.rgba(root.accentColor.r, root.accentColor.g, root.accentColor.b, sel ? 0.4 : 0.22)
+                            border.width: sel ? 1 : 0
+                            border.color: root.accentColor
+                            Rectangle { width: 2; height: parent.height
+                                color: root.accounts.length > 1 ? CU.accountColor(root.accounts, parent.cev.raw.account_email) : root.accentColor }
                             Text {
                                 anchors.fill: parent; anchors.leftMargin: 6; anchors.rightMargin: 2
                                 verticalAlignment: Text.AlignVCenter

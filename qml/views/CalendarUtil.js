@@ -143,3 +143,94 @@ function timeLabel(min) {
 }
 
 function hourLabel(h) { return pad(h) + ":00" }
+
+// ── cursor, selection, accounts, join links (docs/PLAN-calendar-events.md 5.1, 5.2, 7.4) ──
+
+var SLOT = 30   // minutes per cursor step in the day and week grids
+
+// Move the cursor. `c` = { date, min }; mode = day | workweek | week | month.
+// Month: h/l = day, j/k = week. Grids: h/l = day (work week skips the weekend), j/k = 30 minutes,
+// stepping past midnight lands on the neighbouring day's first / last slot.
+function moveCursor(c, mode, dx, dy) {
+    var date = startOfDay(c.date), min = c.min
+    if (dx !== 0) {
+        date = addDays(date, dx)
+        if (mode === "workweek") while (isWeekend(date)) date = addDays(date, dx)
+    }
+    if (dy !== 0) {
+        if (mode === "month") date = addDays(date, 7 * dy)
+        else {
+            min += SLOT * dy
+            if (min < 0)        { date = addDays(date, -1); min = 24 * 60 - SLOT }
+            if (min >= 24 * 60) { date = addDays(date, 1);  min = 0 }
+        }
+    }
+    return { date: date, min: min }
+}
+
+// Same, for `slots` 30-minute steps at once (half page); clamps inside the day instead of wrapping.
+function moveSlots(c, slots) {
+    return { date: startOfDay(c.date), min: Math.max(0, Math.min(24 * 60 - SLOT, c.min + slots * SLOT)) }
+}
+
+// Where a newly shown day should put the cursor when none was set: the current half hour if the
+// day is today, else 09:00.
+function defaultMin(date, now) {
+    if (sameDay(date, now)) return Math.floor((now.getHours() * 60 + now.getMinutes()) / SLOT) * SLOT
+    return 9 * 60
+}
+
+// Events under the cursor, in display order. Month view: everything on the day. Grids: all-day
+// events plus the timed ones overlapping the cursor's 30-minute slot.
+function eventsAtCursor(norm, date, min, mode) {
+    var day = onDay(norm, date)
+    if (mode === "month") return day
+    return day.filter(function(e) { return e.allDay || (e.startMin < min + SLOT && e.endMin > min) })
+}
+
+// Distinct accounts in raw backend events, in first-seen order: [{ id, email }].
+function accountsOf(raw) {
+    var seen = {}, out = []
+    for (var i = 0; i < (raw || []).length; i++) {
+        var k = raw[i].account_email || raw[i].account_id || ""
+        if (k === "" || seen[k]) continue
+        seen[k] = true
+        out.push({ id: raw[i].account_id || "", email: raw[i].account_email || k })
+    }
+    out.sort(function(a, b) { return a.email < b.email ? -1 : (a.email > b.email ? 1 : 0) })
+    return out
+}
+
+// Account filter cycle: "" (all) -> account 1 -> ... -> last -> "".
+function nextAccount(accounts, current) {
+    if (!accounts.length) return ""
+    if (current === "") return accounts[0].email
+    for (var i = 0; i < accounts.length; i++)
+        if (accounts[i].email === current) return i + 1 < accounts.length ? accounts[i + 1].email : ""
+    return ""
+}
+
+function filterAccount(raw, email) {
+    if (!email) return raw
+    return (raw || []).filter(function(e) { return (e.account_email || e.account_id) === email })
+}
+
+var ACCOUNT_COLORS = ["#7c6af7", "#51cf66", "#ffa94d", "#4dabf7", "#f06595", "#ffd43b"]
+function accountColor(accounts, email) {
+    for (var i = 0; i < accounts.length; i++)
+        if (accounts[i].email === email) return ACCOUNT_COLORS[i % ACCOUNT_COLORS.length]
+    return ACCOUNT_COLORS[0]
+}
+
+// The https join link of a raw backend event ("" if none). Anything but https is refused.
+function joinUrl(raw) {
+    var u = raw && raw.join_url ? String(raw.join_url) : ""
+    return u.indexOf("https://") === 0 ? u : ""
+}
+
+var JOIN_LABELS = { teams: "Teams", zoom: "Zoom", meet: "Google Meet", webex: "Webex", jitsi: "Jitsi", link: "Link" }
+function joinLabel(raw) { return JOIN_LABELS[raw && raw.join_provider] || "Link" }
+
+var RESPONSE_LABELS = { organizer: "Organizer", accepted: "Accepted", tentativelyAccepted: "Tentative", declined: "Declined",
+                        notResponded: "Not responded", none: "Not responded" }
+function responseLabel(r) { return RESPONSE_LABELS[r] || "" }

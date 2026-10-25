@@ -405,8 +405,14 @@ Item {
     { id: "sms.retry",  title: "Retry failed texts", scope: "sms", keys: ["R"], ex: ["retry"], run: function() { if (content && content.retryFailed) content.retryFailed() } },
 
     // calendar
-    { id: "cal.next",  title: "Next period",     scope: "calendar/list", keys: ["j", "Down", "]"], run: function() { content.step(1) } },
-    { id: "cal.prev",  title: "Previous period", scope: "calendar/list", keys: ["k", "Up", "["],   run: function() { content.step(-1) } },
+    { id: "cal.next",  title: "Next period",     scope: "calendar/list", keys: ["]", "PgDown"], run: function() { content.step(1) } },
+    { id: "cal.prev",  title: "Previous period", scope: "calendar/list", keys: ["[", "PgUp"],   run: function() { content.step(-1) } },
+    { id: "cal.sel.next", title: "Next event on this day",     scope: "calendar/list", keys: ["Tab"],   when: function() { return !!content && content.atCursor !== undefined && content.atCursor.length > 1 }, run: function() { content.cycleSelection(1) } },
+    { id: "cal.sel.prev", title: "Previous event on this day", scope: "calendar/list", keys: ["S-Tab"], when: function() { return !!content && content.atCursor !== undefined && content.atCursor.length > 1 }, run: function() { content.cycleSelection(-1) } },
+    { id: "cal.detail.close", title: "Close event details", scope: "calendar/list", keys: ["Esc"], when: function() { return !!content && content.detailOpen === true }, run: function() { content.detailOpen = false } },
+    { id: "cal.join",  title: "Join the selected event's meeting", scope: "calendar/list", keys: ["J"], ex: ["join"], run: function() { say(content.joinSelected()) } },
+    { id: "cal.copyjoin", title: "Copy the selected event's join link", scope: "calendar/list", keys: ["y"], ex: ["copyjoin"], run: function() { say(content.copyJoin()) } },
+    { id: "cal.account", title: "Cycle calendar account (all / each)", scope: "calendar/list", keys: ["A"], ex: ["account"], when: function() { return !!content && content.accounts !== undefined && content.accounts.length > 1 }, run: function() { say(content.cycleAccount()) } },
     { id: "cal.today", title: "Go to today",     scope: "calendar/list", keys: ["t"], run: function() { content.goToday() } },
     { id: "cal.day",   title: "Day view",        scope: "calendar/list", keys: ["d"], run: function() { content.mode = "day" } },
     { id: "cal.work",  title: "Work week view",  scope: "calendar/list", keys: ["W"], run: function() { content.mode = "workweek" } },

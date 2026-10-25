@@ -12,6 +12,24 @@ Item {
     property var    events: []          // normalised (CU.normalise)
     property date   selectedDate: new Date()
     property date   today: new Date()
+    // keyboard cursor (docs/PLAN-calendar-events.md 5.2): minutes from midnight on selectedDate, -1 = none
+    property int    cursorMin: -1
+    property string selectedId: ""      // raw id of the selected event
+    property var    accounts: []        // [{id,email}]; the bar of each event takes its account colour when > 1
+
+    function barColor(ev) {
+        return accounts.length > 1 ? CU.accountColor(accounts, ev.raw.account_email) : accentColor
+    }
+    function isSel(ev) { return selectedId !== "" && ev.raw.id === selectedId }
+    onCursorMinChanged: ensureCursorVisible()
+    onSelectedDateChanged: ensureCursorVisible()
+    function ensureCursorVisible() {
+        if (cursorMin < 0 || flick.height <= 0) return
+        var y = cursorMin / 60 * hourHeight, h = hourHeight * CU.SLOT / 60
+        flick._userScrolled = true
+        if (y < flick.contentY) flick.contentY = y
+        else if (y + h > flick.contentY + flick.height) flick.contentY = Math.min(y + h - flick.height, Math.max(0, flick.contentHeight - flick.height))
+    }
 
     property string monoFont:     "JetBrainsMono Nerd Font"
     property color  accentColor:  "#7c6af7"
@@ -169,7 +187,9 @@ Item {
                             Rectangle {
                                 width: parent.width - (more.visible ? more.width + parent.spacing : 0)
                                 height: 18
-                                color: Qt.rgba(root.accentColor.r, root.accentColor.g, root.accentColor.b, 0.22)
+                                color: Qt.rgba(root.accentColor.r, root.accentColor.g, root.accentColor.b, adCell.list.length > 0 && root.isSel(adCell.list[0]) ? 0.4 : 0.22)
+                                border.width: adCell.list.length > 0 && root.isSel(adCell.list[0]) ? 1 : 0
+                                border.color: root.accentColor
                                 Text {
                                     anchors.fill: parent; anchors.leftMargin: 5; anchors.rightMargin: 3
                                     verticalAlignment: Text.AlignVCenter
@@ -207,7 +227,9 @@ Item {
                                     model: adCell.list
                                     delegate: Rectangle {
                                         width: parent.width; height: 18
-                                        color: Qt.rgba(root.accentColor.r, root.accentColor.g, root.accentColor.b, 0.22)
+                                        color: Qt.rgba(root.accentColor.r, root.accentColor.g, root.accentColor.b, root.isSel(modelData) ? 0.4 : 0.22)
+                                        border.width: root.isSel(modelData) ? 1 : 0
+                                        border.color: root.accentColor
                                         Text {
                                             anchors.fill: parent; anchors.leftMargin: 5; anchors.rightMargin: 3
                                             verticalAlignment: Text.AlignVCenter
@@ -293,6 +315,15 @@ Item {
                             onDoubleClicked: root.dayActivated(col.day)
                         }
 
+                        // keyboard cursor: the highlighted 30-minute slot
+                        Rectangle {
+                            visible: root.cursorMin >= 0 && CU.sameDay(col.day, root.selectedDate)
+                            y: root.cursorMin / 60 * root.hourHeight
+                            width: parent.width; height: root.hourHeight * CU.SLOT / 60
+                            color: Qt.rgba(root.accentColor.r, root.accentColor.g, root.accentColor.b, 0.12)
+                            Rectangle { width: 2; height: parent.height; color: root.accentColor }
+                        }
+
                         Repeater {
                             model: col.timed
                             delegate: Rectangle {
@@ -301,9 +332,11 @@ Item {
                                 width: (col.width - 4) / ev.cols - 2
                                 y: ev.startMin / 60 * root.hourHeight + 1
                                 height: Math.max(16, (ev.endMin - ev.startMin) / 60 * root.hourHeight - 2)
-                                color: Qt.rgba(root.accentColor.r, root.accentColor.g, root.accentColor.b, 0.22)
+                                color: Qt.rgba(root.accentColor.r, root.accentColor.g, root.accentColor.b, root.isSel(ev) ? 0.4 : 0.22)
+                                border.width: root.isSel(ev) ? 1 : 0
+                                border.color: root.accentColor
                                 clip: true
-                                Rectangle { width: 2; height: parent.height; color: root.accentColor }
+                                Rectangle { width: 2; height: parent.height; color: root.barColor(ev) }
                                 Column {
                                     anchors.fill: parent
                                     anchors.leftMargin: 6; anchors.topMargin: 2; anchors.rightMargin: 3

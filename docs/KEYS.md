@@ -109,3 +109,27 @@ file with your desktop's default application. Commands: `mail.attachments`, `mai
 | `/` | `app.search` | search conversations by name, number or message text; `Esc` clears |
 | `R` | `sms.retry` | send failed texts again (a failed text shows a red "Send failure") |
 | `x` | `item.delete` | says deleting is not possible (KDE Connect has no delete) |
+
+## Calendar (OL-021 phase 1)
+
+The calendar has a keyboard cursor (the highlighted day; in the day and week grids also a 30-minute slot).
+
+| Key | Does |
+|---|---|
+| `h` `l` | Previous / next day (work week skips the weekend) |
+| `j` `k` | Month: next / previous week. Day and week grids: next / previous 30-minute slot (past midnight lands on the neighbouring day) |
+| `Ctrl-d` `Ctrl-u` | Grids: half a screen of slots. Month: next / previous month |
+| `gg` `G` | Grids: first / last slot of the day |
+| `[` `]` (also `PgUp` `PgDn`) | Previous / next period (these two keep their old meaning; `j` `k` no longer mean "period") |
+| `t` | Today (cursor goes to the current half hour) |
+| `d` `W` `w` `m` | Day, work week, week, month view |
+| `Tab` `Shift-Tab` | Next / previous event under the cursor (only when there is more than one; otherwise they cycle panes as usual) |
+| `Enter` | Show / hide the detail pane of the selected event (on an empty month cell: open that day) |
+| `Esc` | Close the detail pane |
+| `J` | Open the selected event's join link (Teams, Zoom, Meet, Webex, Jitsi or any `https` link) in the browser |
+| `y` | Copy the join link |
+| `A` | Cycle the account filter: all, each account (only with two or more accounts) |
+| `r` | Refresh |
+
+With more than one account, event bars take the account's colour and the header shows the filter. The join link is the provider's own link
+when there is one, else a known meeting host found in the location or body, else the first `https` URL in the location.

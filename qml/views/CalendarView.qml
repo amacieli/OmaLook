@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Layouts
+import Quickshell
 import qs.Ui
 import "CalendarUtil.js" as CU
 
@@ -24,8 +25,19 @@ Rectangle {
     property date   anchorDate: new Date()
     property date   today: new Date()
 
+    // OMALOOK_PORT lets a scratch instance's UI talk to its own backend (same rule as AppState.backendUrl)
+    readonly property string backendUrl: "http://127.0.0.1:" + (Quickshell.env("OMALOOK_PORT") || "27182")
     property var  rawEvents: []
-    property var  events: CU.normalise(rawEvents)
+    // keyboard cursor: anchorDate is the cursor day; cursorMin the 30-minute slot in the grids
+    property int    cursorMin: CU.defaultMin(new Date(), new Date())
+    property string accountFilter: ""          // "" = all accounts, else an account email
+    property var    accounts: CU.accountsOf(rawEvents)
+    property var  events: CU.normalise(CU.filterAccount(rawEvents, accountFilter))
+    property int  selIdx: 0                    // which of the events under the cursor is selected
+    property bool detailOpen: false
+    readonly property var atCursor: CU.eventsAtCursor(events, anchorDate, cursorMin, mode)
+    readonly property var selectedEvent: atCursor.length > 0 ? atCursor[Math.min(selIdx, atCursor.length - 1)] : null
+    readonly property string selectedId: selectedEvent ? selectedEvent.raw.id : ""
     property bool loading: false
     property int  _reqSerial: 0
 
@@ -45,7 +57,46 @@ Rectangle {
         default:         anchorDate = CU.addMonths(anchorDate, dir)
         }
     }
-    function goToday() { today = new Date(); anchorDate = today }
+    function goToday() { today = new Date(); anchorDate = today; cursorMin = CU.defaultMin(today, today) }
+
+    // ── keyboard (called by the key registry; see AppCommands.move/page/edge/activate) ──
+    function keyMove(dx, dy) {
+        var c = CU.moveCursor({ date: anchorDate, min: cursorMin }, mode, dx, dy)
+        cursorMin = c.min
+        anchorDate = c.date
+        return true
+    }
+    function keyPage(frac) {
+        if (mode === "month") { step(frac < 0 ? -1 : 1); return }
+        var c = CU.moveSlots({ date: anchorDate, min: cursorMin }, Math.round(frac * 16))
+        cursorMin = c.min
+    }
+    function keyEdge(bottom) { if (mode !== "month") cursorMin = bottom ? 24 * 60 - CU.SLOT : 0 }
+    function keyActivate() {
+        if (selectedEvent) detailOpen = !detailOpen
+        else if (mode === "month") openDay(anchorDate)
+    }
+    function cycleSelection(dir) {
+        var n = atCursor.length
+        if (n > 0) selIdx = (Math.min(selIdx, n - 1) + dir + n) % n
+    }
+    function cycleAccount() {
+        accountFilter = CU.nextAccount(accounts, accountFilter)
+        return accountFilter === "" ? "All accounts" : accountFilter
+    }
+    // Both return a one-line message for the status bar.
+    function joinSelected() {
+        var url = selectedEvent ? CU.joinUrl(selectedEvent.raw) : ""
+        if (url === "") return selectedEvent ? "No join link on this event" : "No event selected"
+        Qt.openUrlExternally(url)
+        return "Opening " + CU.joinLabel(selectedEvent.raw) + " link"
+    }
+    function copyJoin() {
+        var url = selectedEvent ? CU.joinUrl(selectedEvent.raw) : ""
+        if (url === "") return selectedEvent ? "No join link on this event" : "No event selected"
+        Quickshell.execDetached(["wl-copy", url])
+        return "Copied join link"
+    }
 
     function openDay(d) { anchorDate = d; mode = "day" }
 
@@ -101,7 +152,7 @@ Rectangle {
                 var c = root._cache; c[m] = res; root._cache = c
                 if (--pending === 0 && serial === root._reqSerial) { root.loading = false; root._merge() }
             }
-            xhr.open("GET", "http://127.0.0.1:27182/calendar/events?month=" + m)
+            xhr.open("GET", root.backendUrl + "/calendar/events?month=" + m)
             xhr.send()
         })
         if (pending === 0) { loading = false; _merge() } else loading = true
@@ -112,8 +163,10 @@ Rectangle {
     property int dataRev: 0
     onDataRevChanged:    loadEvents(true)
 
-    onModeChanged:       loadEvents(false)
-    onAnchorDateChanged: loadEvents(false)
+    onModeChanged:       { selIdx = 0; loadEvents(false) }
+    onAnchorDateChanged: { selIdx = 0; loadEvents(false) }
+    onCursorMinChanged:  selIdx = 0
+    onSelectedEventChanged: if (!selectedEvent) detailOpen = false
     Component.onCompleted: loadEvents(true)
 
     // ── layout ────────────────────────────────────────────────────
@@ -177,6 +230,13 @@ Rectangle {
                 }
 
                 Text {
+                    visible: root.accounts.length > 1
+                    text: (root.accountFilter === "" ? "all accounts" : root.accountFilter) + "  (A)"
+                    font.family: root.monoFont; font.pixelSize: 10
+                    color: root.accountFilter === "" ? root.dimColor : root.accentColor
+                }
+
+                Text {
                     visible: root.loading
                     text: "⟳"
                     font.family: root.monoFont; font.pixelSize: 12
@@ -188,6 +248,11 @@ Rectangle {
                 }
             }
         }
+
+        RowLayout {
+          Layout.fillWidth: true
+          Layout.fillHeight: true
+          spacing: 0
 
         // active view
         Loader {
@@ -203,12 +268,24 @@ Rectangle {
                 }
             }
         }
+
+        CalendarDetail {
+            visible: root.detailOpen
+            Layout.preferredWidth: Math.min(360, root.width * 0.4)
+            Layout.fillHeight: true
+            event: root.selectedEvent
+            accounts: root.accounts
+            monoFont: root.monoFont; accentColor: root.accentColor
+            textColor: root.textColor; dimColor: root.dimColor
+        }
+        }
     }
 
 
     Component {
         id: dayComponent
         DayView {
+            cursorMin: root.cursorMin; selectedId: root.selectedId; accounts: root.accounts;
             anchorDate: root.anchorDate; events: root.events; today: root.today
             monoFont: root.monoFont; accentColor: root.accentColor; textColor: root.textColor
             dimColor: root.dimColor; veryDimColor: root.veryDimColor
@@ -218,6 +295,7 @@ Rectangle {
     Component {
         id: workWeekComponent
         WorkWeekView {
+            cursorMin: root.cursorMin; selectedId: root.selectedId; accounts: root.accounts;
             anchorDate: root.anchorDate; events: root.events; today: root.today
             monoFont: root.monoFont; accentColor: root.accentColor; textColor: root.textColor
             dimColor: root.dimColor; veryDimColor: root.veryDimColor
@@ -228,6 +306,7 @@ Rectangle {
     Component {
         id: fullWeekComponent
         FullWeekView {
+            cursorMin: root.cursorMin; selectedId: root.selectedId; accounts: root.accounts;
             anchorDate: root.anchorDate; events: root.events; today: root.today
             monoFont: root.monoFont; accentColor: root.accentColor; textColor: root.textColor
             dimColor: root.dimColor; veryDimColor: root.veryDimColor
@@ -238,6 +317,7 @@ Rectangle {
     Component {
         id: monthComponent
         MonthView {
+            selectedId: root.selectedId; accounts: root.accounts;
             anchorDate: root.anchorDate; events: root.events; today: root.today
             monoFont: root.monoFont; accentColor: root.accentColor; textColor: root.textColor
             dimColor: root.dimColor; veryDimColor: root.veryDimColor
