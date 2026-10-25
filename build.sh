@@ -226,8 +226,11 @@ if [ "$LIVE" = true ]; then
     # <parent of qml>/plugin/omalook-compose/build/qml, so mirror that layout. Without it the
     # reply / reply all / forward / new buttons cannot open the editor.
     PLUGIN_SRC="$PROJECT_DIR/plugin/omalook-compose"
-    if [ ! -d "$PLUGIN_SRC/build" ]; then
-        # Fresh clone: configure the plugin (needs cmake and the Qt 6 declarative dev files).
+    if [ ! -f "$PLUGIN_SRC/build/Makefile" ] && [ ! -f "$PLUGIN_SRC/build/build.ninja" ]; then
+        # Fresh clone, or a build dir left half-configured by an earlier failed run (it has a
+        # CMakeCache.txt but no generated build files): (re)configure the plugin. Needs cmake
+        # and the Qt 6 declarative dev files.
+        rm -rf "$PLUGIN_SRC/build"
         cmake -S "$PLUGIN_SRC" -B "$PLUGIN_SRC/build" -DCMAKE_BUILD_TYPE=Release > /dev/null \
             || { echo -e "${RED}❌ Could not configure the compose plugin (is cmake + Qt 6 declarative installed?).${NC}"; exit 1; }
     fi
