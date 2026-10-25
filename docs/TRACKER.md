@@ -5,6 +5,12 @@ IDs are stable (never reused). Status: `open` | `investigating` | `planned` | `i
 
 ## Issues
 
+### OL-024 — Send (Ctrl+Enter and the Send button) appears to do nothing: backend errors never shown (fixed in tree, not yet deployed)
+- **Seen:** 2026-10-25 on the Surface: a composed message would not send; the live backend logged ten `POST /compose/send` and nothing was queued (outbox empty), yet the editor showed no message.
+- **Cause (UI):** `MailView` binds the editor's `status` to `app.composeStatus` (`Qt.binding`), but `ComposeView.trySend()` (and `addAttachments`) assigned `root.status = ""`. Assigning to a bound QML property removes the binding, so after the first attempt no backend error (for example "that account is not signed in, so it cannot send") ever reached the screen. Demonstrated with a 15-line QML harness.
+- **Fix:** the editor's own messages go in `localStatus`; the owner's `status` stays bound; `shownStatus` shows the local one first and clears it when the owner reports. Checked on a scratch instance (port 27999, fake unsigned account): "no sending account selected" now shows after repeated Ctrl+Enter.
+- **Still open (cause of the rejection itself):** at the time the live process had no mail/calendar/outbox sync threads for `exchange-8e9b95` even though the keyring token exists (service `omarchylook`), which is what makes the backend refuse a send. The real error text will show once the fix is deployed; then find why the account's workers are not running.
+
 ### OL-023 — External-recipient warning banner for mail and calendar invitations (open, not started)
 - **Wanted (user, 2026-10-25):** for work/school accounts, or any account on a custom email domain, show a warning when people **outside the organization** are (a) invited to a calendar entry or (b) emailed (compose, reply, reply all, forward).
 - **Behaviour asked for:** a notification banner only. It cannot be clicked away or dismissed; it stays while any external recipient is present and goes when the last one is removed. It does not block sending or ask for confirmation.

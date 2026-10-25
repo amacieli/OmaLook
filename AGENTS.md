@@ -22,7 +22,7 @@ Renamed from "omarchylook" on 2026-10-12. **README.md is stale** (describes the 
 
 ## Hard-won rules
 - Never let a Qt `Text` fetch remote URLs or use QtWebEngine inside Quickshell: both crash the shell (OL-004). HTML goes through `qml/mail/format.js` sanitiser or the render helper.
-- Keyring service name is `omalook`. Do not rename it again (the rename once hid every saved sign-in).
+- Keyring service name is `omarchylook` (`src/token_store.rs`, `src/keyring_mgr.rs`; entries are `acct:<account id>`). It kept its pre-rename value on purpose: do not rename it (the rename once hid every saved sign-in).
 - Account ids are `<provider>-<suffix>`; email lives in the accounts table, not in the keyring id. `(provider, email)` is unique.
 - Delta sync (Graph `/delta`) is the sync path; purge only trusts a completed first walk. Don't reintroduce full-mailbox crawls.
 - Search: keyword-style patterns; Graph body search needs the date-window workaround; target p50 < 50 ms on the 60k-row cache.

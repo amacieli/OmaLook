@@ -26,6 +26,12 @@ FocusScope {
   property string defaultMode: "system"
   // Result line from the owner: "" | "sending…" | an error.
   property string status: ""
+  // Messages from this editor itself (bad address, no recipient...). Kept apart from `status` because the
+  // owner binds `status` to its send result, and assigning to a bound property in QML silently removes
+  // the binding: after the first send attempt no backend error (e.g. "account is not signed in") ever showed.
+  property string localStatus: ""
+  readonly property string shownStatus: localStatus !== "" ? localStatus : status
+  onStatusChanged: if (status !== "") localStatus = ""
   // Attachments: [{ path, name, size }]. `listDir(path, hidden, cb)` and `browseDir` come from the
   // owner (the daemon lists folders for the file browser; the last folder used is remembered).
   property var attachments: []
@@ -80,8 +86,8 @@ FocusScope {
   readonly property real maxAttachedBytes: 150 * 1024 * 1024
 
   function openAttach() {
-    if (!root.canAttach) { root.status = "Attachments are not supported for Gmail accounts yet."; return }
-    root.status = ""
+    if (!root.canAttach) { root.localStatus = "Attachments are not supported for Gmail accounts yet."; return }
+    root.localStatus = ""
     browser.open()
   }
 
@@ -90,7 +96,7 @@ FocusScope {
     var next = root.attachments.slice(), total = root.attachedBytes
     for (var i = 0; i < files.length; i++) {
       if (have.indexOf(files[i].path) >= 0) continue
-      if (total + (files[i].size || 0) > root.maxAttachedBytes) { root.status = "Attachments are limited to 150 MB in total; " + files[i].name + " was not added."; continue }
+      if (total + (files[i].size || 0) > root.maxAttachedBytes) { root.localStatus = "Attachments are limited to 150 MB in total; " + files[i].name + " was not added."; continue }
       total += files[i].size || 0
       next.push({ path: files[i].path, name: files[i].name, size: files[i].size || 0 })
     }
@@ -118,14 +124,14 @@ FocusScope {
   }
 
   function trySend() {
-    root.status = ""
+    root.localStatus = ""
     // Text still sitting in an address box counts: it becomes a chip (and is checked) first.
     header.to.commit(true); header.cc.commit(true); header.bcc.commit(true)
     var all = header.to.recipients.concat(header.cc.recipients, header.bcc.recipients)
-    if (all.length === 0) { root.status = "Add at least one recipient."; header.to.input.forceActiveFocus(); return }
+    if (all.length === 0) { root.localStatus = "Add at least one recipient."; header.to.input.forceActiveFocus(); return }
     var bad = all.filter(function(r) { return !r.valid })
-    if (bad.length > 0) { root.status = "Not a valid address: " + bad[0].email; return }
-    if (root.attachments.length > 0 && !root.canAttach) { root.status = "Attachments are not supported for Gmail accounts yet."; return }
+    if (bad.length > 0) { root.localStatus = "Not a valid address: " + bad[0].email; return }
+    if (root.attachments.length > 0 && !root.canAttach) { root.localStatus = "Attachments are not supported for Gmail accounts yet."; return }
     if (header.subject.text.trim() === "") { root.confirming = "nosubject"; return }
     root.sendRequested(root.buildMessage())
   }
@@ -206,10 +212,10 @@ FocusScope {
       Item { Layout.fillWidth: true }
 
       UiText {
-        text: root.status
+        text: root.shownStatus
         visible: text !== ""
-        foreground: root.status.indexOf("…") >= 0 ? Commons.Color.foreground : Commons.Color.urgent
-        dim: root.status.indexOf("…") >= 0
+        foreground: root.shownStatus.indexOf("…") >= 0 ? Commons.Color.foreground : Commons.Color.urgent
+        dim: root.shownStatus.indexOf("…") >= 0
         font.pixelSize: Style.font.caption
         elide: Text.ElideRight
         Layout.maximumWidth: Style.space(360)
