@@ -5,6 +5,12 @@ IDs are stable (never reused). Status: `open` | `investigating` | `planned` | `i
 
 ## Issues
 
+### OL-026 — Reply/forward/new: compose pane empty and can't be closed (fixed 2026-10-26, plugin redeployed to /opt)
+- **Seen:** 2026-10-26: any compose action opened a pane with no editor and no way out. Quickshell log: `Cannot load library .../libomalook_compose_plugin.so: libomalook_compose.so: cannot open shared object file`.
+- **Cause:** the plugin links `libomalook_compose.so`, which CMake put in `build/` (not `build/qml`), and the plugin's RUNPATH was the project checkout (`/mnt/ai/projects/...`, NFS). `build.sh --live` only rsyncs `build/qml`, so the live copy worked only while that mount was up; `mnt-ai.automount` was dead (start-limit-hit) from 12:47.
+- **Fix:** `plugin/omalook-compose/CMakeLists.txt` now writes the library next to the plugin and sets RUNPATH `$ORIGIN`, so the rsync'd copy is self-contained. Verified: `ldd` resolves inside /opt, `import OmaLook.Compose` loads under qml6. Separate issue left open: `/mnt/ai` automount needs `systemctl reset-failed mnt-ai.automount`.
+- **Also open:** the compose pane has no Esc/discard fallback when the editor fails to load (the Loader error shows only as a status line).
+
 ### OL-025 — Mailbox rules: automatic actions on incoming mail, e.g. tag by sender (open, not started)
 - **Wanted (user, 2026-10-25):** build mailbox rules like the ones Exchange offers through Microsoft Graph: conditions (sender, recipient, subject or body text, has attachment, and so on) that trigger actions (assign a category, move to a folder, mark read, delete, forward). Auto-tagging categories by sender is the first example. Also add whatever Google offers for Gmail, if it offers an equivalent.
 - **To do (research and design first, no code yet):** check the Graph `messageRules` API (per mail folder, conditions and actions, and whether rules run server-side) and the Gmail `users.settings.filters` API (criteria, actions such as label add/remove, and whether it applies to existing mail). Note where the two differ, for example rules that do not apply retroactively. Decide whether OmaLook manages the rules on the server (so they run on every client) or runs them locally in the daemon, and what the rule-editing UI looks like. Get the user's approval before building.

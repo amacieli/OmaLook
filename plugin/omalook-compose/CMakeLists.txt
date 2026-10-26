@@ -13,3 +13,13 @@ qt_add_qml_module(omalook_compose
     OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/qml/OmaLook/Compose
     SOURCES documenthandler.h documenthandler.cpp)
 target_link_libraries(omalook_compose PRIVATE Qt6::Core Qt6::Gui Qt6::Qml Qt6::Quick)
+
+# The plugin links against libomalook_compose.so. Keep both in the same directory and resolve it
+# relative to the plugin ($ORIGIN), so a copy under /opt/omalook is self-contained. Before this the
+# runpath pointed at the project checkout (on NFS), and the editor failed to load whenever that
+# mount was down or the project moved (build.sh only copies build/qml).
+set_target_properties(omalook_compose PROPERTIES
+    LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/qml/OmaLook/Compose)
+set_target_properties(omalook_compose_plugin PROPERTIES
+    BUILD_WITH_INSTALL_RPATH ON
+    INSTALL_RPATH "$ORIGIN")
