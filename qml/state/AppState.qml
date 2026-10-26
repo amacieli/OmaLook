@@ -204,10 +204,27 @@ Item {
   // Debounced: holding j/k (or gg/G) changes the selection many times a second, and each
   // uncached message would start a fetch plus a rich-text layout (OL-001). Cached bodies
   // show at once; everything else waits until the cursor has rested for 120 ms.
+  // Assigning currentBody always fires the reading pane's onBodyChanged, which throws away the
+  // rendered result and renders again (WebKit helper included). So only assign when the body is
+  // actually different: a re-selection of the same message after a list reload or a periodic
+  // refresh must leave the finished render alone.
+  function _setBody(b) {
+    var c = currentBody
+    if (c && c.id === b.id && c.state === b.state && c.type === b.type && c.content === b.content
+        && c.reason === b.reason && c.preview === b.preview) return
+    currentBody = b
+  }
+  // true while loadMessages() swaps the whole model: the selection is momentarily "no message".
+  property bool _reloadingModel: false
+
   onCurrentMessageIdChanged: {
     var id = currentMessageId
+    // Same message, already shown (list reloaded under the cursor): nothing to fetch or redraw.
+    if (id === "" && _reloadingModel) return
+    if (id !== "" && currentBody.id === id && currentBody.state === "ready"
+        && invite.id === id && attachments.id === id) { _bodyDebounce.stop(); return }
     if (id === "" || _bodyCache[id]) { _bodyDebounce.stop(); loadBody(id); loadInvite(id); loadAttachments(id); return }
-    currentBody = { id: id, state: "loading", type: "", content: "" }
+    _setBody({ id: id, state: "loading", type: "", content: "" })
     invite = _emptyInvite(id, "idle")
     attachments = _emptyAttachments(id, "idle")
     _bodyDebounce.restart()
@@ -350,10 +367,10 @@ Item {
   }
 
   function loadBody(id) {
-    if (id === "") { currentBody = { id: "", state: "idle", type: "", content: "" }; return }
+    if (id === "") { _setBody({ id: "", state: "idle", type: "", content: "" }); return }
     var hit = _bodyCache[id]
-    if (hit) { currentBody = { id: id, state: "ready", type: hit.type, content: hit.content }; return }
-    currentBody = { id: id, state: "loading", type: "", content: "" }
+    if (hit) { _setBody({ id: id, state: "ready", type: hit.type, content: hit.content }); return }
+    _setBody({ id: id, state: "loading", type: "", content: "" })
     request("GET", "/messages/body?id=" + encodeURIComponent(id), function(xhr) {
       var result = null
       if (xhr.status === 200) {
@@ -366,11 +383,11 @@ Item {
         if (_bodyOrder.length > 30) delete _bodyCache[_bodyOrder.shift()]
       }
       if (root.currentMessageId !== id) return       // moved on while it loaded
-      root.currentBody = ok
+      root._setBody(ok
         ? { id: id, state: "ready", type: result.type, content: result.content }
         : { id: id, state: "error", type: "", content: "",
             reason: (result && result.error) ? String(result.error) : "could not load the message body",
-            preview: (result && result.preview) ? String(result.preview) : "" }
+            preview: (result && result.preview) ? String(result.preview) : "" })
     })
   }
 
@@ -969,14 +986,17 @@ Item {
         for (var i = 0; same && i < folders.length; i++)
           if (folders[i].id !== folderModelObj.get(i).id) same = false
         if (!same) { loadFolders(); return }
+        var countsChanged = false
         for (var j = 0; j < folders.length; j++) {
           var f = folderModelObj.get(j)
-          if (f.unread_item_count !== folders[j].unread_item_count)
-            folderModelObj.setProperty(j, "unread_item_count", folders[j].unread_item_count)
-          if (f.total_item_count !== folders[j].total_item_count)
-            folderModelObj.setProperty(j, "total_item_count", folders[j].total_item_count)
+          if (f.unread_item_count !== folders[j].unread_item_count) {
+            folderModelObj.setProperty(j, "unread_item_count", folders[j].unread_item_count); countsChanged = true
+          }
+          if (f.total_item_count !== folders[j].total_item_count) {
+            folderModelObj.setProperty(j, "total_item_count", folders[j].total_item_count); countsChanged = true
+          }
         }
-        root._readRev++
+        if (countsChanged) root._readRev++
       } catch (e) { console.log("[Folders] refresh parse error:", e) }
     })
   }
@@ -1110,8 +1130,11 @@ Item {
       if (xhr.status === 200) {
         try {
           var messages = JSON.parse(xhr.responseText)
+          root._reloadingModel = true
           messageModelObj.clear()
           for (var i = 0; i < messages.length; i++) messageModelObj.append(messages[i])
+          root._reloadingModel = false
+          if (root.currentMessageId === "") root.loadBody("")
           if (root._perfFirstMessages && messages.length > 0) { root._perfFirstMessages = false; perfMark("EMAILS VISIBLE: model populated with " + messages.length + " rows") }
           else if (messages.length > 0) perfMark("mail list reloaded: " + messages.length + " rows")
           root._hasMoreMessages = messages.length >= root.messagePageSize

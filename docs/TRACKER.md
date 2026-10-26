@@ -5,6 +5,12 @@ IDs are stable (never reused). Status: `open` | `investigating` | `planned` | `i
 
 ## Issues
 
+### OL-027 — Reading pane re-renders an already rendered message (fixed in tree, not yet deployed)
+- **Seen:** 2026-10-26: with the window open the preview sometimes redraws on its own.
+- **Cause:** `MessagePreview` runs `_invalidate()` (drops the render, settles 150 ms, re-runs the worker and the WebKit helper) on every `onBodyChanged`, and QML fires that on any assignment of `AppState.currentBody`, identical or not. `loadBody()` assigned a fresh object whenever the selected id was re-announced: `loadMessages()` does `clear()` + `append()` (new mail, folder reload), so `currentMessageId` went X → "" → X. `refreshFolderCounts()` (every 20 s) also bumped `_readRev` unconditionally, re-creating `currentMessage` each tick.
+- **Fix:** `_setBody()` assigns only when id/state/type/content differ; `onCurrentMessageIdChanged` ignores the transient "" during a model swap (`_reloadingModel`) and returns early when the body, invite and attachments already belong to that id; `refreshFolderCounts()` bumps `_readRev` only when a count changed. qmllint: no errors. Not run in the live UI.
+- **Not covered:** when new mail lands at the top, the list reload keeps `msgIndex`, so the cursor then points at a different message and the pane legitimately switches to it.
+
 ### OL-026 — Reply/forward/new: compose pane empty and can't be closed (fixed 2026-10-26, plugin redeployed to /opt)
 - **Seen:** 2026-10-26: any compose action opened a pane with no editor and no way out. Quickshell log: `Cannot load library .../libomalook_compose_plugin.so: libomalook_compose.so: cannot open shared object file`.
 - **Cause:** the plugin links `libomalook_compose.so`, which CMake put in `build/` (not `build/qml`), and the plugin's RUNPATH was the project checkout (`/mnt/ai/projects/...`, NFS). `build.sh --live` only rsyncs `build/qml`, so the live copy worked only while that mount was up; `mnt-ai.automount` was dead (start-limit-hit) from 12:47.
