@@ -115,9 +115,11 @@ fn get_config_dir() -> PathBuf {
 /// Directory holding the Omarchy shell UI kit (`Commons/`, `Ui/`).
 const OMARCHY_KIT_DIR: &str = "/usr/share/omarchy/shell";
 
-/// Locate the QML app directory: `QML_DIR` env, then `./qml`, then the
-/// `qml/` next to the sources this binary was built from (so it also works
-/// when launched from the app menu with an arbitrary cwd).
+/// Locate the QML app directory: `QML_DIR` env, then `./qml`, then the `qml/` beside the installed
+/// binary (`<prefix>/bin/omalook` -> `<prefix>/qml`). Nothing is baked in at build time: a path
+/// remembered from the machine that built the binary (e.g. a project folder on a network share)
+/// would break whenever that location is unavailable. When none exists the caller reports
+/// "QML entry point not found" for `./qml`.
 fn resolve_qml_dir() -> PathBuf {
     if let Ok(dir) = env::var("QML_DIR") {
         return PathBuf::from(dir);
@@ -126,7 +128,15 @@ fn resolve_qml_dir() -> PathBuf {
     if cwd_qml.join("shell.qml").exists() {
         return cwd_qml;
     }
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("qml")
+    if let Ok(exe) = env::current_exe() {
+        if let Some(prefix) = exe.parent().and_then(|bin| bin.parent()) {
+            let beside = prefix.join("qml");
+            if beside.join("shell.qml").exists() {
+                return beside;
+            }
+        }
+    }
+    cwd_qml
 }
 
 /// The UI is built on the Omarchy shell kit (`qs.Commons`, `qs.Ui`). Quickshell

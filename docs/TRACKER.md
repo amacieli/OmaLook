@@ -9,6 +9,7 @@ IDs are stable (never reused). Status: `open` | `investigating` | `planned` | `i
 - **Seen:** 2026-10-26: any compose action opened a pane with no editor and no way out. Quickshell log: `Cannot load library .../libomalook_compose_plugin.so: libomalook_compose.so: cannot open shared object file`.
 - **Cause:** the plugin links `libomalook_compose.so`, which CMake put in `build/` (not `build/qml`), and the plugin's RUNPATH was the project checkout (`/mnt/ai/projects/...`, NFS). `build.sh --live` only rsyncs `build/qml`, so the live copy worked only while that mount was up; `mnt-ai.automount` was dead (start-limit-hit) from 12:47.
 - **Fix:** `plugin/omalook-compose/CMakeLists.txt` now writes the library next to the plugin and sets RUNPATH `$ORIGIN`, so the rsync'd copy is self-contained. Verified: `ldd` resolves inside /opt, `import OmaLook.Compose` loads under qml6. Separate issue left open: `/mnt/ai` automount needs `systemctl reset-failed mnt-ai.automount`.
+- **Follow-up (2026-10-26):** `resolve_qml_dir()` no longer falls back to the build-time `CARGO_MANIFEST_DIR` (it now tries `QML_DIR`, `./qml`, `<prefix>/qml` beside the binary); docs and test fixtures no longer name the NFS project path; stale pre-rename files removed from /opt/omalook. `cargo test --lib`: 329 passed.
 - **Also open:** the compose pane has no Esc/discard fallback when the editor fails to load (the Loader error shows only as a status line).
 
 ### OL-025 — Mailbox rules: automatic actions on incoming mail, e.g. tag by sender (open, not started)

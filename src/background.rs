@@ -72,8 +72,8 @@ mod tests {
 
     #[test]
     fn recognises_the_ui_process_only() {
-        let ok = b"quickshell\0-p\0/mnt/ai/projects/omalook/qml\0";
-        assert!(is_ui_cmdline(ok, "/mnt/ai/projects/omalook/qml"));
+        let ok = b"quickshell\0-p\0/home/user/omalook/qml\0";
+        assert!(is_ui_cmdline(ok, "/home/user/omalook/qml"));
         assert!(is_ui_cmdline(b"/usr/bin/quickshell\0-p\0/x/qml\0", "/x/qml"));
         assert!(!is_ui_cmdline(ok, "/other/qml"), "a different quickshell instance");
         assert!(!is_ui_cmdline(b"omalook\0-p\0/x/qml\0", "/x/qml"), "not quickshell");

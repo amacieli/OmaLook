@@ -260,7 +260,7 @@ cargo --version
 
 ### First Build
 ```bash
-cd /mnt/ai/projects/omalook
+cd omalook
 ./build.sh --dev-setup   # Validate dependencies
 ./build.sh --release      # Build optimized binary
 ./run.sh --release        # Run

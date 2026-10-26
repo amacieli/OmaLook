@@ -2,7 +2,7 @@
 
 **Generated:** 2026-09-26  
 **Project:** omalook (Omarchy-style Outlook clone with Rust backend + Qt QML frontend)  
-**Location:** /mnt/ai/projects/omalook/
+**Location:** the repository root
 
 ---
 

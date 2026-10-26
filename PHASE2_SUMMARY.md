@@ -79,20 +79,20 @@
 ## Files Created/Modified
 
 ### New Files
-- `/mnt/ai/projects/omalook/build.rs` — Minimal build script (8 lines)
-- `/mnt/ai/projects/omalook/src/qt_bridge/mod.rs` — Bridge module root (exports 4 submodules)
-- `/mnt/ai/projects/omalook/src/qt_bridge/auth_bridge.rs` — AuthBridge struct (86 lines)
-- `/mnt/ai/projects/omalook/src/qt_bridge/settings_bridge.rs` — SettingsBridge struct (53 lines)
-- `/mnt/ai/projects/omalook/src/qt_bridge/mail_list_bridge.rs` — MailListBridge struct (79 lines)
-- `/mnt/ai/projects/omalook/src/qt_bridge/compose_bridge.rs` — ComposeBridge struct (89 lines)
-- `/mnt/ai/projects/omalook/qml/MailListView.qml` — Mail list UI component (168 lines)
-- `/mnt/ai/projects/omalook/qml/ComposeMail.qml` — Compose mail UI component (287 lines)
-- `/mnt/ai/projects/omalook/qml/SettingsPanel.qml` — Settings UI component (259 lines)
-- `/mnt/ai/projects/omalook/COMPONENT_REFERENCE.md` — Dependency reference guide (591 lines)
+- `build.rs` — Minimal build script (8 lines)
+- `src/qt_bridge/mod.rs` — Bridge module root (exports 4 submodules)
+- `src/qt_bridge/auth_bridge.rs` — AuthBridge struct (86 lines)
+- `src/qt_bridge/settings_bridge.rs` — SettingsBridge struct (53 lines)
+- `src/qt_bridge/mail_list_bridge.rs` — MailListBridge struct (79 lines)
+- `src/qt_bridge/compose_bridge.rs` — ComposeBridge struct (89 lines)
+- `qml/MailListView.qml` — Mail list UI component (168 lines)
+- `qml/ComposeMail.qml` — Compose mail UI component (287 lines)
+- `qml/SettingsPanel.qml` — Settings UI component (259 lines)
+- `COMPONENT_REFERENCE.md` — Dependency reference guide (591 lines)
 
 ### Modified Files
-- `/mnt/ai/projects/omalook/Cargo.toml` — Uncommented cxx-qt + cxx dependencies
-- `/mnt/ai/projects/omalook/src/lib.rs` — Added `pub mod qt_bridge;` export
+- `Cargo.toml` — Uncommented cxx-qt + cxx dependencies
+- `src/lib.rs` — Added `pub mod qt_bridge;` export
 
 ---
 

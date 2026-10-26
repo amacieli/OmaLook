@@ -40,7 +40,7 @@ omalook/
 
 1. **Clone and set up environment**
    ```bash
-   cd /mnt/ai/projects/omalook
+   cd omalook
    ./setup.sh
    ```
 
@@ -58,7 +58,7 @@ omalook/
 
 ## Documentation
 
-Internal planning docs (design, phased roadmap, initial spec) are in `/mnt/ai/projects/omalook-internal/` to keep this repo clean.
+Internal planning docs (design, phased roadmap, initial spec) are kept outside this repo.
 
 ## Authentication Flow
 
