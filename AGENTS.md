@@ -30,7 +30,7 @@ Renamed from "omarchylook" on 2026-10-12. **README.md is stale** (describes the 
 - Text fields own their keys; global bindings apply only when no text field has focus. Document new bindings in `docs/KEYS.md`.
 
 ## Git
-- Remote `origin` = github.com/amacieli/OmarchyLook. **No feature branches needed (user decision, 2026-10-16): lump all work together on the current branch (`main`) and commit there. Push only when the user asks.** Verify upstream is current before pushing or rebasing.
+- Remote `origin` = github.com/amacieli/OmaLook. **No feature branches needed (user decision, 2026-10-16): lump all work together on the current branch (`main`) and commit there. Push only when the user asks.** Verify upstream is current before pushing or rebasing.
 - `build.sh` is part of the project: **commit and push it with every other change** (user decision, 2026-10-24). The working tree may still hold other uncommitted work of the user's (staged deletions of the old Python backend): **stage selectively, never `git add -A`, and leave that out unless asked.** (There is no `omalook` symlink in the project root any more; there is no `run.sh` either: run the dev build with `QML_DIR=$PWD/qml <build dir>/debug/omalook` (the build script prints the exact line), after closing the live app.) `packaging/` is tracked; include its changes when they are part of the work.
 - Update `docs/TRACKER.md` (stable IDs, never reuse) when fixing or finding issues. Commit message states what was verified.
 - Asking before restarting the running app or `--live` deploys is expected.
