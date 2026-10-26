@@ -398,12 +398,21 @@ Item {
   ListModel { id: senderModelObj }
   property string senderNotice: ""
 
+  property string _sendersJson: ""
+
   function loadSenders() {
     request("GET", "/settings/senders", function(xhr) {
       if (xhr.status !== 200) return
       try {
         var rows = JSON.parse(xhr.responseText)
         if (!Array.isArray(rows)) return
+        // Polled every 20 s. clear() empties the model before append() refills it, and the
+        // reading pane's "always HTML" / "always load images" bindings read it in between: for a
+        // listed sender they flipped off and on again, and each flip re-rendered the open message.
+        // Unchanged data must not touch the model.
+        var json = xhr.responseText
+        if (json === root._sendersJson) return
+        root._sendersJson = json
         senderModelObj.clear()
         for (var i = 0; i < rows.length; i++) senderModelObj.append(rows[i])
         root._imagesRev++
