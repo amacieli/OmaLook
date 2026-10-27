@@ -253,6 +253,37 @@ if [ "$LIVE" = true ]; then
 
     install -m 644 "$PROJECT_DIR/packaging/omalook.svg" "$LIVE_DIR/share/omalook.svg"
 
+    # Menu entry: ~/.local/share/applications/OmaLook.desktop puts OmaLook in the Omarchy
+    # app launcher. Written when missing, and rewritten when it differs from what this
+    # script expects (wrong path, or no StartupWMClass). StartupWMClass=org.quickshell
+    # is the window class of the OmaLook window; without it, tools that map a window to
+    # its launcher (the global-workspaces relaunch list) cannot find OmaLook.
+    DESKTOP_FILE="${XDG_DATA_HOME:-$HOME/.local/share}/applications/OmaLook.desktop"
+    DESKTOP_WANT=$(cat <<DESKTOP
+[Desktop Entry]
+Type=Application
+Name=OmaLook
+Comment=Mail, calendar and people
+Exec=$LIVE_DIR/omalook
+TryExec=$LIVE_DIR/omalook
+Icon=$LIVE_DIR/share/omalook.svg
+Terminal=false
+Categories=Network;Email;Office;
+StartupNotify=true
+StartupWMClass=org.quickshell
+DESKTOP
+)
+    if [ ! -f "$DESKTOP_FILE" ]; then
+        mkdir -p "$(dirname "$DESKTOP_FILE")"
+        printf '%s\n' "$DESKTOP_WANT" > "$DESKTOP_FILE"
+        echo -e "${GREEN}✓ Menu entry created: $DESKTOP_FILE${NC}"
+    elif [ "$(cat "$DESKTOP_FILE")" != "$DESKTOP_WANT" ]; then
+        printf '%s\n' "$DESKTOP_WANT" > "$DESKTOP_FILE"
+        echo -e "${GREEN}✓ Menu entry updated: $DESKTOP_FILE${NC}"
+    else
+        echo "Menu entry present: $DESKTOP_FILE"
+    fi
+
     # Launcher: points the app at the installed UI, and refuses to open a second
     # window: it focuses the one that is open instead. A backend running without a
     # window (Settings → General → Keep running in background) is not a window; the
