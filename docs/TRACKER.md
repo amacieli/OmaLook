@@ -5,6 +5,10 @@ IDs are stable (never reused). Status: `open` | `investigating` | `planned` | `i
 
 ## Issues
 
+### OL-029 — Message preview cannot be scrolled up or down while link selection is on (open, not started)
+- **Seen:** 2026-10-26: with link selection switched on, the message preview does not scroll with the up/down keys (or the wheel, not checked). Scrolling works again once link selection is switched off.
+- **To do (investigate first, no code yet):** reproduce with a message that has several links; find which handler takes the up/down keys while link selection is active (the link-cursor handling versus the preview's scroll handling) and confirm whether it is the keyboard path, the mouse path, or both.
+
 ### OL-028 — Pre-render HTML messages in the daemon and keep the render cache apart from the system-font cache (open, not started)
 - **Wanted (user, 2026-10-26):** messages that will be shown as HTML should be rendered ahead of time and the rendered result stored in a cache, so opening them does not render again. Two cases: senders marked "always HTML" (the rule says HTML is always on), and messages the user has switched to HTML one time. The daemon triggers the render too, so a message is ready even when the UI is not running and only gets opened later.
 - **Keep it separate:** the HTML render cache must be its own store, not shared with the system-font cache, so the user can switch a sender back to the system font later without losing the rendered HTML (and the reverse).
