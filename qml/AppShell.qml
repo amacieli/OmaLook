@@ -186,7 +186,7 @@ FocusScope {
     }
 
     Component { id: mailComponent;     MailView { app: appState } }
-    Component { id: calendarComponent; CalendarView { mode: appState.calendarMode; dataRev: appState.calendarRev; onModeChanged: appState.calendarMode = mode; paneOffset: appState.calendarPaneOffset; onPaneOffsetRequested: function(n) { appState.calendarPaneOffset = n } } }
+    Component { id: calendarComponent; CalendarView { mode: appState.calendarMode; dataRev: appState.calendarRev; onModeChanged: appState.calendarMode = mode; paneOffset: appState.calendarPaneOffset; appAccounts: appState.accounts; lastAccount: appState.lastCalendarAccount; onAccountUsed: function(id) { appState.lastCalendarAccount = id }; eventDefaults: ({ minutes: appState.calendarDefaultMinutes, reminder: appState.calendarDefaultReminder, seriesMonths: appState.calendarDefaultSeriesMonths, account: appState.calendarDefaultAccount }); onPaneOffsetRequested: function(n) { appState.calendarPaneOffset = n } } }
     Component { id: peopleComponent;   PeopleView   { viewMode: appState.peopleView; onViewModeChanged: appState.peopleView = viewMode; sortKey: appState.peopleSort; onSortKeyChanged: appState.peopleSort = sortKey; monoFont: Style.font.family; accentColor: Commons.Color.accent; successColor: Commons.Color.accent; dangerColor: Commons.Color.urgent; textColor: Commons.Color.foreground } }
     Component { id: tasksComponent;    TasksView    { filter: appState.tasksFilter; onFilterChanged: appState.tasksFilter = filter; monoFont: Style.font.family; accentColor: Commons.Color.accent; successColor: Commons.Color.accent; dangerColor: Commons.Color.urgent; textColor: Commons.Color.foreground } }
     Component { id: smsComponent;      SmsView { app: appState } }

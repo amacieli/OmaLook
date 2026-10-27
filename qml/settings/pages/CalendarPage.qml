@@ -4,8 +4,8 @@ import qs.Ui
 import "../../common"
 import ".."
 
-// Only "Recurring meeting windows" is wired to the backend; the other values are still
-// placeholders and are not persisted.
+// "New events" and "Recurring meeting windows" are wired to the backend; the week layout values
+// above them are still placeholders and are not persisted.
 SettingsPage {
   id: page
 
@@ -14,9 +14,9 @@ SettingsPage {
   property string weekStart: "mon"
   property bool weekNumbers: false
   property int dayStartHour: 8
-  property string reminder: "15"
 
-  editing: reminderDropdown.popupOpen || backYears.field.activeFocus || aheadYears.field.activeFocus
+  editing: accountDropdown.popupOpen || backYears.field.activeFocus || aheadYears.field.activeFocus
+        || lengthField.field.activeFocus || reminderField.field.activeFocus || seriesField.field.activeFocus
 
   title: "Calendar"
   description: "Week layout and default reminders."
@@ -71,17 +71,60 @@ SettingsPage {
     }
   }
 
-  Dropdown {
-    id: reminderDropdown
+  PanelSeparator { width: parent.width }
+
+  // ── wired: defaults for new events (docs/PLAN-calendar-events.md section 9) ──
+  Column {
     width: parent.width
-    label: "Default reminder"
-    value: page.reminder
-    options: [
-      { value: "0",  label: "At time of event" },
-      { value: "15", label: "15 minutes before" },
-      { value: "60", label: "1 hour before" }
-    ]
-    onChanged: function(v) { page.reminder = v }
+    spacing: Style.space(6)
+
+    PanelSectionHeader { text: "NEW EVENTS" }
+
+    Row {
+      spacing: Style.space(16)
+      NumberField {
+        id: lengthField
+        label: "Length (minutes)"
+        value: page.app ? page.app.calendarDefaultMinutes : 30
+        from: 5; to: 1440; stepSize: 5
+        onModified: function(v) { if (page.app) page.app.setCalendarDefaults(v, page.app.calendarDefaultReminder, page.app.calendarDefaultSeriesMonths, page.app.calendarDefaultAccount) }
+      }
+      NumberField {
+        id: reminderField
+        label: "Reminder (minutes before)"
+        value: page.app ? page.app.calendarDefaultReminder : 15
+        from: 0; to: 10080; stepSize: 5
+        onModified: function(v) { if (page.app) page.app.setCalendarDefaults(page.app.calendarDefaultMinutes, v, page.app.calendarDefaultSeriesMonths, page.app.calendarDefaultAccount) }
+      }
+      NumberField {
+        id: seriesField
+        label: "Series ends after (months, 0 = never)"
+        value: page.app ? page.app.calendarDefaultSeriesMonths : 12
+        from: 0; to: 120; stepSize: 1
+        onModified: function(v) { if (page.app) page.app.setCalendarDefaults(page.app.calendarDefaultMinutes, page.app.calendarDefaultReminder, v, page.app.calendarDefaultAccount) }
+      }
+    }
+
+    UiText {
+      width: parent.width
+      text: "A reminder of 0 fires at the time of the event. A new repeating event ends this many months after its first date unless you type an end."
+      dim: true; wrapMode: Text.WordWrap; font.pixelSize: Style.font.caption
+    }
+
+    Dropdown {
+      id: accountDropdown
+      width: parent.width
+      label: "New events go to"
+      value: page.app ? page.app.calendarDefaultAccount : ""
+      options: {
+        var o = [{ value: "", label: "The account I used last" }]
+        var list = page.app ? page.app.accounts : []
+        for (var i = 0; i < list.length; i++)
+          if (list[i].provider === "exchange" && list[i].email) o.push({ value: list[i].id, label: list[i].email })
+        return o
+      }
+      onChanged: function(v) { if (page.app) page.app.setCalendarDefaults(page.app.calendarDefaultMinutes, page.app.calendarDefaultReminder, page.app.calendarDefaultSeriesMonths, v) }
+    }
   }
 
   PanelSeparator { width: parent.width }

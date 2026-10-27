@@ -389,7 +389,7 @@ mod calendar_settings_tests {
 
     #[test]
     fn defaults_are_five_years_back_and_ten_ahead() {
-        assert_eq!(read_calendar_settings(&temp("missing")), CalendarSettings { recurrence_years_back: 5, recurrence_years_ahead: 10 });
+        assert_eq!(read_calendar_settings(&temp("missing")), CalendarSettings { recurrence_years_back: 5, recurrence_years_ahead: 10, ..Default::default() });
     }
 
     #[test]
@@ -405,6 +405,18 @@ mod calendar_settings_tests {
     }
 
     #[test]
+    fn event_defaults_round_trip_clamp_and_default_when_absent() {
+        let p = temp("evdefaults");
+        let d = read_calendar_settings(&p);
+        assert_eq!((d.default_minutes, d.default_reminder_minutes, d.default_series_months, d.default_account.as_str()), (30, 15, 12, ""));
+        let stored = write_calendar_settings(&p, &CalendarSettings { default_minutes: 45, default_reminder_minutes: 0, default_series_months: 0, default_account: " exchange-x ".into(), ..Default::default() }).unwrap();
+        assert_eq!((stored.default_minutes, stored.default_reminder_minutes, stored.default_series_months, stored.default_account.as_str()), (45, 0, 0, "exchange-x"));
+        let clamped = write_calendar_settings(&p, &CalendarSettings { default_minutes: 1, default_series_months: 999, ..Default::default() }).unwrap();
+        assert_eq!((clamped.default_minutes, clamped.default_series_months), (5, 120));
+        let _ = fs::remove_file(&p);
+    }
+
+    #[test]
     fn write_round_trips_clamps_and_preserves_other_settings() {
         let p = temp("write");
         let mut base = Settings::default();
@@ -412,13 +424,13 @@ mod calendar_settings_tests {
         base.font.family = "Custom Font".into();
         fs::write(&p, toml::to_string_pretty(&base).unwrap()).unwrap();
 
-        let stored = write_calendar_settings(&p, &CalendarSettings { recurrence_years_back: 7, recurrence_years_ahead: 12 }).unwrap();
+        let stored = write_calendar_settings(&p, &CalendarSettings { recurrence_years_back: 7, recurrence_years_ahead: 12, ..Default::default() }).unwrap();
         assert_eq!((stored.recurrence_years_back, stored.recurrence_years_ahead), (7, 12));
         assert_eq!(read_calendar_settings(&p), stored);
         let back: Settings = toml::from_str(&fs::read_to_string(&p).unwrap()).unwrap();
         assert!(!back.ui.sidebar_expanded && back.font.family == "Custom Font", "other settings untouched");
 
-        let clamped = write_calendar_settings(&p, &CalendarSettings { recurrence_years_back: -3, recurrence_years_ahead: 99 }).unwrap();
+        let clamped = write_calendar_settings(&p, &CalendarSettings { recurrence_years_back: -3, recurrence_years_ahead: 99, ..Default::default() }).unwrap();
         assert_eq!((clamped.recurrence_years_back, clamped.recurrence_years_ahead), (0, 30));
         let _ = fs::remove_file(&p);
     }

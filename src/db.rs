@@ -1170,9 +1170,10 @@ impl Database {
     }
 
     /// Undo: only possible while the operation is still `pending` (not yet claimed by the worker).
+    /// A `failed` one can also be taken back (it never reached the server), which dismisses its mark.
     pub fn cal_outbox_cancel(&self, id: &str) -> Result<bool> {
         let n = self.conn.execute(
-            "UPDATE calendar_outbox SET state = 'cancelled', updated_at = ?2 WHERE id = ?1 AND state = 'pending'",
+            "UPDATE calendar_outbox SET state = 'cancelled', updated_at = ?2 WHERE id = ?1 AND state IN ('pending', 'failed')",
             params![id, Self::now_ms()],
         )?;
         Ok(n == 1)

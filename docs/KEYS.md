@@ -33,6 +33,25 @@ and will do nothing when the reading pane is switched off (`showReaderPane`). Th
 `[ui] list_width_offset` in `settings.toml`: characters relative to the default list width (0 = default, negative = narrower;
 you can edit it by hand). Both panes keep a minimum width, so the offset stops growing at those limits.
 
+## New calendar event
+
+In the calendar view `c` or `n` opens the editor over the grid (commands `cal.new`). The account is the filtered one, else the account of the
+event under the cursor, else the one pinned in Settings -> Calendar, else the one used last (`last_calendar_account` in `view_state.json`).
+Only Microsoft work/school accounts can create events so far. While the editor is open the app's global keys are off and the fields own the keyboard:
+
+| Key | Does |
+|---|---|
+| `Tab` / `Shift-Tab` | Next / previous field |
+| `Ctrl-Enter` | Save: the event is queued and waits the undo window (`[mail] send_delay_secs`), then goes to the server |
+| `Esc` | Close; once edited it asks, and a second `Esc` discards |
+| `Up` / `Down` on When | Start +-15 minutes; `Shift` +-1 day; `Alt` length +-15 minutes |
+| `Left` / `Right` / `Space` on Account or Show as | Change the choice |
+
+When takes typed text (`tomorrow 3pm`, `fri 10-10:30`, `+30m`, `all day mon`; `qml/calendar/when.js`) and always shows the resolved time and any overlap with
+existing events; Repeat takes `weekly`, `every 2 weeks on tue,thu`, `monthly 2nd tue`, `daily for 10`, `until 29 dec` (`qml/calendar/recurrence.js`) and shows the sentence and the next dates.
+After a save a bar reads "Event queued (personal). Ctrl-Z undo" (`cal.undo`); `Ctrl-Z` takes it back and reopens the editor with everything typed. A queued event is drawn dimmed with a clock mark,
+a failed one with a cross and the server's reason (`Ctrl-Z` reopens it too).
+
 ## Calendar sidebar width
 
 In the calendar view `Ctrl-Right` / `Ctrl-Left` (or `Ctrl-w >` / `Ctrl-w <`, with a count; commands `cal.pane.widen`, `cal.pane.narrow`) move the divider between the sidebar (mini month, calendars, agenda) and the

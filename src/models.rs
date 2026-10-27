@@ -440,6 +440,18 @@ pub struct CalendarSettings {
     pub recurrence_years_back: i32,
     #[serde(default = "CalendarSettings::default_ahead")]
     pub recurrence_years_ahead: i32,
+    /// New event length in minutes (Settings → Calendar; docs/PLAN-calendar-events.md section 9).
+    #[serde(default = "CalendarSettings::default_minutes")]
+    pub default_minutes: i32,
+    /// Default reminder in minutes before the start; 0 = at the time of the event.
+    #[serde(default = "CalendarSettings::default_reminder")]
+    pub default_reminder_minutes: i32,
+    /// A new recurring series ends this many months after its first date (0 = never).
+    #[serde(default = "CalendarSettings::default_series")]
+    pub default_series_months: i32,
+    /// Account new events go to; "" = the one used last.
+    #[serde(default)]
+    pub default_account: String,
 }
 
 impl CalendarSettings {
@@ -448,19 +460,33 @@ impl CalendarSettings {
 
     fn default_back() -> i32 { 5 }
     fn default_ahead() -> i32 { 10 }
+    fn default_minutes() -> i32 { 30 }
+    fn default_reminder() -> i32 { 15 }
+    fn default_series() -> i32 { 12 }
 
     /// Clamp to the supported range (0..=20 back, 1..=30 ahead).
     pub fn sanitized(&self) -> Self {
         Self {
             recurrence_years_back: self.recurrence_years_back.clamp(0, Self::MAX_YEARS_BACK),
             recurrence_years_ahead: self.recurrence_years_ahead.clamp(1, Self::MAX_YEARS_AHEAD),
+            default_minutes: self.default_minutes.clamp(5, 24 * 60),
+            default_reminder_minutes: self.default_reminder_minutes.clamp(0, 7 * 24 * 60),
+            default_series_months: self.default_series_months.clamp(0, 120),
+            default_account: self.default_account.trim().to_string(),
         }
     }
 }
 
 impl Default for CalendarSettings {
     fn default() -> Self {
-        Self { recurrence_years_back: Self::default_back(), recurrence_years_ahead: Self::default_ahead() }
+        Self {
+            recurrence_years_back: Self::default_back(),
+            recurrence_years_ahead: Self::default_ahead(),
+            default_minutes: Self::default_minutes(),
+            default_reminder_minutes: Self::default_reminder(),
+            default_series_months: Self::default_series(),
+            default_account: String::new(),
+        }
     }
 }
 

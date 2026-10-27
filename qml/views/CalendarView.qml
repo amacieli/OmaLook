@@ -7,6 +7,8 @@ import qs.Commons as Commons
 import qs.Ui
 import "../common"
 import "CalendarUtil.js" as CU
+import "../calendar"
+import "../calendar/draft.js" as Draft
 
 // CalendarView — header (view dropdown, navigation, title) above one of four
 // separate views: DayView, WorkWeekView, FullWeekView, MonthView.
@@ -34,9 +36,14 @@ Item {
     property int    cursorMin: CU.defaultMin(new Date(), new Date())
     property string accountFilter: ""          // "" = all accounts, else an account email
     property var    accounts: CU.accountsOf(rawEvents)
-    property var  events: CU.normalise(CU.filterAccount(rawEvents, accountFilter))
+    // Queued writes (pending marks) are drawn with the real events until the server has them.
+    property var  pendingItems: []
+    readonly property var pendingRaws: pendingItems.map(function(i) { return Draft.pendingRaw(i, appAccounts) }).filter(function(r) { return r !== null })
+        .map(function(r) { r.subject = Draft.pendingMark(r) + r.subject; return r })
+    property var  events: CU.normalise(CU.filterAccount(rawEvents.concat(pendingRaws), accountFilter))
     property int  selIdx: 0                    // which of the events under the cursor is selected
     property bool detailOpen: false
+    property var  editor: null
     readonly property var atCursor: CU.eventsAtCursor(events, anchorDate, cursorMin, mode)
     readonly property var selectedEvent: atCursor.length > 0 ? atCursor[Math.min(selIdx, atCursor.length - 1)] : null
     readonly property string selectedId: selectedEvent ? selectedEvent.raw.id : ""
@@ -65,6 +72,113 @@ Item {
         onTriggered: { var n = new Date(); if (!CU.sameDay(n, root.today)) root.today = n }
     }
     function goToday() { today = new Date(); anchorDate = today; cursorMin = CU.defaultMin(today, today) }
+
+    // ── new event (docs/PLAN-calendar-events.md phase 2) ───────────
+    property var  appAccounts: []                  // [{id, provider, email, signed_in}] from the app
+    property var  eventDefaults: ({ minutes: 30, reminder: 15, seriesMonths: 12, account: "" })
+    property string lastAccount: ""
+    signal accountUsed(string id)
+    property bool   editorOpen: false
+    readonly property bool editing: editorOpen     // AppShell hands every key to the editor's fields meanwhile
+    property var    editorRestore: null
+    property string editorAccount: ""
+    property string editorStatus: ""
+    property date   editorStart: new Date()
+    property var    editorSnapshot: null           // what was in the editor at Save, for Undo
+    property string undoId: ""                     // the queued write the undo bar is about
+    property string undoMessage: ""
+    property string undoState: ""                  // pending | sending | sent | failed | ""
+
+    function newEvent() {
+        if (editorOpen) return ""
+        var under = selectedEvent ? selectedEvent.raw.account_email : ""
+        var id = Draft.chooseAccount(appAccounts, { filterEmail: accountFilter, cursorEmail: under,
+                                                   defaultAccount: eventDefaults.account, lastUsed: lastAccount })
+        if (id === "") return "No signed-in account can create events yet (Microsoft work/school accounts only)"
+        var d = new Date(anchorDate.getFullYear(), anchorDate.getMonth(), anchorDate.getDate(), 0, mode === "month" ? 9 * 60 : cursorMin)
+        editorStart = d
+        editorAccount = id
+        editorStatus = ""
+        editorRestore = null
+        editorOpen = true
+        return ""
+    }
+
+    function _post(method, path, body, cb) {
+        var xhr = new XMLHttpRequest()
+        xhr.onreadystatechange = function() {
+            if (xhr.readyState !== XMLHttpRequest.DONE) return
+            var r = {}
+            try { r = JSON.parse(xhr.responseText) } catch (e) { r = { ok: false, error: xhr.status === 0 ? "the backend is not answering" : "unreadable answer" } }
+            cb(r)
+        }
+        xhr.open(method, backendUrl + path)
+        if (body !== null) xhr.setRequestHeader("Content-Type", "application/json")
+        xhr.send(body)
+    }
+
+    function saveEvent(body) {
+        editorStatus = "saving\u2026"
+        editorSnapshot = editor ? editor.snapshot() : null
+        _post("POST", "/calendar/event", JSON.stringify(body), function(r) {
+            if (!r.ok) { editorStatus = r.error || "could not save"; return }
+            editorOpen = false
+            editorStatus = ""
+            accountUsed(body.account_id)
+            undoId = r.id
+            undoState = "pending"
+            var n = r.attendees || 0
+            undoMessage = (body.recurrence ? "Series queued" : "Event queued") + (n > 0 ? " for " + n + " people" : " (personal)")
+            pollOutbox()
+            outboxTimer.start()
+        })
+    }
+
+    // Ctrl-Z while the bar shows: take the queued event back and reopen the editor with everything typed.
+    function undoLast() {
+        if (undoId === "") return "Nothing to undo"
+        if (undoState !== "pending" && undoState !== "failed") return "Too late to undo: the event is already saved"
+        var id = undoId
+        _post("POST", "/calendar/event/undo?id=" + encodeURIComponent(id), null, function(r) {
+            if (r.cancelled === true) {
+                undoId = ""; undoState = ""; undoMessage = ""
+                pollOutbox()
+                if (editorSnapshot && !editorOpen) {
+                    editorRestore = editorSnapshot; editorStatus = "Undone. Your event is back in the editor."
+                    editorStart = editorSnapshot.base.start
+                    editorOpen = true
+                }
+            } else {
+                undoState = r.state || ""
+                undoMessage = r.state === "sent" ? "Too late to undo: the event is already saved" : (r.error || "Could not undo")
+            }
+        })
+        return ""
+    }
+
+    function pollOutbox() {
+        _post("GET", "/calendar/outbox", null, function(r) {
+            if (!r.ok) return
+            var items = r.items || [], wasLive = {}, i
+            for (i = 0; i < pendingItems.length; i++) wasLive[pendingItems[i].id] = true
+            var sentNow = false
+            for (i = 0; i < items.length; i++) {
+                if (items[i].state === "sent" && wasLive[items[i].id]) sentNow = true
+                if (items[i].id === undoId) {
+                    undoState = items[i].state
+                    if (items[i].state === "sent") undoMessage = "Saved"
+                    else if (items[i].state === "failed") undoMessage = "Not saved: " + (items[i].error || "the server refused it") + "   (Ctrl-Z to edit it again)"
+                }
+            }
+            pendingItems = items.filter(function(it) { return it.state === "pending" || it.state === "sending" || it.state === "failed" })
+            if (sentNow) loadEvents(true)
+            var live = pendingItems.some(function(it) { return it.state !== "failed" })
+            if (!live) outboxTimer.stop()
+            if (!live && undoState === "sent") hideBar.restart()
+        })
+    }
+    Timer { id: outboxTimer; interval: 1000; repeat: true; onTriggered: root.pollOutbox() }
+    Timer { id: hideBar; interval: 4000; onTriggered: { if (root.undoState === "sent") { root.undoId = ""; root.undoState = ""; root.undoMessage = "" } } }
 
     // ── keyboard (called by the key registry; see AppCommands.move/page/edge/activate) ──
     function keyMove(dx, dy) {
@@ -184,7 +298,7 @@ Item {
     onAnchorDateChanged: { selIdx = 0; loadEvents(false) }
     onCursorMinChanged:  selIdx = 0
     onSelectedEventChanged: if (!selectedEvent) detailOpen = false
-    Component.onCompleted: loadEvents(true)
+    Component.onCompleted: { loadEvents(true); pollOutbox() }
 
     // ── sidebar width (OL-031): characters relative to the default, kept as [ui] calendar_pane_offset ──
     TextMetrics { id: charMetrics; text: "0"; font.family: Style.font.family; font.pixelSize: Style.font.body }
@@ -240,6 +354,55 @@ Item {
             Layout.fillWidth: true
             Layout.fillHeight: true
             PaneFrame { tint: Hues.blue; focused: true; title: root.title }
+
+            Loader {
+                id: editorLoader
+                anchors.fill: parent
+                anchors.margins: Style.spacing.sm; anchors.topMargin: Style.spacing.xl
+                z: 100
+                active: root.editorOpen
+                sourceComponent: Component {
+                    EventEditor {
+                        id: ed
+                        now: root.today
+                        initialStart: root.editorStart
+                        defaultMinutes: root.eventDefaults.minutes
+                        defaultReminder: root.eventDefaults.reminder
+                        defaultSeriesMonths: root.eventDefaults.seriesMonths
+                        accounts: root.appAccounts.filter(Draft.canCreate)
+                        accountId: root.editorAccount
+                        events: root.events
+                        status: root.editorStatus
+                        restore: root.editorRestore
+                        onAccountPicked: function(id) { root.editorAccount = id }
+                        onSaveRequested: function(body) { root.saveEvent(body) }
+                        onCancelRequested: { root.editorOpen = false; root.editorStatus = "" }
+                        Component.onCompleted: root.editor = ed
+                        Component.onDestruction: if (root.editor === ed) root.editor = null
+                    }
+                }
+            }
+
+            // the undo bar: after a save, a delete or a cancel, until the server has it
+            Rectangle {
+                id: undoBar
+                visible: root.undoMessage !== "" && !root.editorOpen
+                z: 90
+                anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom
+                anchors.margins: Style.spacing.lg
+                height: undoText.implicitHeight + Style.spacing.lg * 2
+                radius: Style.cornerRadius
+                color: Qt.rgba(Commons.Color.background.r, Commons.Color.background.g, Commons.Color.background.b, 0.95)
+                border.width: 1
+                border.color: root.undoState === "failed" ? Commons.Color.urgent : Commons.Color.accent
+                UiText {
+                    id: undoText
+                    anchors.fill: parent; anchors.margins: Style.spacing.lg
+                    verticalAlignment: Text.AlignVCenter; elide: Text.ElideRight
+                    text: root.undoMessage + (root.undoState === "pending" ? ".   Ctrl-Z undo" : "")
+                    foreground: root.undoState === "failed" ? Commons.Color.urgent : Commons.Color.foreground
+                }
+            }
 
             ColumnLayout {
                 anchors.fill: parent

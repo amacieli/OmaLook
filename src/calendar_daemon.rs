@@ -363,7 +363,7 @@ mod tests {
         let (mut dm, _p) = (daemon().0, ());
         dm.config.settings_path = Some(path.clone());
         assert_eq!(dm.window_years(), (5, 10), "defaults when no file");
-        crate::settings::write_calendar_settings(&path, &crate::models::CalendarSettings { recurrence_years_back: 2, recurrence_years_ahead: 4 }).unwrap();
+        crate::settings::write_calendar_settings(&path, &crate::models::CalendarSettings { recurrence_years_back: 2, recurrence_years_ahead: 4, ..Default::default() }).unwrap();
         assert_eq!(dm.window_years(), (2, 4), "changes apply without restarting the daemon");
         let _ = std::fs::remove_file(&path);
     }

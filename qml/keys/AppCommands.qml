@@ -421,7 +421,8 @@ Item {
     { id: "cal.refresh", title: "Refresh events", scope: "calendar/list", keys: ["r"], run: function() { content.loadEvents(true) } },
     { id: "cal.pane.widen",  title: "Widen the calendar sidebar",  scope: "calendar/list", keys: ["C-Right", "C-w >"], run: function(n) { content.resizePane(n || 1) } },
     { id: "cal.pane.narrow", title: "Narrow the calendar sidebar", scope: "calendar/list", keys: ["C-Left", "C-w <"],  run: function(n) { content.resizePane(-(n || 1)) } },
-    { id: "cal.new",   title: "New event",       scope: "calendar/list", keys: ["c"], run: soon("new event") },
+    { id: "cal.new",   title: "New event",       scope: "calendar/list", keys: ["c", "n"], run: function() { var m = content.newEvent(); if (m) say(m) } },
+    { id: "cal.undo",  title: "Undo the event just saved (while its undo bar shows)", scope: "calendar/list", keys: ["C-z"], when: function() { return !!content && content.undoId !== undefined && content.undoId !== "" }, run: function() { var m = content.undoLast(); if (m) say(m) } },
 
     // people
     { id: "people.refresh", title: "Refresh contacts", scope: "contacts/list", keys: ["r"], run: function() { content.load() } },

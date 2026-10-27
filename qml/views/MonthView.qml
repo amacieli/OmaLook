@@ -115,6 +115,7 @@ Item {
                             id: chip
                             width: parent.width; height: root.chipH
                             property var cev: cell.evs[index]
+                            opacity: cev.raw.pending ? 0.55 : 1      // queued, not yet on the server
                             property bool sel: root.selectedId !== "" && cev.raw.id === root.selectedId && cell.isSel
                             property color hue: root.accounts.length > 1 ? Hues.accountColor(root.accounts, cev.raw.account_email) : root.accentColor
                             // all-day events are filled bars; timed ones are a dot and a title (Clockenstein)

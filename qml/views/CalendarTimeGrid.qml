@@ -335,6 +335,7 @@ Item {
                                 width: (col.width - 4) / ev.cols - 2
                                 y: ev.startMin / 60 * root.hourHeight + 1
                                 height: Math.max(16, (ev.endMin - ev.startMin) / 60 * root.hourHeight - 2)
+                                opacity: ev.raw.pending ? 0.55 : 1      // queued, not yet on the server
                                 color: Qt.rgba(root.accentColor.r, root.accentColor.g, root.accentColor.b, root.isSel(ev) ? 0.4 : 0.22)
                                 border.width: root.isSel(ev) ? 1 : 0
                                 border.color: root.accentColor

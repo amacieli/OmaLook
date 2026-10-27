@@ -2108,6 +2108,10 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                         let wanted = CalendarSettings {
                             recurrence_years_back: query_param(first_line, "back").and_then(|v| v.parse().ok()).unwrap_or(cur.recurrence_years_back),
                             recurrence_years_ahead: query_param(first_line, "ahead").and_then(|v| v.parse().ok()).unwrap_or(cur.recurrence_years_ahead),
+                            default_minutes: query_param(first_line, "minutes").and_then(|v| v.parse().ok()).unwrap_or(cur.default_minutes),
+                            default_reminder_minutes: query_param(first_line, "reminder").and_then(|v| v.parse().ok()).unwrap_or(cur.default_reminder_minutes),
+                            default_series_months: query_param(first_line, "series_months").and_then(|v| v.parse().ok()).unwrap_or(cur.default_series_months),
+                            default_account: query_param(first_line, "account").unwrap_or(cur.default_account.clone()),
                         };
                         match omalook::settings::write_calendar_settings(&settings_path, &wanted) {
                             Ok(stored) => stored,
@@ -2122,6 +2126,10 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                     let body = serde_json::json!({
                         "recurrence_years_back": current.recurrence_years_back,
                         "recurrence_years_ahead": current.recurrence_years_ahead,
+                        "default_minutes": current.default_minutes,
+                        "default_reminder_minutes": current.default_reminder_minutes,
+                        "default_series_months": current.default_series_months,
+                        "default_account": current.default_account,
                         "max_years_back": CalendarSettings::MAX_YEARS_BACK,
                         "max_years_ahead": CalendarSettings::MAX_YEARS_AHEAD,
                     }).to_string();

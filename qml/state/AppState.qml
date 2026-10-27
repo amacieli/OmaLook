@@ -524,10 +524,22 @@ Item {
   property int recurrenceYearsAhead: 10
   property int maxYearsBack: 20
   property int maxYearsAhead: 30
+  // New events (Settings → Calendar, docs/PLAN-calendar-events.md section 9).
+  property int calendarDefaultMinutes: 30
+  property int calendarDefaultReminder: 15
+  property int calendarDefaultSeriesMonths: 12
+  property string calendarDefaultAccount: ""        // "" = the account used last
+  // The account the last saved calendar entry went to (`last_calendar_account` in view_state.json).
+  property string lastCalendarAccount: ""
+  onLastCalendarAccountChanged: _saveViewSoon()
 
   function applyCalendarSettings(data) {
     recurrenceYearsBack = data.recurrence_years_back
     recurrenceYearsAhead = data.recurrence_years_ahead
+    if (typeof data.default_minutes === "number") calendarDefaultMinutes = data.default_minutes
+    if (typeof data.default_reminder_minutes === "number") calendarDefaultReminder = data.default_reminder_minutes
+    if (typeof data.default_series_months === "number") calendarDefaultSeriesMonths = data.default_series_months
+    if (typeof data.default_account === "string") calendarDefaultAccount = data.default_account
     if (data.max_years_back) maxYearsBack = data.max_years_back
     if (data.max_years_ahead) maxYearsAhead = data.max_years_ahead
   }
@@ -546,11 +558,22 @@ Item {
     calendarSettingsSave.restart()
   }
 
+  // Settings → Calendar: defaults for new events (debounced like the window above).
+  function setCalendarDefaults(minutes, reminder, seriesMonths, account) {
+    calendarDefaultMinutes = minutes
+    calendarDefaultReminder = reminder
+    calendarDefaultSeriesMonths = seriesMonths
+    calendarDefaultAccount = account
+    calendarSettingsSave.restart()
+  }
+
   Timer {
     id: calendarSettingsSave
     interval: 600
     onTriggered: root.request("POST",
-      "/settings/calendar?back=" + root.recurrenceYearsBack + "&ahead=" + root.recurrenceYearsAhead,
+      "/settings/calendar?back=" + root.recurrenceYearsBack + "&ahead=" + root.recurrenceYearsAhead
+        + "&minutes=" + root.calendarDefaultMinutes + "&reminder=" + root.calendarDefaultReminder
+        + "&series_months=" + root.calendarDefaultSeriesMonths + "&account=" + encodeURIComponent(root.calendarDefaultAccount),
       function(xhr) {
         if (xhr.status !== 200) return
         // the backend clamps; show what was actually stored
@@ -1260,7 +1283,7 @@ Item {
   function _saveViewSoon() { if (_viewRestored) viewSaveTimer.restart() }
   function _saveViewState() {
     request("POST", "/settings/view_state", null, JSON.stringify({
-      view: _lastModule, folder: selectedFolderId, calendar_mode: calendarMode,
+      view: _lastModule, folder: selectedFolderId, calendar_mode: calendarMode, last_calendar_account: lastCalendarAccount,
       people_view: peopleView, people_sort: peopleSort, tasks_filter: tasksFilter }))
   }
 
@@ -1287,6 +1310,7 @@ Item {
           var s = JSON.parse(xhr.responseText)
           function pick(v, allowed, cur) { return allowed.indexOf(v) >= 0 ? v : cur }
           root.calendarMode = pick(s.calendar_mode, ["day", "workweek", "week", "month"], root.calendarMode)
+          if (typeof s.last_calendar_account === "string") root.lastCalendarAccount = s.last_calendar_account
           root.peopleView = pick(s.people_view, ["all", "favorites", "lists"], root.peopleView)
           root.peopleSort = pick(s.people_sort, ["first", "last", "company", "recent"], root.peopleSort)
           root.tasksFilter = pick(s.tasks_filter, ["all", "active", "done"], root.tasksFilter)

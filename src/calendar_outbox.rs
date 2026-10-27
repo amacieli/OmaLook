@@ -133,7 +133,15 @@ impl CalendarOutboxWorker {
     async fn refresh_cache(&self, draft: &EventDraft, series: bool) {
         let cfg = CalendarDaemonConfig { settings_path: self.settings_path.clone(), ..CalendarDaemonConfig::default() };
         let daemon = CalendarDaemon::new(cfg, self.db.clone(), self.provider.clone());
-        let r = if series { daemon.refresh_full_window().await } else { daemon.refresh_around(draft.start.date()).await };
+        let r = if series {
+            // calendarView lags a few seconds behind a new series (seen live: the first expansion right after
+            // the create missed it), so show the near window now and expand the whole window after a pause.
+            let near = daemon.refresh_near_window().await;
+            tokio::time::sleep(Duration::from_secs(6)).await;
+            near.and(daemon.refresh_full_window().await)
+        } else {
+            daemon.refresh_around(draft.start.date()).await
+        };
         if let Err(e) = r {
             warn!("Calendar outbox {}: event created, cache not refreshed yet: {}", self.account_id, e);
         }
@@ -209,6 +217,16 @@ mod tests {
         db.cal_outbox_enqueue("c1", "exchange-test", "create", &payload("X"), 0, "tx-1", 0).unwrap();
         assert_eq!(db.cal_outbox_claim_due("exchange-test", Database::now_ms()).unwrap().len(), 1);
         assert!(!db.cal_outbox_cancel("c1").unwrap(), "already sending");
+    }
+
+    #[tokio::test]
+    async fn a_failed_write_can_be_taken_back_which_dismisses_its_mark() {
+        let (_w, _f, db) = setup(vec![]);
+        db.cal_outbox_enqueue("c1", "exchange-test", "create", &payload("X"), 0, "tx-1", 0).unwrap();
+        db.cal_outbox_claim_due("exchange-test", Database::now_ms()).unwrap();
+        db.cal_outbox_mark_failed("c1", "refused").unwrap();
+        assert!(db.cal_outbox_cancel("c1").unwrap());
+        assert!(db.cal_outbox_list().unwrap().iter().all(|r| r.0 != "c1"), "no longer listed");
     }
 
     #[tokio::test]
