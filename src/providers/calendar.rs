@@ -45,6 +45,11 @@ pub trait CalendarProvider: Send + Sync {
     async fn fetch_window(&self, from: NaiveDate, to: NaiveDate) -> Result<Vec<CalendarEvent>>;
 
     async fn is_token_valid(&self) -> Result<bool>;
+
+    /// Create an event (docs/PLAN-calendar-events.md section 4). Providers that cannot yet say so.
+    async fn create_event(&self, _draft: &crate::calendar_write::EventDraft) -> Result<crate::calendar_write::CreatedEvent> {
+        Err(OmarchyError::HttpError("creating events is not supported for this account type yet".to_string()))
+    }
 }
 
 /// Local midnight of `date` as an RFC 3339 instant with its UTC offset.
@@ -214,6 +219,38 @@ impl CalendarProvider for GraphCalendarProvider {
         Ok(all)
     }
 
+    async fn create_event(&self, draft: &crate::calendar_write::EventDraft) -> Result<crate::calendar_write::CreatedEvent> {
+        let body = draft.to_graph_json().map_err(|e| OmarchyError::HttpError(format!("Invalid event: {}", e)))?;
+        let token = self.get_token().await?;
+        let response = reqwest::Client::new()
+            .post("https://graph.microsoft.com/v1.0/me/events")
+            .header("Authorization", format!("Bearer {}", token))
+            .header("Content-Type", "application/json")
+            .header("Prefer", format!("outlook.timezone=\"{}\", outlook.body-content-type=\"text\"", self.time_zone))
+            .body(body.to_string())
+            .send()
+            .await
+            .map_err(|e| OmarchyError::HttpError(e.to_string()))?;
+        let status = response.status();
+        let text = response.text().await.map_err(|e| OmarchyError::HttpError(e.to_string()))?;
+        if !status.is_success() {
+            // Phase 0: the same transactionId with a different body is a 400 that names the event the
+            // first attempt made. That event exists, so a retried create is a success, not an error.
+            if let Some(id) = crate::calendar_write::existing_event_id(&text) {
+                return Ok(crate::calendar_write::CreatedEvent { id, ..Default::default() });
+            }
+            return Err(OmarchyError::HttpError(format!("Graph API error: {} — {}", status, text)));
+        }
+        let raw: serde_json::Value = serde_json::from_str(&text).map_err(|e| OmarchyError::HttpError(e.to_string()))?;
+        Ok(crate::calendar_write::CreatedEvent {
+            id: raw["id"].as_str().unwrap_or("").to_string(),
+            web_link: raw["webLink"].as_str().unwrap_or("").to_string(),
+            join_url: raw["onlineMeeting"]["joinUrl"].as_str().unwrap_or("").to_string(),
+            is_series: raw["type"].as_str() == Some("seriesMaster"),
+            raw,
+        })
+    }
+
     async fn is_token_valid(&self) -> Result<bool> {
         let mut auth = self.auth.lock().await;
         let token = auth
@@ -224,7 +261,7 @@ impl CalendarProvider for GraphCalendarProvider {
 }
 
 /// IANA time zone of this machine (from the /etc/localtime symlink), else UTC.
-pub(crate) fn local_time_zone() -> String {
+pub fn local_time_zone() -> String {
     std::fs::read_link("/etc/localtime")
         .ok()
         .and_then(|p| {

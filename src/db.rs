@@ -374,6 +374,33 @@ impl Database {
             [],
         )?;
 
+        // Calendar writes (docs/PLAN-calendar-events.md section 6): queued by the editor, sent by the
+        // account's calendar outbox worker once `due_at` (unix ms) passes, which is the undo window.
+        // op: create (update / delete / cancel come with phase 3). state: pending | sending | sent |
+        // failed | cancelled. `result_id` is the provider's id of the created event.
+        self.conn.execute(
+            "CREATE TABLE IF NOT EXISTS calendar_outbox (
+                id TEXT PRIMARY KEY,
+                account_id TEXT NOT NULL,
+                op TEXT NOT NULL DEFAULT 'create',
+                payload_json TEXT NOT NULL,
+                state TEXT NOT NULL DEFAULT 'pending',
+                attendees_count INTEGER NOT NULL DEFAULT 0,
+                attempts INTEGER NOT NULL DEFAULT 0,
+                last_error TEXT,
+                due_at INTEGER NOT NULL,
+                transaction_id TEXT NOT NULL,
+                result_id TEXT,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            )",
+            [],
+        )?;
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_calendar_outbox_due ON calendar_outbox(account_id, state, due_at)",
+            [],
+        )?;
+
         // Calendar events (separate from mail; created if not present)
         self.conn.execute(
             "CREATE TABLE IF NOT EXISTS calendar_events (
@@ -1065,6 +1092,134 @@ impl Database {
                  last_error = 'interrupted while sending: check your Sent folder before sending again'
              WHERE account_id = ?1 AND state = 'sending'",
             params![account_id, Self::now_ms()],
+        )?)
+    }
+
+    // ── calendar outbox (same claim / undo discipline as the mail outbox) ───────────────────────
+
+    pub fn cal_outbox_enqueue(&self, id: &str, account_id: &str, op: &str, payload_json: &str, attendees: usize, tx: &str, due_ms: i64) -> Result<()> {
+        let now = Self::now_ms();
+        self.conn.execute(
+            "INSERT INTO calendar_outbox (id, account_id, op, payload_json, state, attendees_count, attempts, due_at, transaction_id, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, 'pending', ?5, 0, ?6, ?7, ?8, ?8)",
+            params![id, account_id, op, payload_json, attendees as i64, due_ms, tx, now],
+        )?;
+        Ok(())
+    }
+
+    /// Claim every due operation of the account: `(id, op, payload, transaction_id, attempt)`.
+    pub fn cal_outbox_claim_due(&self, account_id: &str, now_ms: i64) -> Result<Vec<(String, String, String, String, i64)>> {
+        let due: Vec<(String, String, String, String)> = {
+            let mut stmt = self.conn.prepare(
+                "SELECT id, op, payload_json, transaction_id FROM calendar_outbox
+                 WHERE account_id = ?1 AND state = 'pending' AND due_at <= ?2 ORDER BY due_at, created_at",
+            )?;
+            let rows = stmt
+                .query_map(params![account_id, now_ms], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            rows
+        };
+        let mut claimed = Vec::new();
+        for (id, op, payload, tx) in due {
+            let n = self.conn.execute(
+                "UPDATE calendar_outbox SET state = 'sending', attempts = attempts + 1, updated_at = ?2 WHERE id = ?1 AND state = 'pending'",
+                params![id, now_ms],
+            )?;
+            if n == 1 {
+                let attempts: i64 = self.conn.query_row("SELECT attempts FROM calendar_outbox WHERE id = ?1", params![id], |r| r.get(0))?;
+                claimed.push((id, op, payload, tx, attempts));
+            }
+        }
+        Ok(claimed)
+    }
+
+    pub fn cal_outbox_next_due(&self, account_id: &str) -> Result<Option<i64>> {
+        match self.conn.query_row(
+            "SELECT MIN(due_at) FROM calendar_outbox WHERE account_id = ?1 AND state = 'pending'",
+            params![account_id],
+            |r| r.get::<_, Option<i64>>(0),
+        ) {
+            Ok(v) => Ok(v),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    pub fn cal_outbox_mark_sent(&self, id: &str, result_id: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE calendar_outbox SET state = 'sent', last_error = NULL, result_id = ?2, updated_at = ?3 WHERE id = ?1",
+            params![id, result_id, Self::now_ms()],
+        )?;
+        Ok(())
+    }
+
+    pub fn cal_outbox_mark_retry(&self, id: &str, error: &str, retry_at_ms: i64) -> Result<()> {
+        self.conn.execute(
+            "UPDATE calendar_outbox SET state = 'pending', last_error = ?2, due_at = ?3, updated_at = ?4 WHERE id = ?1",
+            params![id, error, retry_at_ms, Self::now_ms()],
+        )?;
+        Ok(())
+    }
+
+    pub fn cal_outbox_mark_failed(&self, id: &str, error: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE calendar_outbox SET state = 'failed', last_error = ?2, updated_at = ?3 WHERE id = ?1",
+            params![id, error, Self::now_ms()],
+        )?;
+        Ok(())
+    }
+
+    /// Undo: only possible while the operation is still `pending` (not yet claimed by the worker).
+    pub fn cal_outbox_cancel(&self, id: &str) -> Result<bool> {
+        let n = self.conn.execute(
+            "UPDATE calendar_outbox SET state = 'cancelled', updated_at = ?2 WHERE id = ?1 AND state = 'pending'",
+            params![id, Self::now_ms()],
+        )?;
+        Ok(n == 1)
+    }
+
+    /// Operations that are queued, running or failed (the editor shows them as pending marks):
+    /// `(id, account_id, op, state, attendees_count, last_error, due_at, payload_json, result_id)`.
+    #[allow(clippy::type_complexity)]
+    pub fn cal_outbox_list(&self) -> Result<Vec<(String, String, String, String, i64, Option<String>, i64, String, Option<String>)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, account_id, op, state, attendees_count, last_error, due_at, payload_json, result_id FROM calendar_outbox
+             WHERE state IN ('pending', 'sending', 'failed') OR (state = 'sent' AND updated_at > ?1) ORDER BY created_at",
+        )?;
+        let rows = stmt
+            .query_map(params![Self::now_ms() - 60_000], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    pub fn cal_outbox_status(&self, id: &str) -> Result<Option<(String, Option<String>, Option<String>)>> {
+        match self.conn.query_row(
+            "SELECT state, last_error, result_id FROM calendar_outbox WHERE id = ?1",
+            params![id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        ) {
+            Ok(v) => Ok(Some(v)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// After a crash an operation left `sending` is reported ("check your calendar"), never re-sent blindly.
+    pub fn cal_outbox_fail_interrupted(&self, account_id: &str) -> Result<usize> {
+        Ok(self.conn.execute(
+            "UPDATE calendar_outbox SET state = 'failed', updated_at = ?2,
+                 last_error = 'interrupted while saving: check your calendar before trying again'
+             WHERE account_id = ?1 AND state = 'sending'",
+            params![account_id, Self::now_ms()],
+        )?)
+    }
+
+    pub fn cal_outbox_prune(&self, max_age_ms: i64) -> Result<usize> {
+        Ok(self.conn.execute(
+            "DELETE FROM calendar_outbox WHERE state IN ('sent', 'cancelled') AND updated_at < ?1",
+            params![Self::now_ms() - max_age_ms],
         )?)
     }
 

@@ -14,6 +14,7 @@ use crate::contacts_daemon::{ContactsDaemon, ContactsDaemonConfig};
 use crate::db::Database;
 use crate::email_daemon::{DaemonConfig, EmailDaemon};
 use crate::outbox::OutboxWorker;
+use crate::calendar_outbox::CalendarOutboxWorker;
 use crate::providers::{
     CalendarProvider, ContactsProvider, EmailProvider, GmailProvider, GoogleCalendarProvider, GoogleContactsProvider,
     GraphCalendarProvider, GraphContactsProvider, GraphEmailProvider,
@@ -163,7 +164,19 @@ impl SyncScheduler {
             OutboxWorker::new(&id, db, provider).run().await;
         });
 
-        running.insert(account_id.to_string(), vec![mail_stop, cal_stop, contacts_stop, outbox_stop]);
+        // Calendar writes (new events) wait out the same undo window, then go out from here.
+        let cal_outbox_stop = Arc::new(Notify::new());
+        let (id, path, kind, settings_path) = (account_id.to_string(), self.db_str(), provider.clone(), self.settings_path.clone());
+        spawn_sync_thread(format!("caloutbox-{}", account_id), cal_outbox_stop.clone(), move || async move {
+            let provider = calendar_provider(&kind, &id);
+            let db = match Database::open_for_account(&path, &id) {
+                Ok(db) => Arc::new(db),
+                Err(e) => return error!("Calendar outbox {}: cannot open database: {}", id, e),
+            };
+            CalendarOutboxWorker::new(&id, db, provider, Some(settings_path)).run().await;
+        });
+
+        running.insert(account_id.to_string(), vec![mail_stop, cal_stop, contacts_stop, outbox_stop, cal_outbox_stop]);
         info!("Scheduler: started sync for account {}", account_id);
         true
     }

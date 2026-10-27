@@ -297,6 +297,135 @@ pub fn weekdays() -> Vec<Weekday> {
     vec![Weekday::Mon, Weekday::Tue, Weekday::Wed, Weekday::Thu, Weekday::Fri]
 }
 
+/// What the provider answers to a create: enough to show the event and open it.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct CreatedEvent {
+    pub id: String,
+    pub web_link: String,
+    pub join_url: String,
+    /// True when it is a series (the answer is the master; occurrences come from `calendarView`).
+    pub is_series: bool,
+    /// The full provider answer, so the caller can cache the event without another request.
+    pub raw: Value,
+}
+
+/// The event id Graph names in an `ErrorDuplicateTransactionId` answer (`@event.existingEventId`).
+pub fn existing_event_id(error_body: &str) -> Option<String> {
+    if !error_body.contains("ErrorDuplicateTransactionId") {
+        return None;
+    }
+    let key = "existingEventId";
+    let rest = &error_body[error_body.find(key)? + key.len()..];
+    let rest = &rest[rest.find(':')? + 1..];
+    let rest = &rest[rest.find('"')? + 1..];
+    let id = &rest[..rest.find('"')?];
+    if id.is_empty() { None } else { Some(id.to_string()) }
+}
+
+fn weekday_from_name(n: &str) -> Option<Weekday> {
+    Some(match n.to_ascii_lowercase().as_str() {
+        "monday" | "mon" => Weekday::Mon,
+        "tuesday" | "tue" => Weekday::Tue,
+        "wednesday" | "wed" => Weekday::Wed,
+        "thursday" | "thu" => Weekday::Thu,
+        "friday" | "fri" => Weekday::Fri,
+        "saturday" | "sat" => Weekday::Sat,
+        "sunday" | "sun" => Weekday::Sun,
+        _ => return None,
+    })
+}
+
+fn parse_local_dt(s: &str) -> Option<NaiveDateTime> {
+    let s = s.trim();
+    NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S")
+        .or_else(|_| NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M"))
+        .ok()
+}
+
+fn parse_recurrence(v: &Value) -> Result<Option<Recurrence>, String> {
+    if v.is_null() {
+        return Ok(None);
+    }
+    let p = &v["pattern"];
+    let interval = p["interval"].as_u64().unwrap_or(1) as u32;
+    let days = || -> Result<Vec<Weekday>, String> {
+        p["daysOfWeek"]
+            .as_array()
+            .map(|a| a.iter().filter_map(|d| d.as_str()).map(|d| weekday_from_name(d).ok_or(format!("unknown weekday: {d}"))).collect())
+            .unwrap_or_else(|| Ok(vec![]))
+    };
+    let pattern = match p["type"].as_str().unwrap_or("") {
+        "daily" => Pattern::Daily { interval },
+        "weekly" => Pattern::Weekly { interval, days: days()? },
+        "absoluteMonthly" => Pattern::AbsoluteMonthly { interval, day_of_month: p["dayOfMonth"].as_u64().unwrap_or(0) as u32 },
+        "relativeMonthly" => {
+            let d = days()?;
+            Pattern::RelativeMonthly {
+                interval,
+                day: *d.first().ok_or("a relative monthly repeat needs one weekday")?,
+                index: p["index"].as_str().unwrap_or("").to_string(),
+            }
+        }
+        other => return Err(format!("unsupported repeat type: {other}")),
+    };
+    let r = &v["range"];
+    let range = match r["type"].as_str().unwrap_or("") {
+        "noEnd" => Range::NoEnd,
+        "endDate" => Range::EndDate(
+            NaiveDate::parse_from_str(r["endDate"].as_str().unwrap_or(""), "%Y-%m-%d").map_err(|_| "the repeat end date is not a date".to_string())?,
+        ),
+        "numbered" => Range::Numbered(r["numberOfOccurrences"].as_u64().unwrap_or(0) as u32),
+        other => return Err(format!("unsupported repeat end: {other}")),
+    };
+    Ok(Some(Recurrence { pattern, range }))
+}
+
+impl EventDraft {
+    /// Build a draft from the JSON the event editor posts (`POST /calendar/event`):
+    /// `{subject, body, start, end, time_zone, all_day, location, attendees:[{name,email,role}],
+    ///   reminder_minutes, show_as, online_provider, recurrence:{pattern,range}}`.
+    /// Times are local wall-clock `YYYY-MM-DDTHH:MM[:SS]`. Does not validate; `validate()` does.
+    pub fn from_request(v: &Value, transaction_id: &str) -> Result<EventDraft, String> {
+        let start = parse_local_dt(v["start"].as_str().unwrap_or("")).ok_or("start is not a date and time")?;
+        let end = parse_local_dt(v["end"].as_str().unwrap_or("")).ok_or("end is not a date and time")?;
+        let attendees = v["attendees"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .map(|x| Attendee {
+                        name: x["name"].as_str().unwrap_or("").to_string(),
+                        email: x["email"].as_str().unwrap_or("").trim().to_string(),
+                        role: match x["role"].as_str() {
+                            Some("optional") => "optional".to_string(),
+                            Some("resource") => "resource".to_string(),
+                            _ => "required".to_string(),
+                        },
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let show_as = match v["show_as"].as_str() {
+            Some(s @ ("busy" | "free" | "tentative" | "oof" | "workingElsewhere")) => s.to_string(),
+            _ => "busy".to_string(),
+        };
+        Ok(EventDraft {
+            subject: v["subject"].as_str().unwrap_or("").to_string(),
+            body_text: v["body"].as_str().unwrap_or("").to_string(),
+            start,
+            end,
+            time_zone: v["time_zone"].as_str().filter(|z| !z.is_empty()).unwrap_or("UTC").to_string(),
+            is_all_day: v["all_day"].as_bool().unwrap_or(false),
+            location: v["location"].as_str().map(|s| s.to_string()),
+            attendees,
+            reminder_minutes: v["reminder_minutes"].as_u64().map(|m| m as u32),
+            show_as,
+            recurrence: parse_recurrence(&v["recurrence"])?,
+            transaction_id: transaction_id.to_string(),
+            online_provider: v["online_provider"].as_str().filter(|s| !s.is_empty()).map(|s| s.to_string()),
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -523,5 +652,45 @@ mod tests {
         });
         std::fs::write(format!("{dir}/single.json"), single.to_graph_json().unwrap().to_string()).unwrap();
         std::fs::write(format!("{dir}/weekly.json"), weekly.to_graph_json().unwrap().to_string()).unwrap();
+    }
+
+    #[test]
+    fn request_json_becomes_a_draft_and_a_graph_body() {
+        let req = json!({
+            "subject": "Quarterly planning", "body": "agenda", "start": "2026-10-27T10:00", "end": "2026-10-27T10:30:00",
+            "time_zone": "America/New_York", "all_day": false, "location": "Room 4B",
+            "attendees": [{"name": "Gary", "email": "gary@x.org", "role": "optional"}, {"email": "j@x.org"}],
+            "reminder_minutes": 15, "show_as": "busy", "online_provider": "teamsForBusiness",
+            "recurrence": {"pattern": {"type": "weekly", "interval": 1, "daysOfWeek": ["tuesday"]},
+                           "range": {"type": "endDate", "endDate": "2026-12-29"}}
+        });
+        let d = EventDraft::from_request(&req, "tx-9").unwrap();
+        assert_eq!(d.attendees[0].role, "optional");
+        assert_eq!(d.attendees[1].role, "required");
+        let j = d.to_graph_json().unwrap();
+        assert_eq!(j["recurrence"]["pattern"]["daysOfWeek"][0], "tuesday");
+        assert_eq!(j["recurrence"]["range"]["endDate"], "2026-12-29");
+        assert_eq!(j["isOnlineMeeting"], true);
+        assert_eq!(j["start"]["dateTime"], "2026-10-27T10:00:00");
+    }
+
+    #[test]
+    fn request_json_errors_are_refused_not_guessed() {
+        assert!(EventDraft::from_request(&json!({"start": "tomorrow", "end": "x"}), "t").is_err());
+        let wrong_day = json!({"start": "2026-10-27T10:00", "end": "2026-10-27T11:00",
+            "recurrence": {"pattern": {"type": "weekly", "daysOfWeek": ["thursday"]}, "range": {"type": "noEnd"}}});
+        let d = EventDraft::from_request(&wrong_day, "t").unwrap();
+        assert!(matches!(d.validate(), Err(DraftError::WeekdayNotInPattern(_))));
+        let bad_type = json!({"start": "2026-10-27T10:00", "end": "2026-10-27T11:00",
+            "recurrence": {"pattern": {"type": "yearly"}, "range": {"type": "noEnd"}}});
+        assert!(EventDraft::from_request(&bad_type, "t").is_err());
+    }
+
+    #[test]
+    fn duplicate_transaction_answer_names_the_existing_event() {
+        let body = r#"{"error":{"code":"ErrorDuplicateTransactionId","message":"x","@event.existingEventId":"AAMk123="}}"#;
+        assert_eq!(existing_event_id(body).as_deref(), Some("AAMk123="));
+        assert_eq!(existing_event_id(r#"{"error":{"code":"ErrorInvalidRequest"}}"#), None);
+        assert_eq!(existing_event_id(r#"{"error":{"code":"ErrorDuplicateTransactionId"}}"#), None);
     }
 }

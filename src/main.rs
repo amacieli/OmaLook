@@ -889,6 +889,103 @@ fn compose_outbox_response(config_dir: &PathBuf, first_line: &str) -> String {
     }
 }
 
+/// POST /calendar/event — queue a new calendar event from the editor (docs/PLAN-calendar-events.md
+/// sections 6 and 10). Body: the editor's JSON (`EventDraft::from_request`) plus `account_id` and an
+/// optional `transaction_id` (the editor makes one per draft, so a repeated press is one event).
+/// The write waits `[mail] send_delay_secs` (the undo window) and the account's calendar outbox worker
+/// is woken. `?dry_run=1` answers the exact Graph body and queues nothing. Answers
+/// `{ok, id, delay_secs, attendees}` or `{ok:false, error}`.
+fn calendar_event_response(config_dir: &PathBuf, stream: &mut std::net::TcpStream, initial: &[u8], first_line: &str) -> String {
+    use omalook::calendar_write::EventDraft;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let err = |m: &str| serde_json::json!({ "ok": false, "error": m }).to_string();
+
+    let raw = match read_post_body(stream, initial, 256 * 1024) {
+        Ok(b) => b,
+        Err(e) => return err(&e),
+    };
+    let mut req: serde_json::Value = match serde_json::from_str(&raw) {
+        Ok(v) => v,
+        Err(e) => return err(&format!("unreadable event: {}", e)),
+    };
+    let account_id = req["account_id"].as_str().unwrap_or("").to_string();
+    if account_id.is_empty() {
+        return err("no calendar account selected");
+    }
+    if req["time_zone"].as_str().unwrap_or("").is_empty() {
+        req["time_zone"] = serde_json::json!(omalook::providers::calendar::local_time_zone());
+    }
+    let now = Database::now_ms();
+    let tx = match req["transaction_id"].as_str().filter(|t| !t.is_empty()) {
+        Some(t) => t.to_string(),
+        None => format!("ol-{:x}-{:03x}", now, COUNTER.fetch_add(1, Ordering::Relaxed) & 0xfff),
+    };
+    let draft = match EventDraft::from_request(&req, &tx) {
+        Ok(d) => d,
+        Err(e) => return err(&e),
+    };
+    let graph_body = match draft.to_graph_json() {
+        Ok(b) => b,
+        Err(e) => return err(&e.to_string()),
+    };
+    if query_param(first_line, "dry_run").as_deref() == Some("1") {
+        return serde_json::json!({ "ok": true, "dry_run": true, "graph": graph_body }).to_string();
+    }
+    // A signed-out account has no worker, so the event would sit unsaved without anyone knowing.
+    if !SCHEDULER.get().map(|s| s.is_running(&account_id)).unwrap_or(false) {
+        return err("that account is not signed in, so it cannot save events");
+    }
+    let db = match Database::open(config_dir.join("messages.db").to_str().unwrap_or("messages.db")) {
+        Ok(db) => db,
+        Err(e) => return err(&format!("database: {}", e)),
+    };
+    let delay = omalook::settings::read_send_delay(&config_dir.join("settings.toml"));
+    let id = format!("co-{:x}-{:03x}", now, COUNTER.fetch_add(1, Ordering::Relaxed) & 0xfff);
+    let payload = req.to_string();
+    if let Err(e) = db.cal_outbox_enqueue(&id, &account_id, "create", &payload, draft.attendees.len(), &tx, now + delay as i64 * 1000) {
+        return err(&format!("could not queue the event: {}", e));
+    }
+    omalook::sync_state::request_cal_outbox_run();
+    info!("Calendar: queued {} ({}, {} attendee(s)), saves in {}s", id, account_id, draft.attendees.len(), delay);
+    serde_json::json!({ "ok": true, "id": id, "delay_secs": delay, "attendees": draft.attendees.len() }).to_string()
+}
+
+/// POST /calendar/event/undo?id=ID (take a queued write back while it is inside its undo window),
+/// GET /calendar/outbox (queued, running and failed writes, and the ones that finished in the last
+/// minute: the editor draws them as pending marks) and GET /calendar/event/status?id=ID.
+fn calendar_outbox_response(config_dir: &PathBuf, first_line: &str) -> String {
+    let err = |m: &str| serde_json::json!({ "ok": false, "error": m }).to_string();
+    let db = match Database::open(config_dir.join("messages.db").to_str().unwrap_or("messages.db")) {
+        Ok(db) => db,
+        Err(e) => return err(&format!("database: {}", e)),
+    };
+    if first_line.contains("GET /calendar/outbox") {
+        return match db.cal_outbox_list() {
+            Ok(rows) => serde_json::json!({ "ok": true, "items": rows.iter().map(|(id, account, op, state, attendees, error, due_at, payload, result)| {
+                let p: serde_json::Value = serde_json::from_str(payload).unwrap_or(serde_json::Value::Null);
+                serde_json::json!({
+                    "id": id, "account_id": account, "op": op, "state": state, "attendees": attendees,
+                    "error": error, "due_at": due_at, "result_id": result,
+                    "subject": p["subject"], "start": p["start"], "end": p["end"], "all_day": p["all_day"],
+                    "location": p["location"], "transaction_id": p["transaction_id"],
+                })
+            }).collect::<Vec<_>>() }).to_string(),
+            Err(e) => err(&e.to_string()),
+        };
+    }
+    let id = match query_param(first_line, "id") { Some(i) => i, None => return err("missing id") };
+    let undoing = first_line.contains("POST /calendar/event/undo");
+    let cancelled = if undoing {
+        match db.cal_outbox_cancel(&id) { Ok(c) => c, Err(e) => return err(&e.to_string()) }
+    } else { false };
+    match db.cal_outbox_status(&id) {
+        Ok(Some((state, error, result))) => serde_json::json!({ "ok": true, "cancelled": cancelled, "state": state, "error": error, "result_id": result }).to_string(),
+        Ok(None) => serde_json::json!({ "ok": false, "cancelled": false, "state": "unknown", "error": "no such event write" }).to_string(),
+        Err(e) => err(&e.to_string()),
+    }
+}
+
 /// JSON body for the /settings/senders endpoints (see the route comment).
 fn sender_prefs_response(config_dir: &PathBuf, first_line: &str) -> String {
     use omalook::db::SenderAdd;
@@ -1584,6 +1681,27 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                 }
                 if first_line.contains("POST /compose/cancel") || first_line.contains("GET /compose/status") {
                     let body = compose_outbox_response(config_dir, first_line);
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                        body.len(), body
+                    );
+                    let _ = stream.write_all(response.as_bytes());
+                    continue;
+                }
+
+                // ── POST /calendar/event (JSON body; ?dry_run=1) — queue a new event; POST /calendar/event/undo?id= —
+                // take it back inside its undo window; GET /calendar/outbox, GET /calendar/event/status?id= ──
+                if first_line.contains("POST /calendar/event/undo") || first_line.contains("GET /calendar/outbox") || first_line.contains("GET /calendar/event/status") {
+                    let body = calendar_outbox_response(config_dir, first_line);
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                        body.len(), body
+                    );
+                    let _ = stream.write_all(response.as_bytes());
+                    continue;
+                }
+                if first_line.contains("POST /calendar/event") {
+                    let body = calendar_event_response(config_dir, &mut stream, &buf[..n], first_line);
                     let response = format!(
                         "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                         body.len(), body

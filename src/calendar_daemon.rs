@@ -163,6 +163,13 @@ impl CalendarDaemon {
         self.sync_occurrences(today - Days::days(NEAR_BACK_DAYS), today + Days::days(NEAR_AHEAD_DAYS)).await
     }
 
+    /// Re-expand the whole configured window now (right after a new recurring series was created).
+    pub async fn refresh_full_window(&self) -> Result<usize> {
+        let today = chrono::Local::now().date_naive();
+        let years = self.window_years();
+        self.sync_full_window(today, years.0, years.1).await
+    }
+
     /// Re-expand the few days around `date` (an event answered far outside the near window
     /// would otherwise stay stale until the next full-window sync).
     pub async fn refresh_around(&self, date: NaiveDate) -> Result<usize> {

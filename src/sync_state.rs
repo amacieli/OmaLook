@@ -22,6 +22,8 @@ static MAIL_SYNC: tokio::sync::Notify = tokio::sync::Notify::const_new();
 static SMS_SERIAL: AtomicU64 = AtomicU64::new(0);
 static OUTBOX_SERIAL: AtomicU64 = AtomicU64::new(0);
 static OUTBOX: tokio::sync::Notify = tokio::sync::Notify::const_new();
+static CAL_OUTBOX_SERIAL: AtomicU64 = AtomicU64::new(0);
+static CAL_OUTBOX: tokio::sync::Notify = tokio::sync::Notify::const_new();
 static GATE: Mutex<Option<HashSet<String>>> = Mutex::new(None);
 static META_ACTIVE: Mutex<Option<HashSet<String>>> = Mutex::new(None);
 
@@ -127,6 +129,17 @@ pub fn request_outbox_run() {
 /// Resolves on the next `request_outbox_run()`.
 pub fn outbox_requested() -> tokio::sync::futures::Notified<'static> {
     OUTBOX.notified()
+}
+
+/// A calendar write was queued: wake the calendar outbox workers.
+pub fn request_cal_outbox_run() {
+    CAL_OUTBOX_SERIAL.fetch_add(1, Ordering::SeqCst);
+    CAL_OUTBOX.notify_waiters();
+}
+
+/// Resolves on the next `request_cal_outbox_run()`.
+pub fn cal_outbox_requested() -> tokio::sync::futures::Notified<'static> {
+    CAL_OUTBOX.notified()
 }
 
 #[cfg(test)]

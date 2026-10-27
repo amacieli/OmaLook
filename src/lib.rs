@@ -28,6 +28,7 @@ pub mod fs_browse;
 pub mod outbox;
 pub mod calendar_daemon;
 pub mod calendar_write;
+pub mod calendar_outbox;
 pub mod join_link;
 pub mod invites;
 pub mod attachments;
