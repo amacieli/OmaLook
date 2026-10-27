@@ -59,6 +59,11 @@ Item {
         default:         anchorDate = CU.addMonths(anchorDate, dir)
         }
     }
+    // The masthead and "today" marks follow the clock past midnight.
+    Timer {
+        interval: 60000; running: true; repeat: true
+        onTriggered: { var n = new Date(); if (!CU.sameDay(n, root.today)) root.today = n }
+    }
     function goToday() { today = new Date(); anchorDate = today; cursorMin = CU.defaultMin(today, today) }
 
     // ── keyboard (called by the key registry; see AppCommands.move/page/edge/activate) ──
@@ -208,9 +213,18 @@ Item {
             Layout.preferredWidth: root.sideWidth
             Layout.fillHeight: true
             PaneFrame { tint: Hues.magenta; focused: false; title: "Agenda" }
+            CalendarDateHero {
+                id: hero
+                anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
+                anchors.leftMargin: Style.spacing.xl; anchors.rightMargin: Style.spacing.lg
+                anchors.topMargin: Style.spacing.xl + Style.spacing.md
+                today: root.today
+                onClicked: root.goToday()
+            }
             CalendarSidebar {
-                anchors.fill: parent
-                anchors.margins: Style.spacing.lg; anchors.topMargin: Style.spacing.xl
+                anchors.left: parent.left; anchors.right: parent.right
+                anchors.top: hero.bottom; anchors.bottom: parent.bottom
+                anchors.margins: Style.spacing.lg; anchors.topMargin: Style.spacing.lg
                 anchorDate: root.anchorDate; today: root.today
                 events: root.sideEvents
                 accounts: root.sideAccounts
