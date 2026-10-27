@@ -5,6 +5,10 @@ IDs are stable (never reused). Status: `open` | `investigating` | `planned` | `i
 
 ## Issues
 
+### OL-032 — SMS view: always show images inline, not as attachments (open, not started)
+- **Wanted (user, 2026-10-27):** images in SMS/MMS messages should always be shown in the SMS view, not listed as attachments.
+- **To do (no code yet):** check how the SMS view currently decides between inline image and attachment (`docs/SMS.md`, `docs/PLAN-sms.md`, `src/sms_daemon.rs`, the SMS QML views); make images display inline by default; decide how non-image attachments are still shown; confirm behaviour with a real MMS that has images.
+
 ### OL-031 — Left pane of the calendar view: adjustable width, like the mail list pane (open, not started)
 - **Wanted (user, 2026-10-27):** the calendar's left pane should have an adjustable width, the same way the mail list pane's width can be adjusted today.
 - **To do (no code yet):** check how the mail list pane's width is adjusted (splitter handle, keys, and whether the width is saved in `view_state.json`); apply the same behaviour and persistence to the calendar's left pane; confirm the minimum and maximum widths and that the calendar detail pane still gets room.
