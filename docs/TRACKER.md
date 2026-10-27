@@ -5,6 +5,14 @@ IDs are stable (never reused). Status: `open` | `investigating` | `planned` | `i
 
 ## Issues
 
+### OL-031 — Left pane of the calendar view: adjustable width, like the mail list pane (open, not started)
+- **Wanted (user, 2026-10-27):** the calendar's left pane should have an adjustable width, the same way the mail list pane's width can be adjusted today.
+- **To do (no code yet):** check how the mail list pane's width is adjusted (splitter handle, keys, and whether the width is saved in `view_state.json`); apply the same behaviour and persistence to the calendar's left pane; confirm the minimum and maximum widths and that the calendar detail pane still gets room.
+
+### OL-030 — Main calendar view should look like Clockenstein (the calendar bundled with Linux Mint) (open, not started)
+- **Wanted (user, 2026-10-27):** make the main calendar view look like "Clockenstein", the calendar app bundled with Linux Mint.
+- **To do (design first, no code yet):** look at the reference app and list its layout (day, week and month views, header, grid lines, event blocks, time column, colours and spacing); map each item to the current `CalendarView` and the Omarchy theme rules in `AGENTS.md` (monospace font, theme colours, no hardcoded colours); agree the scope with the user before building (one view or all three); keep the keyboard behaviour in `docs/KEYS.md` working.
+
 ### OL-029 — Message preview cannot be scrolled up or down while link selection is on (open, not started)
 - **Seen:** 2026-10-26: with link selection switched on, the message preview does not scroll with the up/down keys (or the wheel, not checked). Scrolling works again once link selection is switched off.
 - **To do (investigate first, no code yet):** reproduce with a message that has several links; find which handler takes the up/down keys while link selection is active (the link-cursor handling versus the preview's scroll handling) and confirm whether it is the keyboard path, the mouse path, or both.
