@@ -397,7 +397,7 @@ mod calendar_settings_tests {
         let p = temp("legacy");
         let mut old = toml::to_string_pretty(&Settings::default()).unwrap();
         old = old.split("[calendar]").next().unwrap().to_string();       // simulate the old file
-        assert!(!old.contains("calendar"));
+        assert!(!old.contains("[calendar]"));
         fs::write(&p, old).unwrap();
         assert!(toml::from_str::<Settings>(&fs::read_to_string(&p).unwrap()).is_ok(), "must not break app start-up");
         assert_eq!(read_calendar_settings(&p).recurrence_years_ahead, 10);

@@ -1,24 +1,26 @@
 import QtQuick
 import QtQuick.Layouts
 import Quickshell
+import QtQuick.Controls
+import qs.Commons
+import qs.Commons as Commons
 import qs.Ui
+import "../common"
 import "CalendarUtil.js" as CU
 
 // CalendarView — header (view dropdown, navigation, title) above one of four
 // separate views: DayView, WorkWeekView, FullWeekView, MonthView.
 // Data source: http://127.0.0.1:27182/calendar/events?month=YYYY-MM
-Rectangle {
+Item {
     id: root
-    color: "#000000"
 
-    // ── theme props forwarded from AppShell ───────────────────────
-    property string monoFont:     "JetBrainsMono Nerd Font"
-    property color  accentColor:  "#7c6af7"
-    property color  successColor: "#51cf66"
-    property color  dangerColor:  "#ff6b6b"
-    property color  textColor:    "#e8e8e8"
-    property color  dimColor:     "#555555"
-    property color  veryDimColor: "#2a2a2a"
+    // ── theme: everything comes from the Omarchy theme (Commons.Color / Style / Hues); nothing here is a literal.
+    //    The sub-views read the same defaults, so none of this is passed down any more.
+    readonly property string monoFont:     Style.font.family
+    readonly property color  accentColor:  Commons.Color.accent
+    readonly property color  textColor:    Commons.Color.foreground
+    readonly property color  dimColor:     Qt.darker(Commons.Color.foreground, 1.4)
+    readonly property color  veryDimColor: Qt.rgba(Commons.Color.foreground.r, Commons.Color.foreground.g, Commons.Color.foreground.b, 0.3)
 
     // "day" | "workweek" | "week" | "month"  (AppShell keeps this across tab switches)
     property string mode: "month"
@@ -125,8 +127,8 @@ Rectangle {
     // ── data loading: fetch every month the visible range touches ─
     property var _cache: ({})       // "YYYY-MM" -> array
 
-    function _merge() {
-        var r = visibleRange(), months = CU.monthsBetween(r[0], r[1]), out = [], seen = {}
+    function _collect(months) {
+        var out = [], seen = {}
         for (var i = 0; i < months.length; i++) {
             var list = _cache[months[i]] || []
             for (var j = 0; j < list.length; j++) {
@@ -134,11 +136,21 @@ Rectangle {
                 if (!seen[k]) { seen[k] = true; out.push(list[j]) }
             }
         }
-        rawEvents = out
+        return out
     }
+    function _merge() {
+        var r = visibleRange()
+        rawEvents = _collect(CU.monthsBetween(r[0], r[1]))
+        sideRaw = _collect(CU.sideMonths(anchorDate, today))
+    }
+    // Events for the sidebar (mini-month dots, agenda): the mini month's grid plus today and the next 30 days.
+    property var sideRaw: []
+    readonly property var sideEvents: CU.normalise(CU.filterAccount(sideRaw, accountFilter))
+    readonly property var sideAccounts: CU.accountsOf(sideRaw)
 
     function loadEvents(force) {
         var r = visibleRange(), months = CU.monthsBetween(r[0], r[1])
+        CU.sideMonths(anchorDate, today).forEach(function(m) { if (months.indexOf(m) < 0) months.push(m) })
         var pending = 0, serial = ++_reqSerial
         if (force) _cache = ({})
         months.forEach(function(m) {
@@ -169,126 +181,132 @@ Rectangle {
     onSelectedEventChanged: if (!selectedEvent) detailOpen = false
     Component.onCompleted: loadEvents(true)
 
+    // ── sidebar width (OL-031): characters relative to the default, kept as [ui] calendar_pane_offset ──
+    TextMetrics { id: charMetrics; text: "0"; font.family: Style.font.family; font.pixelSize: Style.font.body }
+    readonly property real charWidth: Math.max(1, charMetrics.advanceWidth)
+    readonly property real defaultSideWidth: Style.space(250)
+    readonly property real minSideWidth: Style.space(160)
+    readonly property real minMainWidth: Style.space(420)
+    property int paneOffset: 0
+    signal paneOffsetRequested(int offset)
+    readonly property int paneMinOffset: Math.ceil((minSideWidth - defaultSideWidth) / charWidth)
+    readonly property int paneMaxOffset: Math.max(0, Math.floor((width - minMainWidth - sideRow.spacing - defaultSideWidth) / charWidth))
+    function resizePane(dCols) {
+        var n = Math.max(paneMinOffset, Math.min(paneMaxOffset, paneOffset + dCols))
+        if (n !== paneOffset) paneOffsetRequested(n)
+    }
+    readonly property real sideWidth: Math.max(minSideWidth, Math.min(defaultSideWidth + paneOffset * charWidth, width - minMainWidth - sideRow.spacing))
+
     // ── layout ────────────────────────────────────────────────────
-    ColumnLayout {
+    RowLayout {
+        id: sideRow
         anchors.fill: parent
-        spacing: 0
+        spacing: Style.spacing.sm
 
-        // header bar
-        Rectangle {
-            Layout.fillWidth: true
-            Layout.preferredHeight: 44
-            color: "#000000"
-            Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: "#111111" }
-
-            RowLayout {
+        // left pane: mini month, calendars, agenda
+        Item {
+            Layout.preferredWidth: root.sideWidth
+            Layout.fillHeight: true
+            PaneFrame { tint: Hues.magenta; focused: false; title: "Agenda" }
+            CalendarSidebar {
                 anchors.fill: parent
-                anchors.leftMargin: 12
-                anchors.rightMargin: 12
-                spacing: 12
+                anchors.margins: Style.spacing.lg; anchors.topMargin: Style.spacing.xl
+                anchorDate: root.anchorDate; today: root.today
+                events: root.sideEvents
+                accounts: root.sideAccounts
+                accountFilter: root.accountFilter
+                onDayPicked: function(d) { root.anchorDate = d }
+                onMonthStep: function(dir) { root.anchorDate = CU.addMonths(root.anchorDate, dir) }
+                onAccountPicked: function(email) { root.accountFilter = email }
+            }
+        }
 
-                // view chooser
-                Dropdown {
-                    id: viewDropdown
-                    Layout.preferredWidth: 150
-                    Layout.alignment: Qt.AlignVCenter
-                    showLabel: false
-                    options: root.viewOptions
-                    value: root.mode
-                    onChanged: function(v) { root.mode = v }
-                }
+        // main pane: header and the grid
+        Item {
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            PaneFrame { tint: Hues.blue; focused: true; title: root.title }
 
-                Text {
-                    text: "‹"
-                    font.family: root.monoFont; font.pixelSize: 20
-                    color: prevMouse.containsMouse ? root.accentColor : root.dimColor
-                    MouseArea { id: prevMouse; anchors.fill: parent; anchors.margins: -6
-                        hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.step(-1) }
-                }
-                Text {
-                    text: "›"
-                    font.family: root.monoFont; font.pixelSize: 20
-                    color: nextMouse.containsMouse ? root.accentColor : root.dimColor
-                    MouseArea { id: nextMouse; anchors.fill: parent; anchors.margins: -6
-                        hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.step(1) }
-                }
-                Text {
-                    text: "today"
-                    font.family: root.monoFont; font.pixelSize: 11
-                    color: todayMouse.containsMouse ? root.accentColor : root.dimColor
-                    MouseArea { id: todayMouse; anchors.fill: parent; anchors.margins: -6
-                        hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.goToday() }
-                }
+            ColumnLayout {
+                anchors.fill: parent
+                anchors.margins: Style.spacing.sm; anchors.topMargin: Style.spacing.xl
+                spacing: 0
 
-                Text {
-                    text: root.title
-                    font.family: root.monoFont; font.pixelSize: 13; font.bold: true
-                    font.letterSpacing: 1
-                    color: root.accentColor
+                // header: ‹ Today › · Day / Work week / Week / Month · account · busy
+                RowLayout {
                     Layout.fillWidth: true
-                    elide: Text.ElideRight
+                    Layout.margins: Style.spacing.lg
+                    spacing: Style.spacing.md
+
+                    PanelActionButton { iconText: "\uf053"; tooltipText: "Previous ( [ )"; onClicked: root.step(-1) }
+                    Button { text: "Today"; tooltipText: "Go to today ( t )"; onClicked: root.goToday() }
+                    PanelActionButton { iconText: "\uf054"; tooltipText: "Next ( ] )"; onClicked: root.step(1) }
+
+                    Item { Layout.fillWidth: true }
+
+                    UiText {
+                        visible: root.accounts.length > 1
+                        text: (root.accountFilter === "" ? "all accounts" : root.accountFilter) + "  (A)"
+                        dim: root.accountFilter === ""
+                        foreground: root.accountFilter === "" ? Commons.Color.foreground : Commons.Color.accent
+                        font.pixelSize: Style.font.caption
+                    }
+                    UiText {
+                        visible: root.loading
+                        text: "\uf021"
+                        dim: true
+                        RotationAnimation on rotation {
+                            from: 0; to: 360; duration: 1200
+                            loops: Animation.Infinite; running: root.loading
+                        }
+                    }
+                    ButtonGroup {
+                        options: root.viewOptions
+                        value: root.mode
+                        focusable: false
+                        onChanged: function(v) { root.mode = v }
+                    }
                 }
 
-                Text {
-                    visible: root.accounts.length > 1
-                    text: (root.accountFilter === "" ? "all accounts" : root.accountFilter) + "  (A)"
-                    font.family: root.monoFont; font.pixelSize: 10
-                    color: root.accountFilter === "" ? root.dimColor : root.accentColor
-                }
+                PanelSeparator { Layout.fillWidth: true }
 
-                Text {
-                    visible: root.loading
-                    text: "⟳"
-                    font.family: root.monoFont; font.pixelSize: 12
-                    color: root.dimColor
-                    RotationAnimation on rotation {
-                        from: 0; to: 360; duration: 1200
-                        loops: Animation.Infinite; running: root.loading
+                RowLayout {
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    spacing: 0
+
+                    // active view
+                    Loader {
+                        id: viewLoader
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        sourceComponent: {
+                            switch (root.mode) {
+                            case "day":      return dayComponent
+                            case "workweek": return workWeekComponent
+                            case "week":     return fullWeekComponent
+                            default:         return monthComponent
+                            }
+                        }
+                    }
+
+                    CalendarDetail {
+                        visible: root.detailOpen
+                        Layout.preferredWidth: Math.min(Style.space(360), root.width * 0.3)
+                        Layout.fillHeight: true
+                        event: root.selectedEvent
+                        accounts: root.accounts
                     }
                 }
             }
         }
-
-        RowLayout {
-          Layout.fillWidth: true
-          Layout.fillHeight: true
-          spacing: 0
-
-        // active view
-        Loader {
-            id: viewLoader
-            Layout.fillWidth: true
-            Layout.fillHeight: true
-            sourceComponent: {
-                switch (root.mode) {
-                case "day":      return dayComponent
-                case "workweek": return workWeekComponent
-                case "week":     return fullWeekComponent
-                default:         return monthComponent
-                }
-            }
-        }
-
-        CalendarDetail {
-            visible: root.detailOpen
-            Layout.preferredWidth: Math.min(360, root.width * 0.4)
-            Layout.fillHeight: true
-            event: root.selectedEvent
-            accounts: root.accounts
-            monoFont: root.monoFont; accentColor: root.accentColor
-            textColor: root.textColor; dimColor: root.dimColor
-        }
-        }
     }
-
 
     Component {
         id: dayComponent
         DayView {
             cursorMin: root.cursorMin; selectedId: root.selectedId; accounts: root.accounts;
             anchorDate: root.anchorDate; events: root.events; today: root.today
-            monoFont: root.monoFont; accentColor: root.accentColor; textColor: root.textColor
-            dimColor: root.dimColor; veryDimColor: root.veryDimColor
             onDayClicked: function(d) { root.anchorDate = d }
         }
     }
@@ -297,8 +315,6 @@ Rectangle {
         WorkWeekView {
             cursorMin: root.cursorMin; selectedId: root.selectedId; accounts: root.accounts;
             anchorDate: root.anchorDate; events: root.events; today: root.today
-            monoFont: root.monoFont; accentColor: root.accentColor; textColor: root.textColor
-            dimColor: root.dimColor; veryDimColor: root.veryDimColor
             onDayClicked: function(d) { root.anchorDate = d }
             onDayActivated: function(d) { root.openDay(d) }
         }
@@ -308,8 +324,6 @@ Rectangle {
         FullWeekView {
             cursorMin: root.cursorMin; selectedId: root.selectedId; accounts: root.accounts;
             anchorDate: root.anchorDate; events: root.events; today: root.today
-            monoFont: root.monoFont; accentColor: root.accentColor; textColor: root.textColor
-            dimColor: root.dimColor; veryDimColor: root.veryDimColor
             onDayClicked: function(d) { root.anchorDate = d }
             onDayActivated: function(d) { root.openDay(d) }
         }
@@ -319,8 +333,6 @@ Rectangle {
         MonthView {
             selectedId: root.selectedId; accounts: root.accounts;
             anchorDate: root.anchorDate; events: root.events; today: root.today
-            monoFont: root.monoFont; accentColor: root.accentColor; textColor: root.textColor
-            dimColor: root.dimColor; veryDimColor: root.veryDimColor
             onDayClicked: function(d) { root.anchorDate = d }
             onDayActivated: function(d) { root.openDay(d) }
         }

@@ -57,6 +57,14 @@ QtObject {
   readonly property color muted:            pick("muted",             Commons.Color.muted)
   readonly property color selection:        pick("selection",         Qt.rgba(Commons.Color.foreground.r, Commons.Color.foreground.g, Commons.Color.foreground.b, 0.12))
 
+  // One colour per signed-in account, in account order (calendar dots, bars and agenda marks).
+  readonly property var palette: [blue, magenta, cyan, green, orange, yellow]
+  function accountColor(accounts, email) {
+    for (var i = 0; i < accounts.length; i++)
+      if (accounts[i].email === email) return palette[i % palette.length]
+    return palette[0]
+  }
+
   // Green -> yellow -> red, as btop's meters: 0..1 in, colour out.
   function ramp(t) {
     t = Math.max(0, Math.min(1, t))

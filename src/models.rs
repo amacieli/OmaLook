@@ -516,6 +516,10 @@ pub struct UiSettings {
     /// Changed with Ctrl-Left / Ctrl-Right in the mail view; the reading pane takes the rest.
     #[serde(default)]
     pub list_width_offset: i32,
+    /// Calendar sidebar (mini month, calendars, agenda) width, in characters, relative to its
+    /// default. Changed with Ctrl-Left / Ctrl-Right in the calendar view (OL-031).
+    #[serde(default)]
+    pub calendar_pane_offset: i32,
 }
 
 fn default_message_rendering() -> String { "system_sender".to_string() }
@@ -563,6 +567,7 @@ impl Default for Settings {
                 message_rendering: default_message_rendering(),
                 folder_pane: false,
                 list_width_offset: 0,
+                calendar_pane_offset: 0,
             },
             sync: SyncSettings {
                 poll_interval_secs: 120, // 2 minute polling interval for email daemon

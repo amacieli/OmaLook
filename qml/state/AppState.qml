@@ -1219,6 +1219,11 @@ Item {
           root.listWidthOffset = Math.round(s.list_width_offset)
           root._applyingSettings = false
         }
+        if (typeof s.calendar_pane_offset === "number") {
+          root._applyingSettings = true
+          root.calendarPaneOffset = Math.round(s.calendar_pane_offset)
+          root._applyingSettings = false
+        }
         if (typeof s.sidebar_expanded === "boolean") {
           root._applyingSettings = true
           root.sidebarExpanded = s.sidebar_expanded
@@ -1345,6 +1350,13 @@ Item {
     if (!canResizeList) return
     var n = Math.max(listWidthMinOffset, Math.min(listWidthMaxOffset, listWidthOffset + dCols))
     if (n !== listWidthOffset) listWidthOffset = n
+  }
+
+  // Calendar sidebar width (OL-031), same idea: characters relative to its default
+  // (`ui.calendar_pane_offset` in settings.toml). CalendarView clamps it to what fits and asks for the change.
+  property int calendarPaneOffset: 0
+  onCalendarPaneOffsetChanged: {
+    if (!_applyingSettings) request("POST", "/settings/calendar_pane_offset", null, String(calendarPaneOffset))
   }
 
   // "Inbox" or, with several accounts, "Inbox · adam@example.com".

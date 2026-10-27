@@ -186,7 +186,7 @@ FocusScope {
     }
 
     Component { id: mailComponent;     MailView { app: appState } }
-    Component { id: calendarComponent; CalendarView { mode: appState.calendarMode; dataRev: appState.calendarRev; onModeChanged: appState.calendarMode = mode; monoFont: Style.font.family; accentColor: Commons.Color.accent; successColor: Commons.Color.accent; dangerColor: Commons.Color.urgent; textColor: Commons.Color.foreground } }
+    Component { id: calendarComponent; CalendarView { mode: appState.calendarMode; dataRev: appState.calendarRev; onModeChanged: appState.calendarMode = mode; paneOffset: appState.calendarPaneOffset; onPaneOffsetRequested: function(n) { appState.calendarPaneOffset = n } } }
     Component { id: peopleComponent;   PeopleView   { viewMode: appState.peopleView; onViewModeChanged: appState.peopleView = viewMode; sortKey: appState.peopleSort; onSortKeyChanged: appState.peopleSort = sortKey; monoFont: Style.font.family; accentColor: Commons.Color.accent; successColor: Commons.Color.accent; dangerColor: Commons.Color.urgent; textColor: Commons.Color.foreground } }
     Component { id: tasksComponent;    TasksView    { filter: appState.tasksFilter; onFilterChanged: appState.tasksFilter = filter; monoFont: Style.font.family; accentColor: Commons.Color.accent; successColor: Commons.Color.accent; dangerColor: Commons.Color.urgent; textColor: Commons.Color.foreground } }
     Component { id: smsComponent;      SmsView { app: appState } }

@@ -215,12 +215,6 @@ function filterAccount(raw, email) {
     return (raw || []).filter(function(e) { return (e.account_email || e.account_id) === email })
 }
 
-var ACCOUNT_COLORS = ["#7c6af7", "#51cf66", "#ffa94d", "#4dabf7", "#f06595", "#ffd43b"]
-function accountColor(accounts, email) {
-    for (var i = 0; i < accounts.length; i++)
-        if (accounts[i].email === email) return ACCOUNT_COLORS[i % ACCOUNT_COLORS.length]
-    return ACCOUNT_COLORS[0]
-}
 
 // The https join link of a raw backend event ("" if none). Anything but https is refused.
 function joinUrl(raw) {
@@ -234,3 +228,36 @@ function joinLabel(raw) { return JOIN_LABELS[raw && raw.join_provider] || "Link"
 var RESPONSE_LABELS = { organizer: "Organizer", accepted: "Accepted", tentativelyAccepted: "Tentative", declined: "Declined",
                         notResponded: "Not responded", none: "Not responded" }
 function responseLabel(r) { return RESPONSE_LABELS[r] || "" }
+
+// Agenda rows for the calendar sidebar, from `now` on: a flat list of
+// { kind: "head", text, date } and { kind: "ev", ev, date, time } (Today / Tomorrow / dated heads).
+// Timed events that have already ended today are left out; multi-day events appear on their first day
+// (or today, if they started earlier). At most `limit` events over the next `days` days.
+function agenda(norm, now, days, limit) {
+    var rows = [], count = 0, today = startOfDay(now), nowMin = now.getHours() * 60 + now.getMinutes()
+    for (var i = 0; i < days && count < limit; i++) {
+        var d = addDays(today, i)
+        var list = onDay(norm, d).filter(function(e) {
+            if (i === 0) return e.allDay || e.endMin > nowMin
+            return sameDay(e.startDate, d)
+        })
+        if (list.length === 0) continue
+        rows.push({ kind: "head", date: d,
+            text: i === 0 ? "Today" : i === 1 ? "Tomorrow"
+                : DAYS_SHORT[isoIndex(d)] + " " + d.getDate() + " " + MONTHS[d.getMonth()].substring(0, 3) })
+        for (var j = 0; j < list.length && count < limit; j++, count++)
+            rows.push({ kind: "ev", ev: list[j], date: d, time: list[j].allDay ? "All day" : timeLabel(list[j].startMin) })
+    }
+    return rows
+}
+
+// Months ("YYYY-MM") the sidebar needs besides the visible ones: the mini month's 6-week grid and
+// this month plus next (for the agenda).
+function sideMonths(anchor, now) {
+    var g = monthGridStart(anchor)
+    var a = monthsBetween(g, addDays(g, 41))
+    var n = monthsBetween(startOfDay(now), addDays(startOfDay(now), 31))
+    var out = a.slice()
+    n.forEach(function(m) { if (out.indexOf(m) < 0) out.push(m) })
+    return out
+}

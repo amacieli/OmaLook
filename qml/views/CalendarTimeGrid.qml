@@ -1,4 +1,7 @@
 import QtQuick
+import qs.Commons
+import qs.Commons as Commons
+import "../common"
 import QtQuick.Layouts
 import "CalendarUtil.js" as CU
 
@@ -18,7 +21,7 @@ Item {
     property var    accounts: []        // [{id,email}]; the bar of each event takes its account colour when > 1
 
     function barColor(ev) {
-        return accounts.length > 1 ? CU.accountColor(accounts, ev.raw.account_email) : accentColor
+        return accounts.length > 1 ? Hues.accountColor(accounts, ev.raw.account_email) : accentColor
     }
     function isSel(ev) { return selectedId !== "" && ev.raw.id === selectedId }
     onCursorMinChanged: ensureCursorVisible()
@@ -31,12 +34,12 @@ Item {
         else if (y + h > flick.contentY + flick.height) flick.contentY = Math.min(y + h - flick.height, Math.max(0, flick.contentHeight - flick.height))
     }
 
-    property string monoFont:     "JetBrainsMono Nerd Font"
-    property color  accentColor:  "#7c6af7"
-    property color  textColor:    "#e8e8e8"
-    property color  dimColor:     "#555555"
-    property color  veryDimColor: "#2a2a2a"
-    property color  lineColor:    "#141414"
+    property string monoFont:     Style.font.family
+    property color  accentColor:  Commons.Color.accent
+    property color  textColor:    Commons.Color.foreground
+    property color  dimColor:     Qt.darker(Commons.Color.foreground, 1.4)
+    property color  veryDimColor: Qt.rgba(Commons.Color.foreground.r, Commons.Color.foreground.g, Commons.Color.foreground.b, 0.3)
+    property color  lineColor:    Qt.rgba(Commons.Color.foreground.r, Commons.Color.foreground.g, Commons.Color.foreground.b, 0.12)
 
     property int hourHeight:  48
     property int gutterWidth: 60
@@ -93,7 +96,7 @@ Item {
                         anchors.topMargin: 5
                         text: hcell.day.getDate()
                         font.family: root.monoFont
-                        font.pixelSize: 20
+                        font.pixelSize: Style.font.title
                         font.bold: hcell.isToday
                         color: hcell.isToday ? root.accentColor
                              : CU.isWeekend(hcell.day) ? root.dimColor : root.textColor
@@ -104,7 +107,7 @@ Item {
                         anchors.baseline: num.baseline
                         text: CU.DAYS_SHORT[CU.isoIndex(hcell.day)].toUpperCase()
                         font.family: root.monoFont
-                        font.pixelSize: 10
+                        font.pixelSize: Style.font.caption
                         font.letterSpacing: 1
                         color: root.dimColor
                     }
@@ -144,12 +147,12 @@ Item {
                     spacing: 4
                     Text {
                         text: root.allDayExpanded ? "\u25be" : "\u25b8"
-                        font.family: root.monoFont; font.pixelSize: 10
+                        font.family: root.monoFont; font.pixelSize: Style.font.caption
                         color: allDayToggle.containsMouse ? root.accentColor : root.dimColor
                     }
                     Text {
                         text: "all day"
-                        font.family: root.monoFont; font.pixelSize: 9
+                        font.family: root.monoFont; font.pixelSize: Style.font.caption
                         color: allDayToggle.containsMouse ? root.accentColor : root.dimColor
                     }
                 }
@@ -195,7 +198,7 @@ Item {
                                     verticalAlignment: Text.AlignVCenter
                                     text: adCell.list.length > 0 ? adCell.list[0].title : ""
                                     elide: Text.ElideRight
-                                    font.family: root.monoFont; font.pixelSize: 10
+                                    font.family: root.monoFont; font.pixelSize: Style.font.caption
                                     color: root.textColor
                                 }
                             }
@@ -205,7 +208,7 @@ Item {
                                 height: 18
                                 verticalAlignment: Text.AlignVCenter
                                 text: "+" + (adCell.list.length - 1)
-                                font.family: root.monoFont; font.pixelSize: 10; font.bold: true
+                                font.family: root.monoFont; font.pixelSize: Style.font.caption; font.bold: true
                                 color: root.accentColor
                             }
                         }
@@ -235,7 +238,7 @@ Item {
                                             verticalAlignment: Text.AlignVCenter
                                             text: modelData.title
                                             elide: Text.ElideRight
-                                            font.family: root.monoFont; font.pixelSize: 10
+                                            font.family: root.monoFont; font.pixelSize: Style.font.caption
                                             color: root.textColor
                                         }
                                     }
@@ -279,7 +282,7 @@ Item {
                         horizontalAlignment: Text.AlignRight
                         y: index === 0 ? 0 : -height / 2
                         text: index === 0 ? "" : CU.hourLabel(index)
-                        font.family: root.monoFont; font.pixelSize: 9
+                        font.family: root.monoFont; font.pixelSize: Style.font.caption
                         color: root.dimColor
                     }
                     Rectangle {
@@ -344,7 +347,7 @@ Item {
                                         width: parent.width
                                         text: ev.title
                                         elide: Text.ElideRight
-                                        font.family: root.monoFont; font.pixelSize: 10; font.bold: true
+                                        font.family: root.monoFont; font.pixelSize: Style.font.caption; font.bold: true
                                         color: root.textColor
                                     }
                                     Text {
@@ -353,7 +356,7 @@ Item {
                                         text: CU.timeLabel(ev.startMin) + "–" + CU.timeLabel(ev.endMin)
                                               + (ev.location ? "  " + ev.location : "")
                                         elide: Text.ElideRight
-                                        font.family: root.monoFont; font.pixelSize: 9
+                                        font.family: root.monoFont; font.pixelSize: Style.font.caption
                                         color: root.dimColor
                                     }
                                 }
@@ -365,7 +368,7 @@ Item {
                             visible: col.isToday
                             y: (root.today.getHours() * 60 + root.today.getMinutes()) / 60 * root.hourHeight
                             width: parent.width; height: 1
-                            color: "#ff6b6b"
+                            color: Commons.Color.urgent
                         }
                     }
                 }

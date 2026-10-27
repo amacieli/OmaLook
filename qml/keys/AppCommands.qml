@@ -419,6 +419,8 @@ Item {
     { id: "cal.week",  title: "Week view",       scope: "calendar/list", keys: ["w"], run: function() { content.mode = "week" } },
     { id: "cal.month", title: "Month view",      scope: "calendar/list", keys: ["m"], run: function() { content.mode = "month" } },
     { id: "cal.refresh", title: "Refresh events", scope: "calendar/list", keys: ["r"], run: function() { content.loadEvents(true) } },
+    { id: "cal.pane.widen",  title: "Widen the calendar sidebar",  scope: "calendar/list", keys: ["C-Right", "C-w >"], run: function(n) { content.resizePane(n || 1) } },
+    { id: "cal.pane.narrow", title: "Narrow the calendar sidebar", scope: "calendar/list", keys: ["C-Left", "C-w <"],  run: function(n) { content.resizePane(-(n || 1)) } },
     { id: "cal.new",   title: "New event",       scope: "calendar/list", keys: ["c"], run: soon("new event") },
 
     // people

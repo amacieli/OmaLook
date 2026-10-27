@@ -33,6 +33,11 @@ and will do nothing when the reading pane is switched off (`showReaderPane`). Th
 `[ui] list_width_offset` in `settings.toml`: characters relative to the default list width (0 = default, negative = narrower;
 you can edit it by hand). Both panes keep a minimum width, so the offset stops growing at those limits.
 
+## Calendar sidebar width
+
+In the calendar view `Ctrl-Right` / `Ctrl-Left` (or `Ctrl-w >` / `Ctrl-w <`, with a count; commands `cal.pane.widen`, `cal.pane.narrow`) move the divider between the sidebar (mini month, calendars, agenda) and the
+calendar one character at a time. Kept across launches as `[ui] calendar_pane_offset` in `settings.toml` (characters relative to the default; 0 = default). The sidebar and the calendar keep a minimum width.
+
 ## Links in a message (reading pane)
 
 In the reading pane, in both the system-font and the HTML view (needs the pane focused, and at least one link):

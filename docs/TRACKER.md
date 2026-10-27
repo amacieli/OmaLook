@@ -9,11 +9,17 @@ IDs are stable (never reused). Status: `open` | `investigating` | `planned` | `i
 - **Wanted (user, 2026-10-27):** images in SMS/MMS messages should always be shown in the SMS view, not listed as attachments.
 - **To do (no code yet):** check how the SMS view currently decides between inline image and attachment (`docs/SMS.md`, `docs/PLAN-sms.md`, `src/sms_daemon.rs`, the SMS QML views); make images display inline by default; decide how non-image attachments are still shown; confirm behaviour with a real MMS that has images.
 
-### OL-031 — Left pane of the calendar view: adjustable width, like the mail list pane (open, not started)
+### OL-031 — Left pane of the calendar view: adjustable width, like the mail list pane (done in tree 2026-10-27, needs `./build.sh --live`)
+- **Done:** with OL-030 the calendar has a left pane (mini month, calendars, agenda). `Ctrl-Right`/`Ctrl-Left` (`Ctrl-w >`/`<`) resize it by characters exactly like the mail list; stored as `[ui] calendar_pane_offset` in `settings.toml` (same mechanism as `list_width_offset`: `POST /settings/calendar_pane_offset`, field in `GET /settings/ui`); clamped so the calendar keeps 420 px-equivalents. Checked on a scratch instance (port 27999): width changed on the keys, the POST wrote the file, the value came back from `GET /settings/ui`. Gotcha: `/settings/calendar` matches by prefix, so the new route has to sit above it in `main.rs`.
+- **Original note:**
 - **Wanted (user, 2026-10-27):** the calendar's left pane should have an adjustable width, the same way the mail list pane's width can be adjusted today.
 - **To do (no code yet):** check how the mail list pane's width is adjusted (splitter handle, keys, and whether the width is saved in `view_state.json`); apply the same behaviour and persistence to the calendar's left pane; confirm the minimum and maximum widths and that the calendar detail pane still gets room.
 
-### OL-030 — Main calendar view should look like Clockenstein (the calendar bundled with Linux Mint) (open, not started)
+### OL-030 — Main calendar view should look like Clockenstein (the calendar bundled with Linux Mint) (done in tree 2026-10-27, needs `./build.sh --live`)
+- **Done (option B, agreed with the user):** all four views restyled, plus the sidebar. Header: ‹ Today › and a Day / Work week / Week / Month `ButtonGroup`; month grid: month name on the 1st, today's cell tinted, accent outline on the cursor cell, all-day events as filled bars, timed ones as dot + title, "+N more"; left pane (`CalendarSidebar.qml`): mini month (cursor week shaded, today disc, event dots, clickable), calendars list (click filters the account), agenda (Today / Tomorrow / dated). Panes use `PaneFrame` like mail.
+- **Colours are no longer hard-coded** in the calendar views: they come from `Commons.Color`, `Hues` and `Style.font.*` (`CalendarView`, `MonthView`, `CalendarTimeGrid`, `CalendarDetail`; `AppShell` no longer passes colour props; account colours are `Hues.accountColor()`, `Hues.palette`). `PeopleView` and `TasksView` still have the old hard-coded defaults.
+- **Checked** on a scratch instance with seeded events for two accounts (month and week views, sidebar, resize). Not checked by eye: the event detail pane and the day / work-week views after the recolour. `node tests/calendar.test.js` ok; `cargo test --lib`: 329 passed.
+- **Original note:**
 - **Wanted (user, 2026-10-27):** make the main calendar view look like "Clockenstein", the calendar app bundled with Linux Mint.
 - **To do (design first, no code yet):** look at the reference app and list its layout (day, week and month views, header, grid lines, event blocks, time column, colours and spacing); map each item to the current `CalendarView` and the Omarchy theme rules in `AGENTS.md` (monospace font, theme colours, no hardcoded colours); agree the scope with the user before building (one view or all three); keep the keyboard behaviour in `docs/KEYS.md` working.
 

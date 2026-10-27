@@ -1,6 +1,6 @@
 const fs=require('fs');
 const src=fs.readFileSync('qml/views/CalendarUtil.js','utf8').replace('.pragma library','');
-const CU=new Function(src+';return {moveCursor,moveSlots,defaultMin,eventsAtCursor,accountsOf,nextAccount,filterAccount,accountColor,joinUrl,joinLabel,responseLabel,normalise}')();
+const CU=new Function(src+';return {moveCursor,moveSlots,defaultMin,eventsAtCursor,accountsOf,nextAccount,filterAccount,joinUrl,joinLabel,responseLabel,normalise}')();
 const eq=(a,b,m)=>{ if(JSON.stringify(a)!==JSON.stringify(b)){console.error('FAIL',m,JSON.stringify(a),JSON.stringify(b));process.exit(1)} };
 const D=(y,m,d)=>new Date(y,m-1,d);
 const at=(c)=>[c.date.getFullYear(),c.date.getMonth()+1,c.date.getDate(),c.min];
@@ -46,7 +46,6 @@ eq(CU.nextAccount(acc,'gone@x.com'),'','unknown -> all');
 eq(CU.nextAccount([],''),'','no accounts');
 eq(CU.filterAccount(raw,'a@x.com').length,2,'filter');
 eq(CU.filterAccount(raw,'').length,4,'no filter');
-eq(CU.accountColor(acc,'a@x.com')!==CU.accountColor(acc,'z@x.com'),true,'distinct colours');
 
 // join + labels
 eq(CU.joinUrl({join_url:'https://zoom.us/j/1'}),'https://zoom.us/j/1','https ok');
