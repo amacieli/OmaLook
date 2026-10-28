@@ -5,6 +5,10 @@ IDs are stable (never reused). Status: `open` | `investigating` | `planned` | `i
 
 ## Issues
 
+### OL-033 — Message list refreshes automatically when the daemon picks up new mail, and not otherwise (open, not started)
+- **Wanted (user, 2026-10-28):** when the mail daemon picks up new mail, the message list should refresh by itself. When the daemon finds nothing new, the list should not be refreshed.
+- **To do (no code yet):** check how the daemon reports a completed sync that brought in new messages (`src/email_daemon.rs`, `src/sync_state.rs`) and how the QML list reloads today (`app.loadMessages()`, `MailView.qml`); add a "new mail arrived" event from the daemon and reload the list only on that event; confirm that polls with no new mail do not reload. Related to OL-017.
+
 ### OL-032 — SMS view: always show images inline, not as attachments (open, not started)
 - **Wanted (user, 2026-10-27):** images in SMS/MMS messages should always be shown in the SMS view, not listed as attachments.
 - **To do (no code yet):** check how the SMS view currently decides between inline image and attachment (`docs/SMS.md`, `docs/PLAN-sms.md`, `src/sms_daemon.rs`, the SMS QML views); make images display inline by default; decide how non-image attachments are still shown; confirm behaviour with a real MMS that has images.
