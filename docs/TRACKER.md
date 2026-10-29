@@ -87,7 +87,7 @@ IDs are stable (never reused). Status: `open` | `investigating` | `planned` | `i
 - **Design:** settled with the user 2026-10-29 (see Decided).
 - **Decided (user, 2026-10-29):** one key, `H` (`v` is mark; mutt/vim have no HTML toggle, `H` is free and mnemonic), that cycles; no picker. Message-level choices stay in memory (persistence is OL-022). `H` and the chip are disabled only while a reply/forward of the *open* message is inside its undo window.
 - **Built (2026-10-29):** `H` (`mail.render`) cycles the view through message / sender / default with a header chip `HTML · sender`; `AppState.cycleRendering()`, `currentRenderLevel`, `currentRenderLocked`. `I` (`mail.images`, HTML view only) cycles remote images blocked / message / sender with an `Images · level` chip on the same header row. The "view as HTML" dropdown + View button and the "Unblock" dropdown + button are removed; both bars are one-line hints. Keys in `docs/KEYS.md`.
-- **Checked:** repo QML loads with no errors; `node tests/commands.test.js` passes; the user tried `H` on a live build and it worked. The `I` chip and send-lock are not yet driven on a live backend.
+- **Checked:** repo QML loads with no errors; `node tests/commands.test.js` passes; the user tried `H` and `I` on a live build (2026-10-29) and both work. The send-lock (reply in its undo window) has not been driven on a live backend.
 
 ### OL-019 — Recipients (To/Cc/Bcc) blank on some messages (fixed 2026-10-24, needs `./build.sh --live`)
 - **Seen:** 2026-10-24: today's "Holiday party" from Erika showed no recipients; Graph has To = Jennifer Jackson, Gary Nusbaum, Adam. 78 other cached rows had the same (no conversation id).
