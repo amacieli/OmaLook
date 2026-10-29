@@ -229,15 +229,6 @@ Item {
 
   function toggleHtml() { var t = cycleRendering(); if (t !== "") notify(t) }
 
-  // scope: "message" | "sender" (list the sender with always-HTML on).
-  function viewAsHtml(scope) {
-    var id = currentMessageId
-    if (id === "") return
-    _htmlOverride[id] = true
-    _htmlRev++
-    if (scope === "sender") _listSenderWith(currentSenderEmail, "html")
-  }
-
   function setMessageRendering(mode) {
     if (mode !== "html" && mode !== "system" && mode !== "system_sender") return
     var before = messageRendering

@@ -89,7 +89,6 @@ Item {
   signal forwardRequested()
   signal toggleReadRequested()
   signal toggleHtmlRequested()
-  signal viewAsHtmlRequested(string scope)   // "message" | "sender"
   signal unblockRequested(string scope)   // "message" | "sender"
   signal focusRequested()                 // give the keyboard back to the shell
 
@@ -604,30 +603,9 @@ Item {
 
           UiText {
             Layout.fillWidth: true
-            text: "This message has HTML formatting"
+            text: "This message has HTML formatting \u00b7 H cycles the view (message, then sender)"
             dim: true
             elide: Text.ElideRight
-          }
-
-          Dropdown {
-            id: htmlChoice
-            Layout.preferredWidth: Style.space(260)
-            Layout.alignment: Qt.AlignVCenter
-            showLabel: false
-            value: "message"
-            options: [
-              { value: "message", label: "View as HTML for this message" },
-              { value: "sender",  label: "Always view this sender as HTML" }
-            ]
-            onPopupOpenChanged: if (!popupOpen) root.focusRequested()
-          }
-
-          Button {
-            Layout.alignment: Qt.AlignVCenter
-            bordered: true
-            iconText: "\uf121"
-            text: "View"
-            onClicked: root.viewAsHtmlRequested(htmlChoice.value)
           }
         }
 

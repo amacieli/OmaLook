@@ -125,7 +125,6 @@ RowLayout {
     renderLabel: root.app.currentRenderLabel
     renderLocked: root.app.currentRenderLocked
     htmlOffer: root.app.currentHtmlOffer
-    onViewAsHtmlRequested: function(scope) { root.app.viewAsHtml(scope); root.app.focusRequested() }
     imagesAllowed: root.app.currentImagesAllowed
     onUnblockRequested: function(scope) { root.app.unblockImages(scope); root.app.focusRequested() }
     onFocusRequested: root.app.focusRequested()
