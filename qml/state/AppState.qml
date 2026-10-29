@@ -522,15 +522,49 @@ Item {
     return false
   }
 
-  // scope: "message" = just this one (session only); "sender" = also list the sender
-  // with always-load-images on.
-  function unblockImages(scope) {
-    var id = currentMessageId
-    if (id === "") return
-    _imagesUnblocked[id] = true     // either way, load them now
-    _imagesRev++
-    if (scope === "sender") _listSenderWith(currentSenderEmail, "images")
+  readonly property bool currentSenderAlwaysImages: {
+    _imagesRev
+    for (var i = 0; i < senderModelObj.count; i++) {
+      var s = senderModelObj.get(i)
+      if (s.email === currentSenderEmail) return s.always_images === true
+    }
+    return false
   }
+
+  // Which level lets the images load now: "sender" (always-load-images rule), "message"
+  // (unblocked for this message, session only) or "blocked".
+  readonly property string currentImagesLevel: {
+    _imagesRev
+    if (currentMessageId === "") return "blocked"
+    if (currentSenderAlwaysImages) return "sender"
+    if (_imagesUnblocked[currentMessageId] === true) return "message"
+    return "blocked"
+  }
+
+  // `I`: blocked -> this message -> this sender (always-load-images rule) -> blocked
+  // (the rule is removed). Returns the text to tell the user.
+  function cycleImages() {
+    var id = currentMessageId, email = currentSenderEmail
+    if (id === "") return ""
+    var level = currentImagesLevel
+    if (level === "blocked") {
+      _imagesUnblocked[id] = true
+      _imagesRev++
+      return "Remote images loaded for this message"
+    }
+    if (level === "message" && email !== "") {
+      delete _imagesUnblocked[id]
+      _imagesRev++
+      _listSenderWith(email, "images")
+      return "Remote images always loaded for " + email
+    }
+    delete _imagesUnblocked[id]
+    _imagesRev++
+    if (level === "sender") setSenderPref(email, "images", false)
+    return "Remote images blocked again" + (level === "sender" ? " (always-load rule for " + email + " removed)" : "")
+  }
+
+  function toggleImages() { var t = cycleImages(); if (t !== "") notify(t) }
 
   // Make sure `email` is in the senders list with `field` ("html" | "images") on.
   function _listSenderWith(email, field) {

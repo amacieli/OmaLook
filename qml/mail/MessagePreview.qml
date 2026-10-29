@@ -89,12 +89,13 @@ Item {
   signal forwardRequested()
   signal toggleReadRequested()
   signal toggleHtmlRequested()
-  signal unblockRequested(string scope)   // "message" | "sender"
+  signal toggleImagesRequested()
   signal focusRequested()                 // give the keyboard back to the shell
 
   // Body of `message`: { state: idle|loading|ready|error, type: html|text, content }.
   property var body: ({ state: "idle", type: "", content: "" })
   property bool htmlMode: false
+  property string imagesLabel: ""      // e.g. "Images \u00b7 sender"
   property string renderLabel: ""     // e.g. "HTML \u00b7 sender": the view and the level that decides it
   property bool renderLocked: false   // a reply to this message is inside its undo window
   // True when this message (or its sender) may load remote images.
@@ -102,12 +103,11 @@ Item {
   // Offer "view as HTML" above the system-font body.
   property bool htmlOffer: false
   // The image dropdown owns the keyboard while its popup is open.
-  readonly property bool editing: imageChoice.popupOpen
+  readonly property bool editing: false
 
   // A different message starts at the top of both views.
   readonly property string bodyId: root.body ? String(root.body.id || "") : ""
   onBodyIdChanged: {
-    imageChoice.value = "message"
     scroll.ScrollBar.vertical.position = 0
     htmlScroll.ScrollBar.vertical.position = 0
   }
@@ -575,6 +575,13 @@ Item {
       }
       Button {
         bordered: true
+        visible: root.htmlMode
+        text: root.imagesLabel
+        iconText: "\uf03e"
+        onClicked: root.toggleImagesRequested()
+      }
+      Button {
+        bordered: true
         text: root.message && root.message.is_read ? "mark unread" : "mark read"
         iconText: root.message && root.message.is_read ? "\uf2b6" : "\uf2b7"
         onClicked: root.toggleReadRequested()
@@ -669,31 +676,9 @@ Item {
 
           UiText {
             Layout.fillWidth: true
-            text: "Remote images were blocked (" + root.rendered.blocked + ")"
+            text: "Remote images were blocked (" + root.rendered.blocked + ") \u00b7 I loads them (message, then sender)"
             dim: true
             elide: Text.ElideRight
-          }
-
-          Dropdown {
-            id: imageChoice
-            Layout.preferredWidth: Style.space(230)
-            Layout.alignment: Qt.AlignVCenter
-            showLabel: false
-            value: "message"
-            options: [
-              { value: "message", label: "Unblock for this message" },
-              { value: "sender",  label: "Unblock for this sender" }
-            ]
-            // The popup takes keyboard focus; hand it back when it closes.
-            onPopupOpenChanged: if (!popupOpen) root.focusRequested()
-          }
-
-          Button {
-            Layout.alignment: Qt.AlignVCenter
-            bordered: true
-            iconText: "\uf03e"
-            text: "Unblock"
-            onClicked: root.unblockRequested(imageChoice.value)
           }
         }
 

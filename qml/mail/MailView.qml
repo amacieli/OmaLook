@@ -121,12 +121,13 @@ RowLayout {
     onAttachmentsRequested: root.app.focusPaletteRequested("attachments ")
     onToggleReadRequested: root.app.toggleRead()
     onToggleHtmlRequested: root.app.toggleHtml()
+    onToggleImagesRequested: root.app.toggleImages()
+    imagesLabel: "Images \u00b7 " + root.app.currentImagesLevel
     htmlMode: root.app.currentHtmlMode
     renderLabel: root.app.currentRenderLabel
     renderLocked: root.app.currentRenderLocked
     htmlOffer: root.app.currentHtmlOffer
     imagesAllowed: root.app.currentImagesAllowed
-    onUnblockRequested: function(scope) { root.app.unblockImages(scope); root.app.focusRequested() }
     onFocusRequested: root.app.focusRequested()
     onNotice: function(text) { root.app.notify(text) }
     body: root.app.currentBody

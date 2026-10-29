@@ -397,6 +397,7 @@ Item {
     { id: "mail.tag",      title: "Set category / tag\u2026", scope: "mail", keys: ["t"], ex: ["tag", "category", "cat"], pick: pickTags, when: function() { return onMessages }, run: function() { openTagPicker() } },
     { id: "mail.tagcolor", title: "Colour for the new category\u2026", scope: "mail", keys: [], hidden: true, ex: ["tagcolor"], pick: pickColors, run: function() {} },
     { id: "mail.render",   title: "Cycle how this message is shown (HTML / system; message / sender / default)", scope: "mail", keys: ["H"], ex: ["render", "html"], when: function() { return app.currentMessageId !== "" }, run: function() { app.toggleHtml() } },
+    { id: "mail.images",   title: "Cycle remote images (blocked / this message / this sender)", scope: "mail", keys: ["I"], ex: ["images"], when: function() { return app.currentMessageId !== "" && app.currentHtmlMode }, run: function() { app.toggleImages() } },
     { id: "mail.undo",     title: "Undo last archive / delete / move, or unsend", scope: "mail", keys: ["u"], run: function() { if (!app.undoAction()) app.undoLatest() } },
 
     // sms (the view's own item is `content`)

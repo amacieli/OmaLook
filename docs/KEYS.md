@@ -91,6 +91,12 @@ A message-level choice lasts until the app quits (storing it is OL-022). A sende
 While a reply or forward of the open message is inside its undo window, `H` and the chip are off (a notice says why); other messages are not affected.
 The "This message has HTML formatting" bar is now just a hint pointing at `H` (its dropdown and View button are gone). Rebind with `"mail.render"` in `[keys]`.
 
+## Remote images: `I` (OL-020)
+
+In the HTML view `I` (command `mail.images`, `:images`) cycles remote images: blocked -> this message (kept until the app quits) -> this sender
+(adds the sender's always-load-images flag, Settings -> Senders) -> blocked (the flag is removed). The header chip `Images · blocked|message|sender`
+sits beside the HTML/System chip and does the same on click. The old dropdown and Unblock button are gone; the bar above the message is a hint with the blocked count.
+
 ## Presets
 
 `outlook` keeps the vim keys and adds: Ctrl-R reply, Ctrl-Shift-R reply all, Ctrl-F forward, Delete delete, Backspace archive,
