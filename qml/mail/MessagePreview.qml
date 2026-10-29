@@ -102,13 +102,12 @@ Item {
   // Offer "view as HTML" above the system-font body.
   property bool htmlOffer: false
   // The image dropdown owns the keyboard while its popup is open.
-  readonly property bool editing: imageChoice.popupOpen || htmlChoice.popupOpen
+  readonly property bool editing: imageChoice.popupOpen
 
   // A different message starts at the top of both views.
   readonly property string bodyId: root.body ? String(root.body.id || "") : ""
   onBodyIdChanged: {
     imageChoice.value = "message"
-    htmlChoice.value = "message"
     scroll.ScrollBar.vertical.position = 0
     htmlScroll.ScrollBar.vertical.position = 0
   }
