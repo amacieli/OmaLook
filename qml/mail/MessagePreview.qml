@@ -96,6 +96,8 @@ Item {
   // Body of `message`: { state: idle|loading|ready|error, type: html|text, content }.
   property var body: ({ state: "idle", type: "", content: "" })
   property bool htmlMode: false
+  property string renderLabel: ""     // e.g. "HTML \u00b7 sender": the view and the level that decides it
+  property bool renderLocked: false   // a reply to this message is inside its undo window
   // True when this message (or its sender) may load remote images.
   property bool imagesAllowed: false
   // Offer "view as HTML" above the system-font body.
@@ -568,8 +570,9 @@ Item {
 
       Button {
         bordered: true
-        text: root.htmlMode ? "System" : "HTML"
-        iconText: root.htmlMode ? "\uf031" : "\uf121"
+        text: root.renderLabel !== "" ? root.renderLabel : (root.htmlMode ? "System" : "HTML")
+        iconText: root.htmlMode ? "\uf121" : "\uf031"
+        enabled: !root.renderLocked
         onClicked: root.toggleHtmlRequested()
       }
       Button {

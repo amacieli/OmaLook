@@ -122,6 +122,8 @@ RowLayout {
     onToggleReadRequested: root.app.toggleRead()
     onToggleHtmlRequested: root.app.toggleHtml()
     htmlMode: root.app.currentHtmlMode
+    renderLabel: root.app.currentRenderLabel
+    renderLocked: root.app.currentRenderLocked
     htmlOffer: root.app.currentHtmlOffer
     onViewAsHtmlRequested: function(scope) { root.app.viewAsHtml(scope); root.app.focusRequested() }
     imagesAllowed: root.app.currentImagesAllowed

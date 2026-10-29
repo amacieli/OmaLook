@@ -77,6 +77,20 @@ use `h` / `Left` to leave the reading pane and the `Forward` button or `Ctrl-F` 
 Links in the system view are underlined with a hand cursor; the mouse works as before. In the HTML view's Qt fallback
 renderer (used only when the WebKit helper fails) there are no keyboard links.
 
+## How a message is shown: `H` (OL-020)
+
+`H` (command `mail.render`, `:render`) steps the open message through the levels; the header chip (also clickable) shows the view and
+the level that decides it, e.g. `HTML · sender`, `System · message`, `System · default`.
+
+| Setting (Settings -> Mail) | Cycle on `H` |
+|---|---|
+| Always System with per-sender override (`system_sender`) | HTML · sender -> System · message -> System · default (the sender's always-HTML rule is removed) -> HTML · message -> HTML · sender |
+| Always HTML / Always System | default <-> message |
+
+A message-level choice lasts until the app quits (storing it is OL-022). A sender-level choice is the always-HTML flag in Settings -> Senders.
+While a reply or forward of the open message is inside its undo window, `H` and the chip are off (a notice says why); other messages are not affected.
+The "This message has HTML formatting" bar still offers the same choices with the mouse. Rebind with `"mail.render"` in `[keys]`.
+
 ## Presets
 
 `outlook` keeps the vim keys and adds: Ctrl-R reply, Ctrl-Shift-R reply all, Ctrl-F forward, Delete delete, Backspace archive,

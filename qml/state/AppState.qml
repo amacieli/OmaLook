@@ -171,11 +171,63 @@ Item {
     !currentHtmlMode && !currentHtmlOverridden && messageRendering === "system_sender"
     && currentBody.state === "ready" && currentBody.type === "html"
 
-  function toggleHtml() {
-    if (currentMessageId === "") return
-    _htmlOverride[currentMessageId] = !currentHtmlMode
-    _htmlRev++
+  // Which level decides the view now: "message" (this message's override), "sender" (the
+  // sender's always-HTML rule, system_sender mode only) or "default" (the global setting).
+  readonly property string currentRenderLevel: {
+    _htmlRev
+    if (currentMessageId === "") return "default"
+    if (_htmlOverride[currentMessageId] !== undefined) return "message"
+    if (messageRendering === "system_sender" && currentSenderAlwaysHtml) return "sender"
+    return "default"
   }
+  readonly property string currentRenderLabel:
+    (currentHtmlMode ? "HTML" : "System") + " \u00b7 " + currentRenderLevel
+
+  // A reply or forward of the message on screen is still inside its undo window.
+  readonly property bool currentRenderLocked: {
+    var id = currentMessageId
+    if (id === "") return false
+    for (var i = 0; i < sends.length; i++) {
+      var m = sends[i].message
+      if (sends[i].state === "pending" && m && String(m.in_reply_to || "") === id) return true
+    }
+    return false
+  }
+
+  // `H`: step this message through the levels. In system_sender mode the cycle is
+  //   HTML/sender -> System/message -> System/default (rule removed) -> HTML/message -> HTML/sender
+  // and in html / system mode it is just default <-> message (there is no sender level).
+  // Returns the text to tell the user.
+  function cycleRendering() {
+    var id = currentMessageId
+    if (id === "") return ""
+    if (currentRenderLocked) return "Sending this message's reply \u2014 view stays as it is until the undo window ends"
+    var email = currentSenderEmail
+    var o = _htmlOverride[id]
+    if (o === undefined) {
+      _htmlOverride[id] = !currentHtmlMode
+      _htmlRev++
+      return currentHtmlMode ? "HTML for this message" : "System font for this message"
+    }
+    if (messageRendering !== "system_sender" || email === "") {
+      delete _htmlOverride[id]
+      _htmlRev++
+      return "Back to the default view"
+    }
+    var rule = currentSenderAlwaysHtml
+    if (rule !== o) {
+      delete _htmlOverride[id]
+      _htmlRev++
+      if (o) _listSenderWith(email, "html")
+      else setSenderPref(email, "html", false)
+      return o ? "HTML always for " + email : "System font for " + email + " (always-HTML rule removed)"
+    }
+    delete _htmlOverride[id]
+    _htmlRev++
+    return "Back to the default view"
+  }
+
+  function toggleHtml() { var t = cycleRendering(); if (t !== "") notify(t) }
 
   // scope: "message" | "sender" (list the sender with always-HTML on).
   function viewAsHtml(scope) {
