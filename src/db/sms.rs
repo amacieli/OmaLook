@@ -20,6 +20,8 @@ pub struct SmsAttachment {
     pub part_id: i64,
     pub mime: String,
     pub unique_id: String,
+    /// Base64 PNG thumbnail the phone sends along (shown while the full picture is fetched).
+    pub preview: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -162,7 +164,7 @@ impl Database {
     pub fn sms_upsert(&self, m: &SmsMessage) -> Result<bool> {
         let atts = serde_json::Value::Array(
             m.attachments.iter().map(|a| serde_json::json!({
-                "part_id": a.part_id, "mime": a.mime, "unique_id": a.unique_id
+                "part_id": a.part_id, "mime": a.mime, "unique_id": a.unique_id, "preview": a.preview
             })).collect(),
         ).to_string();
         let addrs = serde_json::to_string(&m.addresses).unwrap_or_else(|_| "[]".into());

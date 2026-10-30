@@ -11,11 +11,12 @@ import "sms.js" as Sms
 // My messages sit on the right, the other side's on the left. A composer line sits under the
 // history: Ctrl+Enter sends, Esc hands the keyboard back (the draft stays). Texts still
 // waiting for the phone show "sending…"; ones that never went out show a red "Send failure".
-// Model (oldest first) roles: body, date_ms, direction, att_text.
+// Model (oldest first) roles: body, date_ms, direction, att_text (non-image attachments), images (JSON [{part_id, unique_id}]).
 Item {
   id: root
 
   property var model
+  property var app
   property string title: ""
   property string subtitle: ""
   property bool paneFocused: false
@@ -121,6 +122,9 @@ Item {
         readonly property var prev: index > 0 ? root.model.get(index - 1) : null
         readonly property bool newDay: prev === null || !Sms.sameDay(new Date(prev.date_ms), new Date(model.date_ms))
         readonly property string attText: model.att_text
+        readonly property string deviceId: model.device_id
+        readonly property var images: { try { return JSON.parse(model.images || "[]") } catch (e) { return [] } }
+        readonly property real imageWidth: Math.min(Style.space(260), msg.maxBubble - Style.spacing.xl * 2)
         readonly property bool failed: model.direction === 5
         readonly property bool queued: model.direction === 6
 
@@ -149,7 +153,7 @@ Item {
 
             Rectangle {
               id: bubble
-              width: Math.min(msg.maxBubble, Math.max(bodyText.implicitWidth, attLine.implicitWidth) + Style.spacing.xl * 2)
+              width: Math.min(msg.maxBubble, Math.max(bodyText.implicitWidth, attLine.implicitWidth, msg.images.length > 0 ? msg.imageWidth : 0) + Style.spacing.xl * 2)
               height: inner.implicitHeight + Style.spacing.lg * 2
               x: msg.mine ? parent.width - width - Style.spacing.xl : Style.spacing.xl
               radius: Style.space(10)
@@ -171,6 +175,18 @@ Item {
                   text: model.body
                   wrapMode: Text.Wrap
                   foreground: Hues.brightForeground
+                }
+                Repeater {
+                  model: msg.images
+                  delegate: SmsImage {
+                    required property var modelData
+                    app: root.app
+                    device: msg.deviceId
+                    partId: modelData.part_id
+                    uniqueId: modelData.unique_id
+                    preview: modelData.preview || ""
+                    width: msg.imageWidth
+                  }
                 }
                 UiText {
                   id: attLine

@@ -259,11 +259,14 @@ Item {
   }
   // true while loadMessages() swaps the whole model: the selection is momentarily "no message".
   property bool _reloadingModel: false
+  // true while new mail is put in at the top of the list and the cursor moved down with it (OL-033).
+  property bool _shiftingModel: false
 
   onCurrentMessageIdChanged: {
     var id = currentMessageId
     // Same message, already shown (list reloaded under the cursor): nothing to fetch or redraw.
     if (id === "" && _reloadingModel) return
+    if (_shiftingModel) return
     if (id !== "" && currentBody.id === id && currentBody.state === "ready"
         && invite.id === id && attachments.id === id) { _bodyDebounce.stop(); return }
     if (id === "" || _bodyCache[id]) { _bodyDebounce.stop(); loadBody(id); loadInvite(id); loadAttachments(id); return }
@@ -609,6 +612,9 @@ Item {
   // The account the last saved calendar entry went to (`last_calendar_account` in view_state.json).
   property string lastCalendarAccount: ""
   onLastCalendarAccountChanged: _saveViewSoon()
+  // The account the last mail was queued from (`last_mail_account` in view_state.json, OL-022).
+  property string lastMailAccount: ""
+  onLastMailAccountChanged: _saveViewSoon()
 
   function applyCalendarSettings(data) {
     recurrenceYearsBack = data.recurrence_years_back
@@ -778,11 +784,22 @@ Item {
   }
 
   // kind: "new" | "reply" | "replyAll" | "forward". Default source: the message under the cursor.
+  // OL-022: which account a new message starts from: the account of the folder being viewed (when the
+  // list is filtered to one), else the account a message was last sent from, else the first signed in.
+  // `acct` = the signed-in accounts (non-empty).
+  function newMailAccountId(acct) {
+    function has(id) { return id !== "" && acct.some(function(a) { return a.id === id }) }
+    var f = selectedFolder
+    if (f && !f.all_accounts && has(String(f.account_id || ""))) return String(f.account_id)
+    if (has(lastMailAccount)) return lastMailAccount
+    return acct[0].id
+  }
+
   function openCompose(kind) {
     var m = currentMessage
     var init = { kind: kind, accountId: "", to: "", cc: "", bcc: "", subject: "", quote: null, inReplyTo: "" }
     var acct = accounts.filter(function(a) { return a.signed_in && a.email })
-    if (acct.length > 0) init.accountId = acct[0].id
+    if (acct.length > 0) init.accountId = newMailAccountId(acct)
     if (kind !== "new" && m) {
       if (m.account_id) init.accountId = String(m.account_id)
       var subj = String(m.subject || "")
@@ -940,6 +957,7 @@ Item {
         composeStatus = r && r.error ? String(r.error) : "Could not queue the message (is the backend running?)"
         return
       }
+      if (message && message.account_id) lastMailAccount = String(message.account_id)
       sendNow = Date.now()
       sends = sends.concat([{
         id: r.id, message: message, sendAt: sendNow + r.delay_secs * 1000, delaySecs: r.delay_secs,
@@ -1121,6 +1139,24 @@ Item {
       if (xhr.status !== 200 || gen !== root._messageGeneration || root._loadingMessages) return
       try {
         var rows = JSON.parse(xhr.responseText)
+        // OL-033: mail that arrived since the last look sits above the first row we have. Put just those rows
+        // in and move the cursor down with them, so the selected message stays selected and nothing else reloads.
+        var first = messageModelObj.get(0).id, k = 0
+        while (k < rows.length && rows[k].id !== first) k++
+        if (k > 0 && k < rows.length) {
+          var shifted = rows.length - k
+          var tailOk = true
+          for (var s = 0; s < shifted && s < 5 && tailOk; s++)
+            if (rows[k + s].id !== messageModelObj.get(s).id) tailOk = false
+          if (tailOk) {
+            root._shiftingModel = true
+            for (var a = k - 1; a >= 0; a--) messageModelObj.insert(0, rows[a])
+            root.msgIndex += k
+            root._shiftingModel = false
+            root.perfMark("refreshMessages: " + k + " new message(s) put in at the top")
+            return
+          }
+        }
         var aligned = rows.length === n
         for (var i = 0; aligned && i < n; i++)
           if (rows[i].id !== messageModelObj.get(i).id) aligned = false
@@ -1360,7 +1396,7 @@ Item {
   function _saveViewSoon() { if (_viewRestored) viewSaveTimer.restart() }
   function _saveViewState() {
     request("POST", "/settings/view_state", null, JSON.stringify({
-      view: _lastModule, folder: selectedFolderId, calendar_mode: calendarMode, last_calendar_account: lastCalendarAccount,
+      view: _lastModule, folder: selectedFolderId, calendar_mode: calendarMode, last_calendar_account: lastCalendarAccount, last_mail_account: lastMailAccount,
       people_view: peopleView, people_sort: peopleSort, tasks_filter: tasksFilter }))
   }
 
@@ -1388,6 +1424,7 @@ Item {
           function pick(v, allowed, cur) { return allowed.indexOf(v) >= 0 ? v : cur }
           root.calendarMode = pick(s.calendar_mode, ["day", "workweek", "week", "month"], root.calendarMode)
           if (typeof s.last_calendar_account === "string") root.lastCalendarAccount = s.last_calendar_account
+          if (typeof s.last_mail_account === "string") root.lastMailAccount = s.last_mail_account
           root.peopleView = pick(s.people_view, ["all", "favorites", "lists"], root.peopleView)
           root.peopleSort = pick(s.people_sort, ["first", "last", "company", "recent"], root.peopleSort)
           root.tasksFilter = pick(s.tasks_filter, ["all", "active", "done"], root.tasksFilter)

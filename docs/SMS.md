@@ -8,7 +8,7 @@
 Best-effort phone sync: on read, `sms_daemon::sync_read_to_phone` finds the SMS app's notification for that contact and sends its "Mark as read" action over `notifications.sendAction`. **UNVERIFIED**: dismissing the notification does not mark the thread read (tested with Textra, 2026-10-15) and no live Textra notification was available to test `sendAction`; the action names tried are "Mark as read" / "Mark as Read" / "Mark read". Results are logged (`SMS read-sync:`). Read state on the phone is otherwise unchanged.
 
 **Daemon** (`src/sms_daemon.rs`, thread `sms`, started in `main.rs` after the scheduler):
-1. Discover devices every 30 s (`daemon.devices(true,true)`; no kdeconnectd -> retry).
+1. Discover devices every 30 s (`daemon.devices(true,true)`; no kdeconnectd -> retry). While a paired device is not reachable, each pass (at most once a minute) also calls `daemon.forceOnNetworkChange()`, the same call as the KDE Connect app's refresh button, so a phone that dropped off the network is looked for again.
 2. Full pull per device: `requestAllConversationThreads`, wait for the thread count to settle, then `requestConversation(thread, 0, 100000)` per thread and wait for `conversationLoaded`. Failed threads retry (3 attempts). ~11 min for 960 threads / 11k messages.
 3. Update path: after the pull, `conversationCreated/Updated/Removed` signals are upserted live; thread heads are re-requested every 10 min as a safety net. The UI serial (`GET /sync/serial` -> `"sms"`) bumps once per batch of real changes.
 
@@ -23,7 +23,7 @@ Best-effort phone sync: on read, `sms_daemon::sync_read_to_phone` finds the SMS 
 * `requestConversation` start/end are int32 indexes, not timestamps.
 * Big threads stream for minutes: the per-thread timeout is idle time.
 * kdeconnectd/phone report counts a few messages higher than they emit for ~58 threads (likely SMS/MMS uid collisions inside kdeconnectd); not recoverable over D-Bus.
-* MMS attachments: metadata only, not downloaded.
+* MMS attachments: KDE Connect lists metadata only. Images (`image/*`) are fetched on demand (OL-032): `GET /sms/attachment?device=&part=&uid=` -> `{state: ready|pending|failed[, path|error]}`, never blocking; the first call sends `requestAttachmentFile(part_id, unique_id)`, `attachmentReceived(path, name)` is copied to `~/.cache/omalook/sms-attachments/<device>/<unique id>` and the conversation shows it inline (`SmsImage.qml`). Other attachment types stay a one-line summary. Not yet verified against a real phone.
 
 ## UI (`qml/views/SmsView.qml`, `SmsThreadList.qml`, `SmsConversation.qml`, `sms.js`)
 Two framed panes like mail: senders list (¹, `focusPane` "msg") and conversation (², "reader"). Contact names come from the phone's synced vCards (`src/sms_names.rs`, matched on last 10 digits); unknown senders show the number.

@@ -34,6 +34,15 @@ function isMine(m) { return m.direction !== 1 }
 function messageKey(m) { return m.device_id + ":" + (m.mms ? "m" : "s") + m.uid }
 function threadKey(t) { return t.device_id + ":" + t.thread_id }
 
+// MMS pictures are shown inline (OL-032); everything else is still listed as an attachment.
+// Rows stored before 2026-10-30 hold the base64 preview in `unique_id` (parsed from the wrong field); such a long
+// value is a preview, not an id, until the next full sync rewrites the row.
+function _realId(a) { var u = String(a.unique_id || ""); return u.length > 0 && u.length < 200 ? u : "" }
+function _preview(a) { var p = String(a.preview || ""); if (p === "" && String(a.unique_id || "").length >= 200) p = String(a.unique_id); return p }
+function isImage(a) { return String(a && a.mime || "").toLowerCase().indexOf("image/") === 0 && (_realId(a) !== "" || _preview(a) !== "") }
+function imageParts(atts) { return (atts || []).filter(isImage).map(function(a) { return { part_id: a.part_id, unique_id: _realId(a), preview: _preview(a) } }) }
+function otherAttachments(atts) { return (atts || []).filter(function(a) { return !isImage(a) }) }
+
 function attachmentText(atts) {
   if (!atts || atts.length === 0) return ""
   var kinds = {}

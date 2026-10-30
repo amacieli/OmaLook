@@ -595,6 +595,11 @@ fn sms_route(config_dir: &PathBuf, first_line: &str) -> String {
                     v
                 }).collect()))),
         },
+        // GET /sms/attachment?device=&part=&uid= : state of one MMS picture (the first call asks the phone).
+        (false, "/sms/attachment") => match (device.as_deref(), int("part"), query_param(first_line, "uid")) {
+            (Some(d), Some(part), Some(uid)) if !d.is_empty() && !uid.is_empty() => omalook::sms_daemon::attachment_status(d, part, &uid).to_string(),
+            _ => err("need device, part and uid"),
+        },
         (false, "/sms/unread") => json(db.sms_unread_totals().map(|(m, t)| serde_json::json!({ "messages": m, "threads": t }))),
         (true, "/sms/read") => match int("thread") {
             None => err("missing thread"),

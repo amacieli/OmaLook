@@ -38,11 +38,15 @@ const REFRESH_EVERY: Duration = Duration::from_secs(600);
 /// How long a thread may stay silent while its history streams before it is retried later.
 const THREAD_TIMEOUT: Duration = Duration::from_secs(20);
 const MAX_ATTEMPTS: u32 = 3;
+/// Minimum gap between reconnect nudges while a paired phone is missing.
+const NUDGE_EVERY: Duration = Duration::from_secs(60);
 
 enum Ev {
     Msg(SmsMessage),
     Loaded { device: String, thread: i64, count: i64 },
     Removed { device: String, thread: i64 },
+    /// KDE Connect downloaded an MMS attachment from the phone: (device, local file path, file name).
+    Attachment { device: String, path: String, name: String },
     Resync,
 }
 
@@ -67,7 +71,7 @@ pub fn start(config_dir: PathBuf) {
             Ok(db) => db,
             Err(e) => return error!("SMS daemon: cannot open database: {}", e),
         };
-        Worker { db, tx, rx, conn: None, synced: HashSet::new(), attempts: HashMap::new(), dirty: false }.run();
+        Worker { db, tx, rx, conn: None, synced: HashSet::new(), attempts: HashMap::new(), dirty: false, last_nudge: None }.run();
     });
     if let Err(e) = r {
         error!("Cannot spawn SMS daemon thread: {}", e);
@@ -84,6 +88,103 @@ pub fn start(config_dir: PathBuf) {
             }
         }
     });
+}
+
+// ── MMS attachments (OL-032) ──────────────────────────────────────────────
+// KDE Connect only lists an MMS part's metadata; the bytes are fetched on demand with
+// `requestAttachmentFile(part_id, unique_id)` and arrive later as the `attachmentReceived(path, name)`
+// signal. The worker copies each arrival into our own cache so it outlives kdeconnectd's.
+
+/// How long a requested attachment may stay missing before the request counts as failed.
+const ATT_TIMEOUT: Duration = Duration::from_secs(60);
+/// How long a failure is remembered before the next poll asks the phone again.
+const ATT_RETRY_AFTER: Duration = Duration::from_secs(30);
+
+enum AttState { Pending(Instant), Failed(String, Instant) }
+
+fn att_map() -> &'static std::sync::Mutex<HashMap<(String, String), AttState>> {
+    static M: OnceLock<std::sync::Mutex<HashMap<(String, String), AttState>>> = OnceLock::new();
+    M.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
+}
+
+fn safe_name(s: &str) -> String {
+    let n: String = s.chars().map(|c| if c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_' { c } else { '_' }).collect();
+    if n.is_empty() || n.chars().all(|c| c == '.') { "_".into() } else { n }
+}
+
+/// Where a device's attachment is kept (`<cache>/omalook/sms-attachments/<device>/<unique id>`).
+pub fn attachment_path(device: &str, unique_id: &str) -> PathBuf {
+    dirs::cache_dir().unwrap_or_else(std::env::temp_dir)
+        .join("omalook").join("sms-attachments").join(safe_name(device)).join(safe_name(unique_id))
+}
+
+/// State of one attachment for the UI, without ever blocking: `{state: "ready", path}`, `{state: "pending"}`
+/// or `{state: "failed", error}`. The first call for a missing file asks the phone for it.
+pub fn attachment_status(device: &str, part_id: i64, unique_id: &str) -> serde_json::Value {
+    let file = attachment_path(device, unique_id);
+    if file.is_file() {
+        return serde_json::json!({ "state": "ready", "path": file.to_string_lossy() });
+    }
+    // kdeconnectd saves a downloaded part as `<cache>/kdeconnect.daemon/<device name>/<unique id>` and does not
+    // always announce it with `attachmentReceived`, so look there too (verified live: the file appears < 2 s).
+    if let Some(found) = find_in_kdeconnect_cache(unique_id) {
+        let dest = file.clone();
+        if let Some(dir) = dest.parent() { let _ = std::fs::create_dir_all(dir); }
+        let tmp = dest.with_extension("part");
+        if std::fs::copy(&found, &tmp).and_then(|_| std::fs::rename(&tmp, &dest)).is_ok() {
+            att_map().lock().unwrap_or_else(|e| e.into_inner()).remove(&(device.to_string(), unique_id.to_string()));
+            return serde_json::json!({ "state": "ready", "path": dest.to_string_lossy() });
+        }
+    }
+    let key = (device.to_string(), unique_id.to_string());
+    let mut map = att_map().lock().unwrap_or_else(|e| e.into_inner());
+    match map.get(&key) {
+        Some(AttState::Pending(at)) if at.elapsed() < ATT_TIMEOUT => return serde_json::json!({ "state": "pending" }),
+        Some(AttState::Pending(_)) => {
+            map.insert(key, AttState::Failed("the phone did not send the picture (is it reachable?)".into(), Instant::now()));
+            return serde_json::json!({ "state": "failed", "error": "the phone did not send the picture (is it reachable?)" });
+        }
+        Some(AttState::Failed(e, at)) if at.elapsed() < ATT_RETRY_AFTER => return serde_json::json!({ "state": "failed", "error": e }),
+        _ => {}
+    }
+    match request_attachment(device, part_id, unique_id) {
+        Ok(()) => { map.insert(key, AttState::Pending(Instant::now())); serde_json::json!({ "state": "pending" }) }
+        Err(e) => { map.insert(key, AttState::Failed(e.clone(), Instant::now())); serde_json::json!({ "state": "failed", "error": e }) }
+    }
+}
+
+fn find_in_kdeconnect_cache(unique_id: &str) -> Option<PathBuf> {
+    if unique_id.is_empty() || unique_id.contains('/') || unique_id == "." || unique_id == ".." { return None; }
+    let root = dirs::cache_dir()?.join("kdeconnect.daemon");
+    std::fs::read_dir(root).ok()?.flatten()
+        .map(|d| d.path().join(unique_id))
+        .find(|p| p.is_file() && p.metadata().map(|m| m.len() > 0).unwrap_or(false))
+}
+
+fn request_attachment(device: &str, part_id: i64, unique_id: &str) -> Result<(), String> {
+    let conn = Connection::session().map_err(|e| format!("session bus: {}", e))?;
+    conn.call_method(Some(SERVICE), format!("{}{}", DEVICE_ROOT, device), Some(IFACE), "requestAttachmentFile", &(part_id, unique_id))
+        .map(|_| ())
+        .map_err(|e| format!("KDE Connect refused the request: {}", e))
+}
+
+/// Copy a downloaded attachment into our cache and clear its pending entry. Returns true when stored.
+fn store_attachment(device: &str, src: &str, name: &str) -> bool {
+    let mut map = att_map().lock().unwrap_or_else(|e| e.into_inner());
+    // The phone names the file after the part's unique id; if it does not, a lone pending request claims it.
+    let key = if map.contains_key(&(device.to_string(), name.to_string())) {
+        Some((device.to_string(), name.to_string()))
+    } else {
+        let mut pend = map.iter().filter(|(k, v)| k.0 == device && matches!(v, AttState::Pending(_))).map(|(k, _)| k.clone());
+        match (pend.next(), pend.next()) { (Some(k), None) => Some(k), _ => None }
+    };
+    let unique = key.as_ref().map(|k| k.1.clone()).unwrap_or_else(|| name.to_string());
+    let dest = attachment_path(device, &unique);
+    if let Some(dir) = dest.parent() { let _ = std::fs::create_dir_all(dir); }
+    let tmp = dest.with_extension("part");
+    let ok = std::fs::copy(src, &tmp).and_then(|_| std::fs::rename(&tmp, &dest)).is_ok();
+    if ok { if let Some(k) = key { map.remove(&k); } } else { warn!("SMS: cannot keep attachment {} from {}", unique, src); }
+    ok
 }
 
 /// How long a sent text may wait for the phone's echo before it is shown as failed.
@@ -184,7 +285,9 @@ pub fn parse_message(device_id: &str, v: &Value) -> Option<SmsMessage> {
     let attachments: Vec<SmsAttachment> = match &f[9] {
         Value::Array(a) => array_items(a).iter().filter_map(|e| match e {
             Value::Structure(s) => { let g = s.fields(); Some(SmsAttachment {
-                part_id: int(g.first()?)?, mime: text(g.get(1)?)?, unique_id: text(g.get(2)?)? }) }
+                part_id: int(g.first()?)?, mime: text(g.get(1)?)?,
+                // KDE Connect order: part id, mime, base64 preview (a small PNG), unique id.
+                preview: text(g.get(2)?)?, unique_id: text(g.get(3)?)? }) }
             _ => None,
         }).collect(),
         _ => vec![],
@@ -228,6 +331,8 @@ struct Worker {
     attempts: HashMap<(String, i64), u32>,
     /// Cache changed since the UI serial was last bumped (one bump per batch, not per message).
     dirty: bool,
+    /// When kdeconnectd was last told to look for its phone again (see `nudge_unreachable`).
+    last_nudge: Option<Instant>,
 }
 
 impl Worker {
@@ -246,6 +351,7 @@ impl Worker {
                 }
             }
             let devices = self.discover();
+            self.nudge_unreachable();
             for (id, name) in &devices {
                 let _ = self.db.sms_touch_device(id, name);
                 if !self.synced.contains(id) {
@@ -274,6 +380,26 @@ impl Worker {
         let tx = self.tx.clone();
         std::thread::Builder::new().name("sms-signals".into()).spawn(move || listen(iter, tx)).map_err(|e| e.to_string())?;
         Ok(conn)
+    }
+
+    /// A paired phone that is not reachable (Wi-Fi roam, phone slept, network change missed) stays that way until
+    /// kdeconnectd is told to announce itself again. That is what the KDE Connect app's refresh button does
+    /// (`daemon.forceOnNetworkChange`); do the same, at most once per NUDGE_EVERY, only while a paired device is missing.
+    fn nudge_unreachable(&mut self) {
+        if self.last_nudge.map(|t| t.elapsed() < NUDGE_EVERY).unwrap_or(false) { return; }
+        let Some(conn) = self.conn.as_ref() else { return };
+        let list = |reachable: bool| -> Option<Vec<String>> {
+            conn.call_method(Some(SERVICE), "/modules/kdeconnect", Some("org.kde.kdeconnect.daemon"), "devices", &(reachable, true))
+                .and_then(|m| m.body()).ok()
+        };
+        let (Some(paired), Some(reachable)) = (list(false), list(true)) else { return };
+        let missing: Vec<&String> = paired.iter().filter(|d| !reachable.contains(d)).collect();
+        if missing.is_empty() { return; }
+        self.last_nudge = Some(Instant::now());
+        match conn.call_method(Some(SERVICE), "/modules/kdeconnect", Some("org.kde.kdeconnect.daemon"), "forceOnNetworkChange", &()) {
+            Ok(_) => info!("SMS: {} paired device(s) not reachable; asked kdeconnectd to reconnect", missing.len()),
+            Err(e) => warn!("SMS: could not ask kdeconnectd to reconnect: {}", e),
+        }
     }
 
     /// Reachable, paired devices that expose the conversations interface: (id, name).
@@ -451,6 +577,9 @@ impl Worker {
             Ev::Removed { device, thread } => {
                 if self.db.sms_delete_thread(&device, thread).is_ok() { self.dirty = true; }
             }
+            Ev::Attachment { device, path, name } => {
+                if store_attachment(&device, &path, &name) { self.dirty = true; }
+            }
             Ev::Resync => {}
         }
     }
@@ -474,6 +603,10 @@ fn listen(iter: MessageIterator, tx: Sender<Ev>) {
                 Ok((thread, count)) => Ev::Loaded { device, thread, count: count as i64 },
                 Err(_) => continue,
             },
+            "attachmentReceived" => match msg.body::<(String, String)>() {
+                Ok((path, name)) => Ev::Attachment { device, path, name },
+                Err(_) => continue,
+            },
             "conversationRemoved" => match msg.body::<i64>() {
                 Ok(thread) => Ev::Removed { device, thread },
                 Err(_) => continue,
@@ -487,6 +620,28 @@ fn listen(iter: MessageIterator, tx: Sender<Ev>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn attachment_names_cannot_escape_the_cache() {
+        let p = attachment_path("dev/../x", "../../etc/passwd");
+        assert!(p.starts_with(dirs::cache_dir().unwrap_or_else(std::env::temp_dir).join("omalook").join("sms-attachments")));
+        assert!(p.components().all(|c| !matches!(c, std::path::Component::ParentDir)));
+        assert_eq!(safe_name(".."), "_");
+    }
+
+    #[test]
+    fn a_stored_attachment_reports_ready_and_a_missing_one_never_blocks() {
+        let dev = format!("test-dev-{}", std::process::id());
+        let file = attachment_path(&dev, "PART_1.jpg");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, b"x").unwrap();
+        let r = attachment_status(&dev, 1, "PART_1.jpg");
+        assert_eq!(r["state"], "ready");
+        // Not stored: the call returns at once (pending when the bus took the request, failed when not).
+        let m = attachment_status(&dev, 2, "MISSING.jpg");
+        assert!(m["state"] == "pending" || m["state"] == "failed");
+        let _ = std::fs::remove_dir_all(file.parent().unwrap());
+    }
     use zbus::zvariant::StructureBuilder;
 
     fn tuple(event: i32, body: &str, addrs: &[&str], date: i64, typ: i32, read: i32, thread: i64, uid: i32, atts: usize) -> Value<'static> {
@@ -497,7 +652,7 @@ mod tests {
         let mut att_arr = Array::new(zbus::zvariant::Signature::from_str_unchecked("(xsss)"));
         for i in 0..atts {
             att_arr.append(Value::Structure(StructureBuilder::new()
-                .add_field(i as i64).add_field("image/jpeg".to_string()).add_field("u".to_string()).add_field("n".to_string()).build())).unwrap();
+                .add_field(i as i64).add_field("image/jpeg".to_string()).add_field("pv".to_string()).add_field("PART_1.jpg".to_string()).build())).unwrap();
         }
         Value::Structure(StructureBuilder::new()
             .add_field(event).add_field(body.to_string()).append_field(Value::Array(addr_arr))
@@ -518,6 +673,9 @@ mod tests {
     #[test]
     fn attachments_and_multitarget_mark_mms() {
         assert!(parse_message("d", &tuple(1, "", &["+1"], 1, 1, 1, 1, 1, 2)).unwrap().mms);
+        // Field order is part id, mime, base64 preview, unique id (it was once read as id = preview).
+        let a = &parse_message("d", &tuple(1, "", &["+1"], 1, 1, 1, 1, 1, 1)).unwrap().attachments[0];
+        assert_eq!((a.preview.as_str(), a.unique_id.as_str()), ("pv", "PART_1.jpg"));
         assert!(parse_message("d", &tuple(3, "g", &["+1", "+2"], 1, 1, 1, 1, 1, 0)).unwrap().mms);
         assert!(!parse_message("d", &tuple(1, "t", &["+1"], 1, 2, 1, 1, 1, 0)).unwrap().mms);
     }

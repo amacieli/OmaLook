@@ -68,7 +68,7 @@ In the reading pane, in both the system-font and the HTML view (needs the pane f
 | `Enter` / `o` | `reader.link.open` | open the current link in the browser |
 | `y` | `reader.link.copy` | copy the current link's address (`wl-copy`) |
 | `Esc` | `reader.link.clear` | drop the selection |
-| `f` | `reader.link.hints` | label every link (`a s d f g h j k l`, two letters when there are more than 9); type a label to open it, `Backspace` undoes a letter, `Esc` cancels |
+| `f` | `reader.link.hints` | label every link (`a s d f g h j k l`, two letters when there are more than 9); type a label to open it, `Backspace` undoes a letter, `Esc` cancels; `Up` / `Down` / `PgUp` / `PgDn` / `Space` / `Home` / `End` still scroll the message while the labels show (`j` / `k` are label letters) |
 
 The current link is shown in inverse video (system view) or as an outlined box (HTML view), and the status bar shows
 `link 3/8 · <address>`. These keys apply only while there is a link to act on, so `Tab` (next pane), `Enter`, `y` (accept

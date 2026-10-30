@@ -207,6 +207,13 @@ Item {
   function hintInput(key, text) {
     if (key === Qt.Key_Escape) { linkClear(); return true }
     if (key === Qt.Key_Backspace) { hintTyped = hintTyped.slice(0, -1); return true }
+    // Scrolling stays available while the labels show (j / k are label letters, so arrows and paging keys only).
+    if (key === Qt.Key_Down)     { scrollBy(60); return true }
+    if (key === Qt.Key_Up)       { scrollBy(-60); return true }
+    if (key === Qt.Key_PageDown || key === Qt.Key_Space) { scrollPages(1); return true }
+    if (key === Qt.Key_PageUp)   { scrollPages(-1); return true }
+    if (key === Qt.Key_Home)     { scrollEdge(false); return true }
+    if (key === Qt.Key_End)      { scrollEdge(true); return true }
     var c = String(text || "").toLowerCase()
     if (c.length !== 1 || "asdfghjkl".indexOf(c) < 0) return true
     var typed = hintTyped + c

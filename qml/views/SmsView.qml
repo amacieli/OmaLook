@@ -204,7 +204,8 @@ RowLayout {
 
   function rowFor(m) {
     return { device_id: m.device_id, uid: m.uid, mms: m.mms, body: m.body, date_ms: m.date_ms,
-             direction: m.direction, is_read: m.is_read, att_text: Sms.attachmentText(m.attachments) }
+             direction: m.direction, is_read: m.is_read, att_text: Sms.attachmentText(Sms.otherAttachments(m.attachments)),
+             images: JSON.stringify(Sms.imageParts(m.attachments)) }
   }
 
   function openConversation() {
@@ -338,6 +339,7 @@ RowLayout {
     Layout.fillWidth: true
     Layout.fillHeight: true
     model: msgModel
+    app: root.app
     hasThread: root.openThread !== null
     title: root.openThread ? root.openThread.title : ""
     subtitle: root.openThread ? root.openThread.message_count + (root.openThread.message_count === 1 ? " message" : " messages") : ""
