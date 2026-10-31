@@ -56,6 +56,9 @@ impl From<&Settings> for DaemonConfig {
 }
 
 /// Email daemon that periodically syncs folders and messages
+/// How often the Inbox alone is re-checked between full sync cycles.
+const INBOX_POLL_SECS: u64 = 10;
+
 pub struct EmailDaemon {
     config: DaemonConfig,
     db: Arc<Database>,
@@ -64,6 +67,8 @@ pub struct EmailDaemon {
     seen_push: std::sync::atomic::AtomicU64,
     /// When the UI was last told about a delta page while repopulating details (throttle).
     last_meta_bump: std::sync::Mutex<Option<Instant>>,
+    /// Counts non-delta sync cycles; deletions made elsewhere are reconciled every few cycles.
+    sync_cycle: std::sync::atomic::AtomicU64,
 }
 
 impl EmailDaemon {
@@ -76,6 +81,7 @@ impl EmailDaemon {
             config, db, provider,
             seen_push: std::sync::atomic::AtomicU64::new(sync_state::read_push_serial()),
             last_meta_bump: std::sync::Mutex::new(None),
+            sync_cycle: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -200,10 +206,18 @@ impl EmailDaemon {
                         if now_push != self.seen_push.load(std::sync::atomic::Ordering::SeqCst) {
                             self.service_pushes().await;
                         }
+                        // Between full cycles the Inbox alone is polled every INBOX_POLL_SECS.
+                        let fast = tokio::time::sleep(Duration::from_secs(INBOX_POLL_SECS));
+                        tokio::pin!(fast);
                         tokio::select! {
                             _ = tokio::time::sleep_until(deadline) => break,
                             _ = &mut wake => {}
                             _ = &mut mail_now => {}
+                            _ = &mut fast => {
+                                if message_interval > Duration::from_secs(INBOX_POLL_SECS + 5) {
+                                    self.poll_inbox().await;
+                                }
+                            }
                         }
                     }
                 }
@@ -261,8 +275,13 @@ impl EmailDaemon {
         // of launch instead of after the full paginated sync of every folder.
         {
             let _t = perf::span(format!("mail[{}] reconcile_read_state x{} folders", self.db.account_id(), folders.len()));
+            // Deletions made on other clients: every 5th cycle (and the first), ids only.
+            let cycle = self.sync_cycle.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             for folder in &folders {
                 self.reconcile_read_state(&folder.id, &folder.display_name).await;
+                if cycle % 5 == 0 {
+                    self.reconcile_deleted(&folder.id, &folder.display_name).await;
+                }
             }
         }
 
@@ -597,6 +616,44 @@ impl EmailDaemon {
                 Err(e) => error!("Read-state reconcile failed for {}: {}", folder_name, e),
             },
             Err(e) => warn!("Could not read unread list for {}: {}", folder_name, e),
+        }
+    }
+
+    /// Quick Inbox-only pass between full sync cycles: new mail, read flags and deletions made
+    /// elsewhere show up within INBOX_POLL_SECS. Skipped until the Inbox's first walk is done.
+    async fn poll_inbox(&self) {
+        let folders = match self.db.get_folders() { Ok(f) => f, Err(_) => return };
+        let Some(inbox) = folders.iter().find(|f| f.well_known_name.as_deref() == Some("inbox")
+            || f.display_name.eq_ignore_ascii_case("inbox")) else { return };
+        let _t = perf::span(format!("mail[{}] inbox quick poll", self.db.account_id()));
+        if self.provider.supports_delta() {
+            if !matches!(self.db.delta_state(&inbox.id), Ok(Some((_, true)))) { return; }
+            if let Err(e) = self.sync_folder_delta(&inbox.id, &inbox.display_name).await {
+                warn!("Inbox quick poll failed: {}", e);
+            }
+        } else {
+            match self.sync_folder_messages(&inbox.id, false).await {
+                Ok(_) => {
+                    self.reconcile_read_state(&inbox.id, &inbox.display_name).await;
+                    self.reconcile_deleted(&inbox.id, &inbox.display_name).await;
+                }
+                Err(e) => warn!("Inbox quick poll failed: {}", e),
+            }
+        }
+    }
+
+    /// Drop cached messages of a folder that were deleted/moved on another client.
+    async fn reconcile_deleted(&self, folder_id: &str, folder_name: &str) {
+        match self.provider.fetch_all_ids(folder_id).await {
+            Ok(live) => match self.db.reconcile_deleted(folder_id, &live) {
+                Ok(0) => {}
+                Ok(n) => {
+                    debug!("Deleted elsewhere: {} message(s) removed from {}", n, folder_name);
+                    sync_state::bump_mail("messages deleted elsewhere");
+                }
+                Err(e) => error!("Delete reconcile failed for {}: {}", folder_name, e),
+            },
+            Err(e) => warn!("Could not list ids for {}: {}", folder_name, e),
         }
     }
 

@@ -44,6 +44,12 @@ pub trait EmailProvider: Send + Sync {
         Err(crate::errors::OmarchyError::HttpError("fetch_unread_ids not supported".into()))
     }
 
+    /// Ids (scoped, as stored locally) of EVERY message in a folder. Err if the list could not
+    /// be read in full: callers delete local rows absent from it, so a partial list must fail.
+    async fn fetch_all_ids(&self, _folder_id: &str) -> Result<Vec<String>> {
+        Err(crate::errors::OmarchyError::HttpError("fetch_all_ids not supported".into()))
+    }
+
     /// Set a message's read flag on the provider.
     async fn set_message_read(&self, _id: &str, _is_read: bool) -> Result<()> {
         Err(crate::errors::OmarchyError::HttpError("set_message_read not supported".into()))

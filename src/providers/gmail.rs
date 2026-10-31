@@ -321,6 +321,19 @@ impl super::EmailProvider for GmailProvider {
         Ok(total)
     }
 
+    async fn fetch_all_ids(&self, folder_id: &str) -> Result<Vec<String>> {
+        let label = self.label_of(folder_id);
+        let (mut all, mut token) = (Vec::new(), None::<String>);
+        loop {
+            let (ids, next) = self.list_page(&label, false, token.as_deref(), 500).await?;
+            all.extend(ids.into_iter().map(|r| scoped(&self.account_id, &r)));
+            match next {
+                Some(t) => token = Some(t),
+                None => return Ok(all),
+            }
+        }
+    }
+
     async fn fetch_unread_ids(&self, folder_id: &str) -> Result<Vec<String>> {
         let label = self.label_of(folder_id);
         let (mut all, mut token) = (Vec::new(), None::<String>);

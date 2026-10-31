@@ -1157,6 +1157,36 @@ Item {
             return
           }
         }
+        // Deleted or moved elsewhere: rows we hold that the fresh answer no longer has. Drop just those (the
+        // cursor moves up by the number removed above it) instead of waiting for a reload, which never ran
+        // once more than one page was loaded.
+        var live = {}
+        for (var q = 0; q < rows.length; q++) live[rows[q].id] = true
+        var gone = []
+        for (var g = 0; g < n; g++) if (!live[messageModelObj.get(g).id]) gone.push(g)
+        if (gone.length > 0 && gone.length < n) {
+          var lined = true, w = 0
+          for (var g2 = 0; g2 < n && lined; g2++) {
+            var mid = messageModelObj.get(g2).id
+            if (!live[mid]) continue
+            if (w >= rows.length || rows[w].id !== mid) lined = false
+            w++
+          }
+          if (lined) {
+            var whole = messageModelObj.count === n
+            for (var r = gone.length - 1; r >= 0; r--) {
+              var at = gone[r]
+              root._shiftingModel = (at !== root.msgIndex)
+              messageModelObj.remove(at)
+              root._shiftingModel = false
+              if (at < root.msgIndex) root.msgIndex--
+            }
+            if (root.msgIndex >= messageModelObj.count) root.msgIndex = Math.max(0, messageModelObj.count - 1)
+            if (whole) for (var t = w; t < rows.length; t++) messageModelObj.append(rows[t])
+            root.perfMark("refreshMessages: " + gone.length + " message(s) deleted elsewhere removed")
+            return
+          }
+        }
         var aligned = rows.length === n
         for (var i = 0; aligned && i < n; i++)
           if (rows[i].id !== messageModelObj.get(i).id) aligned = false

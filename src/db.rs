@@ -1569,6 +1569,32 @@ impl Database {
         }
     }
 
+    /// Remove cached messages of `folder_id` that the provider no longer lists (deleted or moved
+    /// on another client). Rows with an unpushed local read change are kept.
+    pub fn reconcile_deleted(&self, folder_id: &str, live_ids: &[String]) -> Result<usize> {
+        self.conn.execute_batch("BEGIN")?;
+        let result = (|| -> Result<usize> {
+            self.conn.execute_batch(
+                "CREATE TEMP TABLE IF NOT EXISTS live_ids (id TEXT PRIMARY KEY); DELETE FROM live_ids;",
+            )?;
+            {
+                let mut ins = self.conn.prepare("INSERT OR IGNORE INTO live_ids (id) VALUES (?1)")?;
+                for id in live_ids {
+                    ins.execute(params![id])?;
+                }
+            }
+            Ok(self.conn.execute(
+                "DELETE FROM messages WHERE folder_id = ?1 AND account_id = ?2 AND read_pending = 0
+                   AND id NOT IN (SELECT id FROM live_ids)",
+                params![folder_id, self.account_id],
+            )?)
+        })();
+        match result {
+            Ok(n) => { self.conn.execute_batch("COMMIT")?; Ok(n) }
+            Err(e) => { let _ = self.conn.execute_batch("ROLLBACK"); Err(e) }
+        }
+    }
+
     /// Delete old messages (retention policy)
     pub fn cleanup_old_messages(&self, days: i32) -> Result<usize> {
         let count = self.conn.execute(
