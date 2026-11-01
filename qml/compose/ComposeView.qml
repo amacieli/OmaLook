@@ -7,6 +7,7 @@ import qs.Ui
 import OmaLook.Compose
 import "../common"
 import "modes.js" as Modes
+import "attach.js" as Att
 import "../mail/format.js" as Fmt
 
 // Compose pane. Takes the reading pane's slot in MailView (PLAN-compose.md decision Q3).
@@ -81,23 +82,62 @@ FocusScope {
     var a = accounts.filter(function(x) { return x.id === root.accountId })
     return a.length > 0 ? a[0] : null
   }
-  readonly property bool canAttach: !_account || _account.provider !== "gmail"
-  readonly property real attachedBytes: attachments.reduce(function(t, a) { return t + (a.size || 0) }, 0)
-  readonly property real maxAttachedBytes: 150 * 1024 * 1024
+  // What the From account's provider accepts. Starts from the built-in figures so the meter is right
+  // at once; the daemon's answer (`GET /attach/limits`) replaces it, and a From switch asks again.
+  property var fetchLimits: null              // function(accountId, cb(limits)), from the owner
+  property var limits: Att.defaultLimits("")
+  function _loadLimits() {
+    var id = root.accountId
+    root.limits = Att.defaultLimits(root._account ? root._account.provider : "")
+    if (root.fetchLimits && id !== "") root.fetchLimits(id, function(l) { if (l && l.hard && root.accountId === id) root.limits = l })
+  }
+  onAccountIdChanged: _loadLimits()
+  onAccountsChanged: _loadLimits()
+  onFetchLimitsChanged: _loadLimits()
+
+  // Forward only: the files attached to the original, ticked by default and removable like any chip.
+  property var fetchOriginals: null           // function(messageId, cb({originals}|{error})), from the owner
+  property var originals: []                  // kept: [{ id, name, size }]
+  property string originalsState: "idle"      // idle | loading | ready | error
+  function _loadOriginals() {
+    if (initial.kind !== "forward" || !initial.inReplyTo || !root.fetchOriginals) return
+    root.originalsState = "loading"
+    root.fetchOriginals(initial.inReplyTo, function(r) {
+      if (r && r.originals) {
+        var keep = initial.forwardedKeep
+        root.originals = keep ? r.originals.filter(function(o) { return keep.indexOf(o.id) >= 0 }) : r.originals
+        root.originalsState = "ready"
+      } else {
+        root.originals = []
+        root.originalsState = "error"
+        root.localStatus = "Could not read the original's attachments; they will not be forwarded."
+      }
+    })
+  }
+  onFetchOriginalsChanged: if (originalsState === "idle") _loadOriginals()
+
+  // Everything the strip and the list show: the forward's originals first, then picked files.
+  readonly property var rows: Att.combine(originals, attachments)
+  readonly property real attachedBytes: Att.rawTotal(rows)
 
   function openAttach() {
-    if (!root.canAttach) { root.localStatus = "Attachments are not supported for Gmail accounts yet."; return }
     root.localStatus = ""
     browser.open()
   }
 
+  function openList() {
+    if (root.rows.length === 0) { root.localStatus = "Nothing is attached."; return }
+    root.localStatus = ""
+    attachList.open()
+  }
+
+  // Files picked in the browser. Adding past the limit is allowed: the strip turns red and says
+  // why, and Send refuses with the numbers (a From switch can push a fine set over the limit too).
   function addAttachments(files) {
     var have = root.attachments.map(function(a) { return a.path })
-    var next = root.attachments.slice(), total = root.attachedBytes
+    var next = root.attachments.slice()
     for (var i = 0; i < files.length; i++) {
       if (have.indexOf(files[i].path) >= 0) continue
-      if (total + (files[i].size || 0) > root.maxAttachedBytes) { root.localStatus = "Attachments are limited to 150 MB in total; " + files[i].name + " was not added."; continue }
-      total += files[i].size || 0
       next.push({ path: files[i].path, name: files[i].name, size: files[i].size || 0 })
     }
     root.attachments = next
@@ -110,6 +150,27 @@ FocusScope {
     root.attachments = next
   }
 
+  // `row` indexes `rows`.
+  function removeRow(row) {
+    var r = root.rows[row]
+    if (!r) return
+    if (r.origin === "original") {
+      var next = root.originals.slice()
+      next.splice(r.ref, 1)
+      root.originals = next
+    } else {
+      root.removeAttachment(r.ref)
+    }
+  }
+
+  // The palette twins of the keys (`:attach`, `:attachments`, `:detach`, `:detach-all`).
+  function runCommand(name) {
+    if (name === "attach") openAttach()
+    else if (name === "attachments") openList()
+    else if (name === "detach") removeRow(root.rows.length - 1)
+    else if (name === "detach-all") { root.attachments = []; root.originals = [] }
+  }
+
   function buildMessage() {
     return {
       kind: initial.kind,
@@ -119,7 +180,9 @@ FocusScope {
       subject: header.subject.text,
       mode: root.mode,
       body: _body(),
-      attachments: root.attachments.map(function(a) { return { path: a.path, name: a.name, size: a.size } })
+      attachments: root.attachments.map(function(a) { return { path: a.path, name: a.name, size: a.size } }),
+      // Which of the original's files go along (forward only); left out until the list is known.
+      forwarded_keep: initial.kind === "forward" && root.originalsState !== "idle" ? root.originals.map(function(o) { return o.id }) : undefined
     }
   }
 
@@ -131,7 +194,14 @@ FocusScope {
     if (all.length === 0) { root.localStatus = "Add at least one recipient."; header.to.input.forceActiveFocus(); return }
     var bad = all.filter(function(r) { return !r.valid })
     if (bad.length > 0) { root.localStatus = "Not a valid address: " + bad[0].email; return }
-    if (root.attachments.length > 0 && !root.canAttach) { root.localStatus = "Attachments are not supported for Gmail accounts yet."; return }
+    if (root.originalsState === "loading") { root.localStatus = "Still reading the original's attachments\u2026"; return }
+    var m = Att.meter(root.limits, root.rows)
+    if (m.level === "over") {
+      var v = Att.states(root.limits, root.rows), big = v.state.indexOf("big")
+      root.localStatus = "The attachments are too big for " + Att.accountName(root.limits) + " (" + Fmt.bytes(m.raw) + " of files; about " + Fmt.bytes(m.capacity) + " is the most)"
+        + (big >= 0 ? ". Remove " + root.rows[big].name + " or change From." : ".")
+      return
+    }
     if (header.subject.text.trim() === "") { root.confirming = "nosubject"; return }
     root.sendRequested(root.buildMessage())
   }
@@ -157,6 +227,8 @@ FocusScope {
     header.subject.text = initial.subject || ""
     if (initial.mode) root.mode = initial.mode
     if (initial.attachments) root.attachments = initial.attachments
+    _loadLimits()
+    _loadOriginals()
     if (initial.quote) handler.setHtml(_quoteHtml(initial.quote))
     // A message taken back (Undo) or that failed to send comes back exactly as written.
     if (initial.restore) {
@@ -171,7 +243,7 @@ FocusScope {
   }
 
   Keys.onPressed: function(e) {
-    if (browser.opened) return
+    if (browser.opened || attachList.opened) return
     if (root.confirming !== "") {
       if (confirmDialog.handleKey(e)) e.accepted = true
       return
@@ -187,7 +259,8 @@ FocusScope {
     else if (ctrl && e.key === Qt.Key_I) { handler.toggleItalic(); e.accepted = true }
     else if (ctrl && e.key === Qt.Key_U) { handler.toggleUnderline(); e.accepted = true }
     else if (ctrl && shift && e.key === Qt.Key_A) { root.openAttach(); e.accepted = true }
-    else if (ctrl && shift && e.key === Qt.Key_Backspace && root.attachments.length > 0) { root.removeAttachment(root.attachments.length - 1); e.accepted = true }
+    else if (ctrl && shift && e.key === Qt.Key_L) { root.openList(); e.accepted = true }
+    else if (ctrl && shift && e.key === Qt.Key_Backspace && root.rows.length > 0) { root.removeRow(root.rows.length - 1); e.accepted = true }
     else if (ctrl && e.key === Qt.Key_K) { root.linkOpen = true; linkUrl.forceActiveFocus(); e.accepted = true }
     else if (ctrl && shift && (e.key === Qt.Key_7 || e.key === Qt.Key_Ampersand)) { handler.toggleNumberedList(); e.accepted = true }
     else if (ctrl && shift && (e.key === Qt.Key_8 || e.key === Qt.Key_Asterisk)) { handler.toggleBulletList(); e.accepted = true }
@@ -236,7 +309,7 @@ FocusScope {
 
       Button {
         bordered: true
-        text: root.attachments.length > 0 ? "Attach (" + root.attachments.length + ")" : "Attach"
+        text: root.rows.length > 0 ? "Attach (" + root.rows.length + ")" : "Attach"
         iconText: "\uf0c6"
         tooltipText: "Ctrl+Shift+A"
         onClicked: root.openAttach()
@@ -318,44 +391,14 @@ FocusScope {
       Button { bordered: true; text: "Cancel"; onClicked: { root.linkOpen = false; editor.forceActiveFocus() } }
     }
 
-    // ---- attachments bar
-    Flow {
-      id: attachBar
-      visible: root.attachments.length > 0
+    // ---- attachments: one line of constant height, absent when nothing is attached
+    AttachStrip {
+      id: attachStrip
       Layout.fillWidth: true
-      Layout.leftMargin: Style.spacing.lg
-      Layout.rightMargin: Style.spacing.lg
-      Layout.topMargin: Style.spacing.sm
-      Layout.bottomMargin: Style.spacing.sm
-      spacing: Style.spacing.sm
-
-      Repeater {
-        model: root.attachments
-        delegate: Rectangle {
-          id: chip
-          required property var modelData
-          required property int index
-          width: Math.min(chipRow.implicitWidth + Style.spacing.md * 2, attachBar.width)
-          height: Style.spacing.popupRowHeight
-          radius: Style.cornerRadius
-          color: Style.selectedFill
-          RowLayout {
-            id: chipRow
-            anchors.fill: parent
-            anchors.leftMargin: Style.spacing.md
-            anchors.rightMargin: Style.spacing.md
-            spacing: Style.spacing.sm
-            UiText { text: "\uf0c6"; dim: true }
-            UiText { Layout.fillWidth: true; text: chip.modelData.name; elide: Text.ElideMiddle; font.pixelSize: Style.font.caption }
-            UiText { text: Fmt.bytes(chip.modelData.size); dim: true; font.pixelSize: Style.font.caption }
-            UiText {
-              text: "\uf00d"
-              foreground: Commons.Color.urgent
-              MouseArea { anchors.fill: parent; anchors.margins: -Style.spacing.xs; cursorShape: Qt.PointingHandCursor; onClicked: root.removeAttachment(chip.index) }
-            }
-          }
-        }
-      }
+      items: root.rows
+      limits: root.limits
+      onRemoveRequested: function(row) { root.removeRow(row) }
+      onListRequested: root.openList()
     }
 
     PanelSeparator { Layout.fillWidth: true }
@@ -434,6 +477,19 @@ FocusScope {
         text: "Ctrl+Enter send · Esc discard · Ctrl+K link · Ctrl+Shift+A attach"
       }
     }
+  }
+
+  AttachList {
+    id: attachList
+    x: Style.spacing.lg
+    width: root.width - Style.spacing.lg * 2
+    y: attachStrip.y + attachStrip.height
+    z: 800
+    items: root.rows
+    limits: root.limits
+    onRemoveRequested: function(row) { root.removeRow(row) }
+    onAddRequested: { attachList.close(); root.openAttach() }
+    onClosed: editor.forceActiveFocus()
   }
 
   AttachBrowser {

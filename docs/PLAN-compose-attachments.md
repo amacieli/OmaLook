@@ -77,9 +77,9 @@ a failed send after the user has moved on is the worse failure mode. Open questi
 
 | | Graph | Gmail |
 |---|---|---|
-| Total limit | 150 MB (existing constant; reconfirm) | **~25 MB per message *including* base64 growth (×~1.37)**, so ~18 MB of raw files. Exact figure and behaviour to be verified in the phase-0 spike |
+| Total limit | 150 MB (existing constant; reconfirm) | **Hard 35 MiB (36,700,160 B) encoded on the upload endpoints (measured, phase 0)**, about 25 MB of raw files; soft warning above ~25 MB encoded. Not the 25 MB the docs and UI quote: that is not enforced at the API |
 | Small file | draft + `/attachments` (base64) < 3 MB | part inside the MIME |
-| Large file | `createUploadSession`, 3.75 MB chunks | still one RFC 822 message; use the upload endpoint (`/upload/gmail/v1/users/me/messages/send`, media or resumable) rather than the JSON `raw` field — **verify the size at which `raw` stops working** |
+| Large file | `createUploadSession`, 3.75 MB chunks | still one RFC 822 message; use the upload endpoint (`/upload/gmail/v1/users/me/messages/send`, media, resumable above ~5 MB) and **not** the JSON `raw` field: `raw` has no API size limit but is ~2x slower and accepts messages that then bounce (phase 0) |
 | Memory | streamed per chunk | **stream-encode MIME to a temp file** (chunked base64 + header folding), then upload from the file; never hold 20 MB × 1.37 in RAM |
 | Filenames | JSON `name` | RFC 2231/5987 for non-ASCII names (`filename*=UTF-8''…`), plus an ASCII fallback; tested |
 | Content type | from extension | same helper (`mime_guess`-style table, `application/octet-stream` fallback) shared by both providers |
@@ -171,19 +171,54 @@ New routes (sketch): `GET /attach/limits?account=`, `POST /attach/validate` (pat
 - `xdg-terminal-exec` launching a picker from the daemon and returning via a temp file.
 - Done when: the four answers are written in this section; any "no" removes its item from phase 5.
 
+**Phase 0 results (2026-11-01; four of five spikes answered, drag-and-drop still needs a hand drag)**
+
+Gmail and Graph were run live from a throwaway integration test (`tests/spike_gmail.rs`, not committed) against `adam.macielinski@gmail.com` and the Exchange account. Message sizes below are the encoded RFC 822 size, attachment bytes incompressible. Every spike message was moved to Trash afterwards (Gmail), or removed (Graph forward draft).
+
+| Spike | Result |
+|---|---|
+| Gmail: size limits by send method | **`uploadType=media` and `resumable`: hard limit 36,700,160 bytes (35 MiB) of message.** Over it: `413`, `"Media is too large. Limit: 36700160"`, `FAILED_PRECONDITION`. Accepted at 10, 20, 24, 26, 30 MB (resumable also 24, 26). **The JSON `raw` field has no such limit at the API:** accepted at 4, 10, 20, 24, 26, 34, 40 and 60 MB (a 60 MB request took 19 s). |
+| Gmail: is 25 MB enforced? | **Not at the API.** A 24 MB and a 27 MB (28.3 MB encoded) message sent to the Exchange account both returned 200 and **arrived** (both in the cache with the attachment flag, ~1 min). No bounce. The only bounces seen were 40 MB and 60 MB messages sent to self (arrive minutes later in Inbox as a "Mail Delivery Subsystem … Your message was not sent" message, subject `Re: <original>`); 34 MB to self went through. So the real ceilings are: 35 MiB for the upload endpoints, something between 34 and 40 MB for delivery, plus whatever the **recipient** server accepts (Exchange Online took 28 MB). Not tested: an external recipient with a 25 MB cap. |
+| Gmail: speed | 24 MB: media 3.8 s, resumable 5.0 s, raw 7.6 s. Raw JSON is slowest (base64 twice, ~1.33x extra). |
+| Graph: does `createForward` copy attachments, can they be deleted from the draft? | **Yes to both** on a personal (non-shared) mailbox, with a 24 MB attachment: `createForward` returned 201 with `hasAttachments=true`, the draft listed the inherited `spike.bin`, `DELETE …/attachments/{id}` returned 204 and the list was then empty; deleting the draft returned 204. The 503 reported for shared mailboxes (Microsoft Q&A 5844120) did not occur here. So keep the planned "delete un-kept originals" route (3.4) for personal mailboxes and keep the rebuild-draft route as the fallback if a delete fails. |
+| External picker via `xdg-terminal-exec` + temp file | **Yes.** It blocks until the command exits (3 s sleep: returned after 3 s, exit 0) and a temp file written by the picker is readable afterwards. Terminal is foot; it prints a harmless `xdg-toplevel-icon` warning on stderr. fzf is installed; yazi, ranger and lf are not, so yazi's chooser flag is still unconfirmed. |
+| Clipboard file types from a file manager | **Yes.** Nautilus, after Ctrl+A / Ctrl+C on two files, offers: `x-special/gnome-copied-files` (`copy\nfile:///…\nfile:///…`), `text/uri-list` (`file:///…\r\n` per file), `text/plain;charset=utf-8`, `application/vnd.portal.filetransfer`, `application/vnd.portal.files`. Read `text/uri-list` first (percent-encoded URIs, CRLF), fall back to `gnome-copied-files` (first line is `copy` or `cut`). Other file managers not checked. |
+| QML `DropArea` inside Quickshell | **Not run.** Needs a real drag from Nautilus onto a scratch OmaLook window; a script cannot do it reliably. Ships only if it works (phase 5). |
+
+What changes in the plan:
+- **3.3 Gmail limit:** do not hard-code "25 MB including base64". Use the **upload endpoint** (`media`, or `resumable` above ~5 MB per Google's guide) with a **hard cap of 35 MiB encoded** (a 413 otherwise), show a **soft warning above ~25 MB** ("some recipients' servers may reject this"), and never use the JSON `raw` field for messages with attachments (no size gain, 2x slower, and it accepts messages that then bounce). Raw files ≈ encoded x 0.73, so the hard cap is about 25 MB of raw files and the warning starts near 18 MB.
+- **3.4 Forward on Graph:** the delete route works; the fallback stays.
+- **Q2 (open question 2)** now reads: block above 35 MiB, warn above 25 MB. Needs Adam's agreement.
+- **Cleanup:** the Gmail test messages are in Trash. Graph `DELETE` on a message is a hard delete into Recoverable Items (not Deleted Items), so the Exchange test copies are there. In phase 2 a test with a too-loose filter also deleted 10 real "[Preview] Report Domain" messages the same way; all 10 were moved back to the Inbox from Recoverable Items and the count was checked (29 before and after).
+
 ### Phase 1 — Truth and safety (backend only, no visible change)
+
+**Status: done 2026-11-01** (361 lib tests pass; not yet run through the live HTTP path: see TRACKER OL-035). Built as `src/attach_spool.rs`, limits table in `src/compose.rs` (`attachment_limits`, `check_attachments`), worker lifecycle in `src/outbox.rs`, `/attach/limits` in `src/main.rs`. Deviations from the text below: the spool is also removed when a send ends `failed` (nothing can retry a failed row, so keeping it would only leak disk); a spool younger than 1 hour is never swept (it may still be copying); the Gmail refusal stays until phase 2; the disk-full test exercises the write-failure path and the ENOSPC mapping separately because a full disk cannot be faked portably.
 - Spool snapshot (3.2), send-time re-validation, orphan sweep; unit tests: file deleted, replaced, grown during the undo window; Undo restores source paths; disk-full; sweep removes orphans.
 - Capability table per provider (3.3) and `GET /attach/limits`.
 - Document the existing compose attach keys in `KEYS.md`; fix the stale `modes.js` text.
 - Done when: a Graph message sent with a file deleted mid-window still delivers the original bytes, and a replaced file does not leak into the send.
 
 ### Phase 2 — Gmail attachments (parity with Graph)
+
+**Status: done 2026-11-01** except the UI listing of a forward's originals (phase 3). Built: `compose::write_mime` (multipart/mixed around plain or alternative, files base64-streamed in 57 x 2048-byte chunks, RFC 2231 names), `GoogleApi::upload_message` (resumable upload from a temp file, 8 MiB chunks, resumes from Google's reported offset), `GmailProvider::send_message` (files go through the upload path, no files keep the old `raw` path), `GmailProvider::fetch_originals` + `attachment_parts` (forward originals by MIME part id, `OutgoingMessage.forwarded_keep`), both refusals removed (daemon and `ComposeView.qml`).
+
+Live results against the real Gmail account (sent to self, read back through the API, bytes compared; this run: 1 file, 5 files including an empty and a 1-byte file and one crossing the 57 x 2048 chunk edge, a 15 MB file in 4.9-6.4 s, a non-ASCII name, an over-limit refusal, a threaded reply with a file, a forward with 2 kept originals plus a new file) all matched. Sent to the Exchange mailbox: name `für-outlook.bin` and all 200,000 bytes matched.
+
+Findings that changed the code:
+- **Gmail uses the first of `filename` / `filename*`.** With the ASCII fallback first the API returned `Pr_fung.pdf`; with `filename*=UTF-8''...` first (or alone, or as an encoded word) it returned the real name. Headers now put the `*` form first, for `name` and `filename`.
+- **Gmail has no attachment listing on the reading side yet** (the message list says "Gmail accounts are not supported yet"). The plan assumed reading-side code to reuse for forwarding originals; there was none, so `fetch_originals` reads `format=full` itself. Phase 3's forward chips for Gmail need a list of a message's attachments (`attachment_parts` is the start of it).
+- A forward on Gmail with `forwarded_keep: None` still sends no originals (Graph still keeps all); phase 3 makes both follow the user's chips.
+- Not run: a Gmail message at 25-35 MB through `send_message`; network drop mid-upload; resume after a 308 (the logic is written but only the all-in-order path was exercised live).
+
 - `build_mime`: `multipart/mixed` wrapping `alternative`/`plain`; streamed base64 (76-column lines), RFC 2231 filenames, content-type helper; golden tests (one file, many files, non-ASCII name, large file does not buffer, HTML + attachment, reply with threading headers + attachment).
 - Gmail upload path for large messages; limit enforcement from the table; remove both refusals (UI and `compose_send_response`).
 - Forward originals on Gmail via the spool (3.4).
 - Done when: a live Gmail send to self with 1 file, 5 files, a 15 MB file and a non-ASCII filename arrives intact in Gmail web and in Outlook web; an over-limit send is blocked with numbers.
 
 ### Phase 3 — Compact strip and list panel
+
+**Status 2026-11-01: built, partly verified.** See `docs/HANDOFF-compose-attachments.md` for what was seen on screen, what was not (Send refusal, palette twins, keyboard-only walkthrough, live forward on Graph and Gmail) and the known gaps. Rules chosen: up to 3 files get a chip each; with 4 or more, two chips and `+N`; no strip at all with 0 files.
 - `AttachStrip.qml`, `AttachList.qml`, commands `compose.attach`, `compose.attachments`, `compose.detach`, `compose.detach-all` (+ palette names), state glyphs, meter by From account, From-switch re-evaluation.
 - Forwarded originals appear as `↪` chips; Graph removal of un-kept originals.
 - Offscreen QML smoke test with 0, 1, 3, 4 and 40 files (constant strip height, editor does not move), keyboard-only walkthrough.

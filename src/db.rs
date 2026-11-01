@@ -1071,6 +1071,14 @@ impl Database {
         Ok(n == 1)
     }
 
+    /// Ids of every message (any account) that may still need its attachment spool: queued or
+    /// being sent. Everything else in the spool directory is an orphan.
+    pub fn outbox_live_ids(&self) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare("SELECT id FROM outbox WHERE state IN ('pending', 'sending')")?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?.collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
     /// `(state, last_error, attempts)` of a queued message.
     pub fn outbox_status(&self, id: &str) -> Result<Option<(String, Option<String>, i64)>> {
         match self.conn.query_row(

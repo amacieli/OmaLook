@@ -1,0 +1,56 @@
+const fs=require('fs');
+const src=fs.readFileSync('qml/compose/attach.js','utf8').replace('.pragma library','');
+const A=new Function(src+';return {layout,counted,capacity,meter,states,displayNames,combine,defaultLimits,encodedPart}')();
+const eq=(a,b,m)=>{ const x=JSON.stringify(a), y=JSON.stringify(b); if(x!==y){console.error('FAIL',m,x,y);process.exit(1)} };
+const MB=1048576;
+
+// which parts of the strip exist for N files
+eq(A.layout(0),{show:false,chips:0,more:0},'0 files: no strip');
+eq(A.layout(1),{show:true,chips:1,more:0},'1 file');
+eq(A.layout(3),{show:true,chips:3,more:0},'3 files: all chips');
+eq(A.layout(4),{show:true,chips:2,more:2},'4 files: two chips and +2');
+eq(A.layout(40),{show:true,chips:2,more:38},'40 files: two chips and +38');
+
+// limits per provider (same numbers as src/compose.rs)
+const g=A.defaultLimits('gmail'), x=A.defaultLimits('exchange');
+eq([g.hard,g.warn,g.basis],[36700160,25000000,'encoded'],'gmail limits');
+eq([x.hard,x.warn,x.basis],[150*MB,null,'raw'],'graph limits');
+
+// the estimate never undercounts what compose.rs counts (encoded_part_size: ceil(raw/3)*4 + CRLFs + 400)
+eq(A.encodedPart(0),400,'empty file');
+eq(A.encodedPart(57),76+2+400,'one full line');
+eq(A.encodedPart(58),80+2+2+400,'one line and a bit');
+
+// Graph counts raw bytes
+eq(A.meter(x,[{size:100*MB},{size:50*MB}]).level,'warn','150 MB is at the limit: warn, not over');
+eq(A.meter(x,[{size:100*MB},{size:51*MB}]).level,'over','151 MB is over for Graph');
+eq(A.meter(x,[{size:10*MB}]).level,'ok','10 MB is fine for Graph');
+eq(A.meter(x,[]).level,'ok','nothing attached');
+
+// Gmail counts the encoded message: 24 MB of files is over the soft limit but allowed, 27 MB is refused
+eq(A.meter(g,[{size:10*MB}]).level,'ok','10 MB of files on Gmail');
+eq(A.meter(g,[{size:24000000}]).level,'warn','24 MB of files on Gmail: warn');
+eq(A.meter(g,[{size:27*MB}]).level,'over','27 MiB of files on Gmail: over');
+eq(A.meter(g,[{size:26500000}]).level,'warn','26.5 MB still fits (as in the daemon test)');
+eq(A.meter(g,[{size:26900000}]).level,'over','26.9 MB does not (as in the daemon test)');
+
+// the "of y MB" figure for Gmail is the encoded limit shrunk by base64 growth
+const cap=A.capacity(g);
+eq(cap>26000000 && cap<27000000,true,'gmail capacity near 26.5 MB: '+cap);
+eq(A.capacity(x),150*MB,'graph capacity');
+
+// switching From re-evaluates: the same files are fine on Graph and over on Gmail, and one chip turns red
+const files=[{name:'small.txt',size:1000},{name:'huge.zip',size:27*MB}];
+eq(A.states(x,files).state,['ok','ok'],'fine on Graph');
+const sg=A.states(g,files);
+eq(sg.state,['ok','big'],'the biggest file turns red on Gmail');
+eq(/too big for Gmail/.test(sg.reason[1]),true,'reason names Gmail: '+sg.reason[1]);
+eq(sg.reason[0],'','no reason on a fine file');
+
+// duplicate names are told apart in the strip only
+eq(A.displayNames([{name:'scan.pdf'},{name:'b.txt'},{name:'Scan.pdf'},{name:'scan.pdf'}]),['scan.pdf','b.txt','Scan.pdf (2)','scan.pdf (3)'],'duplicates');
+
+// originals first, then picked files, each remembering its own index
+const rows=A.combine([{name:'o1',size:1},{name:'o2',size:2}],[{name:'p1',size:3}]);
+eq(rows.map(r=>r.origin+':'+r.ref),['original:0','original:1','picked:0'],'combined order');
+console.log('ok attach');

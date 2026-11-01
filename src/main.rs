@@ -847,9 +847,6 @@ fn compose_send_response(config_dir: &PathBuf, stream: &mut std::net::TcpStream,
     if let Err(e) = msg.validate() {
         return err(&e);
     }
-    if !msg.attachments.is_empty() && omalook::accounts::provider_of(&msg.account_id) == "gmail" {
-        return err("attachments are not supported for Gmail accounts yet");
-    }
     // A signed-out account has no worker, so the message would sit unsent without anyone knowing.
     if !SCHEDULER.get().map(|s| s.is_running(&msg.account_id)).unwrap_or(false) {
         return err("that account is not signed in, so it cannot send");
@@ -861,16 +858,52 @@ fn compose_send_response(config_dir: &PathBuf, stream: &mut std::net::TcpStream,
     let delay = omalook::settings::read_send_delay(&config_dir.join("settings.toml"));
     let now = Database::now_ms();
     let id = format!("ob-{:x}-{:03x}", now, COUNTER.fetch_add(1, Ordering::Relaxed) & 0xfff);
+    // Copy the attached files aside so the message goes out with exactly these bytes, whatever
+    // happens to the originals during the undo window (docs/PLAN-compose-attachments.md 3.2).
+    let spool_root = omalook::attach_spool::default_root();
+    let mut msg = msg;
+    msg.attachments = match omalook::attach_spool::snapshot(&spool_root, &id, &msg.attachments) {
+        Ok(a) => a,
+        Err(e) => return err(&e),
+    };
     let payload = match serde_json::to_string(&msg) {
         Ok(p) => p,
-        Err(e) => return err(&e.to_string()),
+        Err(e) => {
+            omalook::attach_spool::remove(&spool_root, &id);
+            return err(&e.to_string());
+        }
     };
     if let Err(e) = db.outbox_enqueue(&id, &msg.account_id, &payload, now + delay as i64 * 1000) {
+        omalook::attach_spool::remove(&spool_root, &id);
         return err(&format!("could not queue the message: {}", e));
     }
     omalook::sync_state::request_outbox_run();
     info!("Compose: queued {} ({} → {} recipient(s)), sends in {}s", id, msg.account_id, msg.to.len() + msg.cc.len() + msg.bcc.len(), delay);
     serde_json::json!({ "ok": true, "id": id, "delay_secs": delay }).to_string()
+}
+
+/// GET /compose/originals?id=MESSAGE — the files attached to the message being forwarded, for the
+/// forward's chips: `{"originals":[{"id","name","size"}]}` (ids: Graph attachment id, Gmail MIME part
+/// id) or `{"error"}`. Pictures embedded in the HTML are left out: they were never the user's to pick.
+fn compose_originals_json(config_dir: &PathBuf, id: &str) -> String {
+    let err = |m: &str| serde_json::json!({ "error": m }).to_string();
+    if id.is_empty() { return err("missing id"); }
+    let db = match Database::open(config_dir.join("messages.db").to_str().unwrap_or("messages.db")) {
+        Ok(db) => db,
+        Err(e) => return err(&format!("database: {}", e)),
+    };
+    let account = match db.message_account(id) { Ok(Some(a)) => a, _ => return err("unknown message") };
+    let list: Result<Vec<(String, String, i64)>, String> = if omalook::accounts::provider_of(&account) == "gmail" {
+        let rt = match tokio::runtime::Builder::new_current_thread().enable_all().build() { Ok(rt) => rt, Err(e) => return err(&format!("runtime: {}", e)) };
+        let p = omalook::providers::gmail::GmailProvider::new(&account, None);
+        rt.block_on(p.list_attachments(id)).map(|v| v.into_iter().map(|(i, n, s)| (i, n, s as i64)).collect()).map_err(|e| { warn!("Forward: attachment list failed for {}: {}", id, e); "could not read the original's attachments".to_string() })
+    } else {
+        attachment_list(config_dir, &db, id).map(|v| v.into_iter().filter(|a| !a.inline && a.saveable()).map(|a| (a.id, a.name, a.size)).collect())
+    };
+    match list {
+        Ok(v) => serde_json::json!({ "originals": v.into_iter().map(|(i, n, s)| serde_json::json!({ "id": i, "name": n, "size": s })).collect::<Vec<_>>() }).to_string(),
+        Err(e) => err(&e),
+    }
 }
 
 /// POST /compose/cancel?id=ID and GET /compose/status?id=ID.
@@ -885,6 +918,10 @@ fn compose_outbox_response(config_dir: &PathBuf, first_line: &str) -> String {
     let cancelled = if cancelling {
         match db.outbox_cancel(&id) { Ok(c) => c, Err(e) => return err(&e.to_string()) }
     } else { false };
+    if cancelled {
+        // The UI restores its own chips (original paths); the copies are no longer needed.
+        omalook::attach_spool::remove(&omalook::attach_spool::default_root(), &id);
+    }
     match db.outbox_status(&id) {
         Ok(Some((state, error, attempts))) => serde_json::json!({
             "ok": true, "cancelled": cancelled, "state": state, "error": error, "attempts": attempts
@@ -1692,6 +1729,29 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                     );
                     let _ = stream.write_all(response.as_bytes());
                     continue;
+                        body.len(), body
+                    );
+                    let _ = stream.write_all(response.as_bytes());
+                    continue;
+                }
+                // ── GET /compose/originals?id=MESSAGE — the attachments of the message being forwarded ──
+                if first_line.contains("GET /compose/originals") {
+                    let body = compose_originals_json(config_dir, &query_param(first_line, "id").unwrap_or_default());
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                        body.len(), body
+                    );
+                    let _ = stream.write_all(response.as_bytes());
+                    continue;
+                }
+                // ── GET /attach/limits?account=ID — what the account's provider accepts on one message ──
+                if first_line.contains("GET /attach/limits") {
+                    let provider = query_param(first_line, "account")
+                        .map(|a| omalook::accounts::provider_of(&a).to_string())
+                        .unwrap_or_default();
+                    let body = serde_json::to_string(&omalook::compose::attachment_limits(&provider)).unwrap_or_else(|_| "{}".into());
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                 }
 
                 // ── POST /calendar/event (JSON body; ?dry_run=1) — queue a new event; POST /calendar/event/undo?id= —

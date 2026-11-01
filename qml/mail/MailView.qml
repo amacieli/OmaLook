@@ -90,7 +90,13 @@ RowLayout {
       item.status = Qt.binding(function() { return root.app.composeStatus })
       item.listDir = function(path, hidden, cb) { root.app.listDir(path, hidden, cb) }
       item.browseDir = Qt.binding(function() { return root.app.attachBrowseDir })
+      item.fetchLimits = function(accountId, cb) { root.app.attachLimits(accountId, cb) }
+      item.fetchOriginals = function(messageId, cb) { root.app.composeOriginals(messageId, cb) }
       item.forceActiveFocus()
+    }
+    Connections {
+      target: root.app
+      function onComposeAction(name) { if (composeLoader.item) composeLoader.item.runCommand(name) }
     }
     Connections {
       target: composeLoader.item

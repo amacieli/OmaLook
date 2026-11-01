@@ -844,6 +844,27 @@ Item {
   // -> Mail) so it can still be taken back, then sends it at once from its own worker. The
   // compose pane closes straight away; SendToast shows each message's progress and offers Undo.
   property int sendDelaySecs: 3
+  // What the account's provider accepts per message (GET /attach/limits), for the attachment meter.
+  function attachLimits(accountId, cb) {
+    request("GET", "/attach/limits?account=" + encodeURIComponent(accountId), function(xhr) {
+      var r = null
+      try { r = JSON.parse(xhr.responseText) } catch (e) {}
+      if (xhr.status === 200 && r && r.hard) cb(r)
+    })
+  }
+
+  // The files attached to the message being forwarded (GET /compose/originals), for the forward's chips.
+  function composeOriginals(messageId, cb) {
+    request("GET", "/compose/originals?id=" + encodeURIComponent(messageId), function(xhr) {
+      var r = null
+      try { r = JSON.parse(xhr.responseText) } catch (e) {}
+      cb(xhr.status === 200 && r ? r : { error: "could not reach the backend" })
+    })
+  }
+
+  // The palette twins of the compose keys (attach, attachments, detach, detach-all): the open compose pane runs them.
+  signal composeAction(string name)
+
   property int maxSendDelaySecs: 60
 
   function applyMailSettings(d) {
@@ -1038,7 +1059,8 @@ Item {
     composeInitial = {
       kind: m.kind, accountId: m.account_id, inReplyTo: m.in_reply_to || "",
       to: _addrText(m.to), cc: _addrText(m.cc), bcc: _addrText(m.bcc),
-      subject: m.subject, quote: null, restore: m.body, mode: m.mode, attachments: m.attachments || []
+      subject: m.subject, quote: null, restore: m.body, mode: m.mode, attachments: m.attachments || [],
+      forwardedKeep: m.forwarded_keep
     }
     composing = true
     if (composeContacts.length === 0) loadComposeContacts()

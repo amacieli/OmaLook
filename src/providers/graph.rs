@@ -746,6 +746,21 @@ impl super::EmailProvider for GraphEmailProvider {
         let did = urlencoding::encode(&draft_id).into_owned();
 
         let finish = async {
+            // Forward: drop the original's attachments the user unticked. A failure here must stop
+            // the send: forwarding a file the user removed is worse than not sending.
+            if !fresh && msg.is_forward() {
+                if let Some(keep) = &msg.forwarded_keep {
+                    let sel = "$select=id,name,size,isInline&$top=200";
+                    let orig_enc = urlencoding::encode(&msg.in_reply_to).into_owned();
+                    let parse = |t: String| serde_json::from_str::<serde_json::Value>(&t).unwrap_or_default();
+                    let original = parse(call(reqwest::Method::GET, format!("/me/messages/{}/attachments?{}", orig_enc, sel), None).await?);
+                    let draft = parse(call(reqwest::Method::GET, format!("/me/messages/{}/attachments?{}", did, sel), None).await?);
+                    for aid in crate::attachments::unkept_draft_attachments(&original, keep, &draft) {
+                        call(reqwest::Method::DELETE, format!("/me/messages/{}/attachments/{}", did, urlencoding::encode(&aid)), None).await
+                            .map_err(|e| crate::errors::OmarchyError::HttpError(format!("could not remove an attachment you unticked from the forward: {}", e)))?;
+                    }
+                }
+            }
             if !fresh {
                 call(reqwest::Method::PATCH, format!("/me/messages/{}", did), Some(graph_message_json(msg))).await?;
             }

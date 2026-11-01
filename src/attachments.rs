@@ -68,6 +68,32 @@ pub fn from_graph(list: &serde_json::Value, body: Option<&str>) -> Vec<Attachmen
         .collect()
 }
 
+/// Forward on Graph: `createForward` copies every attachment of the original onto the draft, and
+/// the copies get new ids. Given the original's attachment list, the ids the user kept, and the
+/// draft's list (all Graph `/attachments` JSON with id, name, size, isInline), return the ids of
+/// the draft's attachments to delete. Copies are matched to originals by name and size, as a
+/// multiset (two files with the same name and size are two copies). Pictures that are part of the
+/// original's HTML (`isInline`) were never offered to the user, so they are always kept.
+pub fn unkept_draft_attachments(original: &serde_json::Value, keep: &[String], draft: &serde_json::Value) -> Vec<String> {
+    let key = |a: &serde_json::Value| (a["name"].as_str().unwrap_or("").to_string(), a["size"].as_i64().unwrap_or(-1));
+    let mut wanted: std::collections::HashMap<(String, i64), usize> = std::collections::HashMap::new();
+    for a in original["value"].as_array().into_iter().flatten() {
+        let id = a["id"].as_str().unwrap_or("");
+        if a["isInline"].as_bool().unwrap_or(false) || keep.iter().any(|k| k == id) {
+            *wanted.entry(key(a)).or_default() += 1;
+        }
+    }
+    let mut doomed = Vec::new();
+    for a in draft["value"].as_array().into_iter().flatten() {
+        let Some(id) = a["id"].as_str() else { continue };
+        match wanted.get_mut(&key(a)) {
+            Some(n) if *n > 0 => *n -= 1,
+            _ => doomed.push(id.to_string()),
+        }
+    }
+    doomed
+}
+
 /// Whether a list contains anything the user would call an attachment.
 pub fn any_real(list: &[Attachment]) -> bool {
     list.iter().any(|a| !a.inline)
@@ -271,5 +297,28 @@ mod tests {
         let h = dirs::home_dir().unwrap();
         assert_eq!(display_dir(&h.join("Downloads")), "~/Downloads");
         assert_eq!(display_dir(Path::new("/srv/in")), "/srv/in");
+    }
+
+    #[test]
+    fn forward_deletes_only_the_copies_the_user_unticked() {
+        let att = |id: &str, name: &str, size: i64, inline: bool| serde_json::json!({"id": id, "name": name, "size": size, "isInline": inline});
+        let original = serde_json::json!({"value": [att("o1", "a.pdf", 10, false), att("o2", "b.png", 20, false), att("o3", "logo.png", 5, true), att("o4", "a.pdf", 10, false)]});
+        // the draft's copies have different ids, in a different order
+        let draft = serde_json::json!({"value": [att("d4", "a.pdf", 10, false), att("d2", "b.png", 20, false), att("d3", "logo.png", 5, true), att("d1", "a.pdf", 10, false)]});
+        // keep only o1: one of the two identical a.pdf copies goes, b.png goes, the inline logo stays
+        let gone = unkept_draft_attachments(&original, &["o1".to_string()], &draft);
+        assert_eq!(gone.len(), 2, "{:?}", gone);
+        assert!(gone.contains(&"d2".to_string()), "b.png goes");
+        assert!(gone.contains(&"d1".to_string()) != gone.contains(&"d4".to_string()), "exactly one of the two identical a.pdf copies goes: {:?}", gone);
+        assert!(!gone.contains(&"d3".to_string()), "the inline logo stays");
+        // keep everything: nothing is deleted
+        assert!(unkept_draft_attachments(&original, &["o1".into(), "o2".into(), "o4".into()], &draft).is_empty());
+        // keep nothing: every real copy goes, the inline one stays
+        let mut none = unkept_draft_attachments(&original, &[], &draft);
+        none.sort();
+        assert_eq!(none, vec!["d1".to_string(), "d2".to_string(), "d4".to_string()]);
+        // a copy that matches no original is not ours to keep
+        let odd = serde_json::json!({"value": [att("x", "unknown.bin", 1, false)]});
+        assert_eq!(unkept_draft_attachments(&original, &["o1".into()], &odd), vec!["x".to_string()]);
     }
 }

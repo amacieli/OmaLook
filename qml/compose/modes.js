@@ -18,7 +18,7 @@ var FEATURES = {
   link:        { modes: ["system", "html"] },
   quote:       { modes: ["system", "html"] },
   undo:        { modes: ["system", "html"] },
-  attach:      { modes: ["system", "html"], soon: "attachments arrive with the send backend" },
+  attach:      { modes: ["system", "html"] },
   fontFamily:  { modes: ["html"] },
   fontSize:    { modes: ["html"] },
   textColor:   { modes: ["html"] },

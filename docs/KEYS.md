@@ -144,6 +144,48 @@ Change the folder with `[attachments] download_dir = "~/Documents/mail"` in `set
 file with your desktop's default application. Commands: `mail.attachments`, `mail.attachments.saveall` (also `:attachments`,
 `:saveattachments`). Gmail accounts are not supported yet.
 
+## Attaching files while composing
+
+These keys work in the compose pane. Text fields own their keys, so they are all Ctrl-based.
+
+Attached files show as **one line** between the header and the editor, whatever their number (no line at all with no files):
+`📎 3 files · 4.2 MB of 25 MB` and a chip per file (with 4 or more files: two chips and `+N`). The meter is in the warning
+colour above 80 % of what the From account's provider accepts, and in the error colour when Send would be refused; the biggest
+file then gets a red `!` chip whose tooltip says why. Switching From re-checks everything at once. A forwarded message's own
+files appear first, marked `↪`, ticked by default; remove the ones you do not want to forward like any other chip.
+
+| Key | Action |
+|-----|--------|
+| `Ctrl+Shift+A` | Open the file browser (same as the **Attach** button) |
+| `Ctrl+Shift+L` | Open the attachment list (or click the strip) |
+| `Ctrl+Shift+Backspace` | Remove the last file |
+
+The list is a panel of at most six rows under the strip, scrolling: `j`/`k` or `Down`/`Up` move, `PgUp`/`PgDn`/`Home`/`End`
+jump, `x` or `Delete` removes the highlighted file, `a` adds more (opens the file browser), `Esc` returns to the editor. Nothing
+else reaches the editor while it is open. Palette twins (only while a compose pane is open): `:attach`, `:attachments`,
+`:detach` (the last file), `:detach-all`. Commands: `compose.attach`, `compose.attachments`, `compose.detach`,
+`compose.detachall`.
+
+In the file browser (starts in the last folder you used):
+
+| Key | Action |
+|-----|--------|
+| type | Filter the list |
+| `Up` / `Down`, `PgUp` / `PgDn`, `Ctrl+P` / `Ctrl+N` | Move |
+| `Enter` | On a folder: open it. On a file: attach every ticked file, or just this one if none is ticked |
+| `Tab` | Tick or untick the highlighted file and move down. Ticks are lost when you change folder (OL-035 phase 4 will keep them) |
+| `Backspace` (empty filter) | Parent folder |
+| `/` or `~` first, then `Enter` | Jump to that path |
+| `Ctrl+H` | Show or hide hidden files |
+| `Esc` | Clear the filter, then close |
+
+Limits are checked live by the meter, when you press Send, and again just before the message goes out: Exchange takes
+150 MB of files in total; Gmail's limit is on the encoded message (files grow by about a third), so about 26 MB of files, and
+above about 18 MB the message may be rejected by the recipient's server (the meter turns to the warning colour). Folders cannot be attached. Files are copied aside
+the moment you press Send, so deleting or editing the original during the undo window does not change what is sent; Undo
+puts the original files back as chips. `GET /attach/limits?account=<id>` reports the limits for an account. Gmail accounts send attachments too
+(OL-035 phase 2). Plan: `docs/PLAN-compose-attachments.md`.
+
 ## Texts (SMS view)
 | Key | Command id | Does |
 |---|---|---|

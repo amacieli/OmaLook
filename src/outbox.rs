@@ -18,6 +18,8 @@ use crate::providers::EmailProvider;
 use crate::sync_state;
 use log::{error, info, warn};
 use regex::Regex;
+use std::collections::HashSet;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -30,6 +32,8 @@ pub struct OutboxWorker {
     account_id: String,
     db: Arc<Database>,
     provider: Arc<dyn EmailProvider>,
+    /// Where the attachment copies of queued messages live (`attach_spool`).
+    spool_root: PathBuf,
 }
 
 /// The human part of a provider error: Graph and Google wrap it in JSON.
@@ -45,7 +49,28 @@ fn short_error(e: &crate::errors::OmarchyError) -> String {
 
 impl OutboxWorker {
     pub fn new(account_id: &str, db: Arc<Database>, provider: Arc<dyn EmailProvider>) -> Self {
-        Self { account_id: account_id.to_string(), db, provider }
+        Self { account_id: account_id.to_string(), db, provider, spool_root: crate::attach_spool::default_root() }
+    }
+
+    pub fn with_spool_root(mut self, root: PathBuf) -> Self {
+        self.spool_root = root;
+        self
+    }
+
+    /// Remove spool directories nobody owns any more (a crash between copying and queuing, or
+    /// between sending and cleaning up).
+    fn sweep_spool(&self) {
+        let live: HashSet<String> = match self.db.outbox_live_ids() {
+            Ok(ids) => ids.into_iter().collect(),
+            Err(e) => {
+                error!("Outbox {}: cannot list live messages, not sweeping the attachment spool: {}", self.account_id, e);
+                return;
+            }
+        };
+        let n = crate::attach_spool::sweep(&self.spool_root, &live, crate::attach_spool::SWEEP_MIN_AGE);
+        if n > 0 {
+            info!("Outbox {}: removed {} orphaned attachment spool(s)", self.account_id, n);
+        }
     }
 
     /// Run until cancelled.
@@ -56,6 +81,7 @@ impl OutboxWorker {
             Err(e) => error!("Outbox {}: could not check for interrupted sends: {}", self.account_id, e),
         }
         let _ = self.db.outbox_prune(KEEP_MS);
+        self.sweep_spool();
         info!("Outbox worker started for {}", self.account_id);
 
         loop {
@@ -104,12 +130,20 @@ impl OutboxWorker {
                     continue;
                 }
             };
+            // What is about to go out must be what was queued: the spooled copies, intact.
+            if let Err(why) = crate::attach_spool::verify(&msg.attachments) {
+                error!("Outbox {}: {} not sent: {}", self.account_id, id, why);
+                let _ = self.db.outbox_mark_failed(&id, &why);
+                crate::attach_spool::remove(&self.spool_root, &id);
+                continue;
+            }
             match self.provider.send_message(&msg, &from).await {
                 Ok(()) => {
                     info!("Outbox {}: sent {} (attempt {})", self.account_id, id, attempt);
                     if let Err(e) = self.db.outbox_mark_sent(&id) {
                         error!("Outbox {}: sent {} but could not record it: {}", self.account_id, id, e);
                     }
+                    crate::attach_spool::remove(&self.spool_root, &id);
                     sync_state::bump_mail("message sent");
                 }
                 Err(e) if is_transient(&e) && attempt < MAX_ATTEMPTS => {
@@ -120,6 +154,7 @@ impl OutboxWorker {
                 Err(e) => {
                     error!("Outbox {}: {} failed: {}", self.account_id, id, e);
                     let _ = self.db.outbox_mark_failed(&id, &short_error(&e));
+                    crate::attach_spool::remove(&self.spool_root, &id);
                 }
             }
         }
@@ -140,6 +175,8 @@ mod tests {
     struct Fake {
         sent: Mutex<Vec<(OutgoingMessage, String)>>,
         script: Mutex<Vec<Result<()>>>,
+        /// The bytes of each attachment as they were on disk at the moment of sending.
+        files: Mutex<Vec<Vec<u8>>>,
     }
 
     #[async_trait]
@@ -150,6 +187,9 @@ mod tests {
         async fn is_token_valid(&self) -> Result<bool> { Ok(true) }
         async fn send_message(&self, msg: &OutgoingMessage, from: &str) -> Result<()> {
             self.sent.lock().unwrap().push((msg.clone(), from.to_string()));
+            for a in &msg.attachments {
+                self.files.lock().unwrap().push(std::fs::read(&a.path).unwrap_or_default());
+            }
             let mut s = self.script.lock().unwrap();
             if s.is_empty() { Ok(()) } else { s.remove(0) }
         }
@@ -170,7 +210,7 @@ mod tests {
 
     fn setup(script: Vec<Result<()>>) -> (OutboxWorker, Arc<Fake>, Arc<Database>) {
         let db = Arc::new(Database::open_for_account(":memory:", "a1").unwrap());
-        let fake = Arc::new(Fake { sent: Mutex::new(vec![]), script: Mutex::new(script) });
+        let fake = Arc::new(Fake { sent: Mutex::new(vec![]), script: Mutex::new(script), files: Mutex::new(vec![]) });
         (OutboxWorker::new("a1", db.clone(), fake.clone()), fake, db)
     }
 
@@ -276,5 +316,108 @@ mod tests {
         db.outbox_enqueue("o1", "a1", &payload("x"), 0).unwrap();
         block(w.drain());
         assert_eq!(fake.sent.lock().unwrap()[0].1, "me@gmail.example");
+    }
+
+    // ---- attachment spool lifecycle (docs/PLAN-compose-attachments.md, phase 1)
+
+    fn tdir(tag: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("olook-outbox-{}-{}", tag, std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    /// Queue a message with one attached file the way `/compose/send` does: spool first, then enqueue.
+    fn queue_with_file(db: &Database, root: &std::path::Path, id: &str, file: &std::path::Path) -> OutgoingMessage {
+        let mut m: OutgoingMessage = serde_json::from_str(&payload("with file")).unwrap();
+        m.attachments = vec![crate::compose::OutgoingAttachment { path: file.to_string_lossy().into(), ..Default::default() }];
+        m.attachments = crate::attach_spool::snapshot(root, id, &m.attachments).unwrap();
+        db.outbox_enqueue(id, "a1", &serde_json::to_string(&m).unwrap(), Database::now_ms()).unwrap();
+        m
+    }
+
+    #[test]
+    fn a_file_deleted_or_replaced_during_the_undo_window_still_sends_the_original_bytes() {
+        let (src, root) = (tdir("a-src"), tdir("a-root"));
+        let (w, fake, db) = setup(vec![]);
+        let w = w.with_spool_root(root.clone());
+        let (gone, replaced) = (src.join("gone.txt"), src.join("replaced.txt"));
+        std::fs::write(&gone, b"original one").unwrap();
+        std::fs::write(&replaced, b"original two").unwrap();
+        queue_with_file(&db, &root, "o1", &gone);
+        queue_with_file(&db, &root, "o2", &replaced);
+        std::fs::remove_file(&gone).unwrap();
+        std::fs::write(&replaced, b"something else entirely").unwrap();
+        assert_eq!(block(w.drain()), 2);
+        assert_eq!(*fake.files.lock().unwrap(), vec![b"original one".to_vec(), b"original two".to_vec()]);
+        assert_eq!(db.outbox_status("o1").unwrap().unwrap().0, "sent");
+        assert!(!crate::attach_spool::spool_dir(&root, "o1").exists(), "spool removed once sent");
+        assert!(!crate::attach_spool::spool_dir(&root, "o2").exists());
+        std::fs::remove_dir_all(&src).ok();
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn a_missing_spool_copy_fails_the_message_without_calling_the_provider() {
+        let (src, root) = (tdir("b-src"), tdir("b-root"));
+        let (w, fake, db) = setup(vec![]);
+        let w = w.with_spool_root(root.clone());
+        let f = src.join("a.txt");
+        std::fs::write(&f, b"x").unwrap();
+        let m = queue_with_file(&db, &root, "o1", &f);
+        std::fs::remove_file(&m.attachments[0].path).unwrap();
+        block(w.drain());
+        assert!(fake.sent.lock().unwrap().is_empty());
+        let st = db.outbox_status("o1").unwrap().unwrap();
+        assert_eq!(st.0, "failed");
+        assert_eq!(st.1.as_deref(), Some("the prepared copy of a.txt is missing"));
+        std::fs::remove_dir_all(&src).ok();
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn the_spool_survives_a_retry_and_goes_when_the_send_finally_fails() {
+        let (src, root) = (tdir("c-src"), tdir("c-root"));
+        let (w, fake, db) = setup(vec![
+            Err(OmarchyError::HttpError("error sending request for url (x)".into())),
+            Err(OmarchyError::HttpError("Graph API error: 400 Bad Request — {\"error\":{\"message\":\"nope\"}}".into())),
+        ]);
+        let w = w.with_spool_root(root.clone());
+        let f = src.join("a.txt");
+        std::fs::write(&f, b"bytes").unwrap();
+        queue_with_file(&db, &root, "o1", &f);
+        block(w.drain());
+        assert_eq!(db.outbox_status("o1").unwrap().unwrap().0, "pending", "network failure: queued again");
+        assert!(crate::attach_spool::spool_dir(&root, "o1").exists(), "the retry needs the copy");
+        db.outbox_mark_retry("o1", "net", 0).unwrap(); // due again
+        block(w.drain());
+        assert_eq!(db.outbox_status("o1").unwrap().unwrap().0, "failed");
+        assert!(!crate::attach_spool::spool_dir(&root, "o1").exists());
+        assert_eq!(*fake.files.lock().unwrap(), vec![b"bytes".to_vec(), b"bytes".to_vec()], "both attempts sent the same bytes");
+        std::fs::remove_dir_all(&src).ok();
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn the_startup_sweep_keeps_queued_spools_and_removes_orphans() {
+        let (src, root) = (tdir("d-src"), tdir("d-root"));
+        let (w, _fake, db) = setup(vec![]);
+        let w = w.with_spool_root(root.clone());
+        let f = src.join("a.txt");
+        std::fs::write(&f, b"x").unwrap();
+        db.outbox_enqueue("gone", "a1", "{}", Database::now_ms() + 60_000).unwrap();
+        queue_with_file(&db, &root, "queued", &f);
+        crate::attach_spool::snapshot(&root, "orphan", &[crate::compose::OutgoingAttachment { path: f.to_string_lossy().into(), ..Default::default() }]).unwrap();
+        assert_eq!(db.outbox_live_ids().unwrap().len(), 2);
+        // fresh directories are never swept (they may still be copying)...
+        w.sweep_spool();
+        assert!(crate::attach_spool::spool_dir(&root, "orphan").exists());
+        // ...and an old orphan goes while the queued message's copy stays.
+        let live: std::collections::HashSet<String> = db.outbox_live_ids().unwrap().into_iter().collect();
+        assert_eq!(crate::attach_spool::sweep(&root, &live, Duration::ZERO), 1);
+        assert!(crate::attach_spool::spool_dir(&root, "queued").exists());
+        assert!(!crate::attach_spool::spool_dir(&root, "orphan").exists());
+        std::fs::remove_dir_all(&src).ok();
+        std::fs::remove_dir_all(&root).ok();
     }
 }

@@ -44,6 +44,10 @@ pub struct OutgoingAttachment {
     /// Empty means guessed from the file name.
     #[serde(default)]
     pub content_type: String,
+    /// Set once the file has been copied into the outgoing spool (`attach_spool`): `path` is then
+    /// the spool copy and this is the file the user picked. Empty for a message not yet queued.
+    #[serde(default)]
+    pub source_path: String,
 }
 
 impl OutgoingAttachment {
@@ -88,6 +92,11 @@ pub struct OutgoingMessage {
     pub body: Body,
     #[serde(default)]
     pub attachments: Vec<OutgoingAttachment>,
+    /// Forward only: ids of the original message's attachments the user kept (Gmail: the MIME
+    /// `partId`). `None` means the UI did not say, and Gmail sends no originals. Graph keeps them
+    /// all until phase 3 teaches it to drop the others.
+    #[serde(default)]
+    pub forwarded_keep: Option<Vec<String>>,
 }
 
 /// Largest body accepted (the HTTP layer reads at most this much anyway).
@@ -95,6 +104,87 @@ pub const MAX_BODY_BYTES: usize = 8 * 1024 * 1024;
 
 /// Graph accepts at most 150 MB of attachments on one message.
 pub const MAX_ATTACHMENT_TOTAL: u64 = 150 * 1024 * 1024;
+
+/// Gmail's upload endpoints refuse a message above 35 MiB (`413 Media is too large. Limit:
+/// 36700160`, measured in the phase-0 spike of docs/PLAN-compose-attachments.md). The size
+/// counted is the encoded RFC 822 message, not the raw files.
+pub const GMAIL_HARD_ENCODED: u64 = 36_700_160;
+
+/// Above this encoded size Gmail still accepts the message but some recipients' servers may not
+/// (Gmail's documented limit is 25 MB). A warning, never a block.
+pub const GMAIL_WARN_ENCODED: u64 = 25_000_000;
+
+/// What one provider accepts on one message. `basis` says what the numbers measure: the raw
+/// files (Graph) or the encoded message (Gmail, where base64 and line breaks add about a third).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct AttachmentLimits {
+    pub provider: String,
+    pub basis: &'static str,
+    pub hard: u64,
+    pub warn: Option<u64>,
+}
+
+pub fn attachment_limits(provider: &str) -> AttachmentLimits {
+    match provider {
+        "gmail" => AttachmentLimits { provider: "gmail".into(), basis: "encoded", hard: GMAIL_HARD_ENCODED, warn: Some(GMAIL_WARN_ENCODED) },
+        other => AttachmentLimits { provider: other.into(), basis: "raw", hard: MAX_ATTACHMENT_TOTAL, warn: None },
+    }
+}
+
+/// Size of one file as a base64 MIME part: 4 bytes per 3, a CRLF every 76 characters, and a
+/// few hundred bytes of part headers.
+pub fn encoded_part_size(raw: u64) -> u64 {
+    let b64 = raw.div_ceil(3) * 4;
+    b64 + b64.div_ceil(76) * 2 + 400
+}
+
+/// Result of measuring a set of files against a provider's limits.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AttachmentCheck {
+    pub total_raw: u64,
+    /// The figure compared with the limits (raw total for Graph, estimated message size for Gmail).
+    pub counted: u64,
+    pub hard: u64,
+    pub warn: Option<u64>,
+    pub biggest: Option<(String, u64)>,
+}
+
+impl AttachmentCheck {
+    pub fn over_hard(&self) -> bool {
+        self.counted > self.hard
+    }
+    pub fn over_warn(&self) -> bool {
+        self.warn.map(|w| self.counted > w).unwrap_or(false)
+    }
+
+    /// The message to show when Send must be refused: exact numbers, biggest file named.
+    pub fn error(&self) -> Option<String> {
+        if !self.over_hard() {
+            return None;
+        }
+        let mb = |n: u64| format!("{:.1} MB", n as f64 / (1024.0 * 1024.0));
+        let big = self.biggest.as_ref().map(|(n, s)| format!(" (the biggest is {}, {})", n, mb(*s))).unwrap_or_default();
+        Some(if self.warn.is_some() {
+            format!("the message would be {} with the attachments encoded; Gmail takes at most {}{}", mb(self.counted), mb(self.hard), big)
+        } else {
+            format!("attachments total {}; the limit is {}{}", mb(self.counted), mb(self.hard), big)
+        })
+    }
+}
+
+/// Measure `files` (display name, size) plus a body of `body_len` bytes against `provider`.
+pub fn check_attachments(provider: &str, body_len: usize, files: &[(String, u64)]) -> AttachmentCheck {
+    let lim = attachment_limits(provider);
+    let total_raw: u64 = files.iter().map(|f| f.1).sum();
+    let counted = if lim.basis == "encoded" {
+        // Headers, and a body that may be sent as both plain text and HTML.
+        4096 + body_len as u64 * 2 + files.iter().map(|f| encoded_part_size(f.1)).sum::<u64>()
+    } else {
+        total_raw
+    };
+    let biggest = files.iter().max_by_key(|f| f.1).cloned();
+    AttachmentCheck { total_raw, counted, hard: lim.hard, warn: lim.warn, biggest }
+}
 
 /// Graph's limit for adding a file in one request; anything this big or bigger goes through an
 /// upload session.
@@ -143,7 +233,7 @@ impl OutgoingMessage {
     /// Every attached file must still exist as a readable regular file, and together they must
     /// fit what the provider accepts. Sizes come from the disk.
     pub fn validate_attachments(&self) -> Result<(), String> {
-        let mut total: u64 = 0;
+        let mut files: Vec<(String, u64)> = Vec::new();
         for a in &self.attachments {
             let name = a.display_name();
             let meta = std::fs::metadata(&a.path).map_err(|_| format!("{} is no longer there", name))?;
@@ -153,12 +243,12 @@ impl OutgoingMessage {
             if std::fs::File::open(&a.path).is_err() {
                 return Err(format!("{} cannot be read", name));
             }
-            total += meta.len();
+            files.push((name, meta.len()));
         }
-        if total > MAX_ATTACHMENT_TOTAL {
-            return Err(format!("attachments total {} MB; the limit is {} MB", total / (1024 * 1024), MAX_ATTACHMENT_TOTAL / (1024 * 1024)));
+        match check_attachments(crate::accounts::provider_of(&self.account_id), self.body.content.len(), &files).error() {
+            Some(e) => Err(e),
+            None => Ok(()),
         }
-        Ok(())
     }
 
     /// True for the kinds that continue an existing conversation and name the message they answer.
@@ -477,9 +567,8 @@ fn address_list(list: &[Address]) -> String {
     list.iter().map(format_address).collect::<Vec<_>>().join(", ")
 }
 
-/// Build the RFC 5322 message. `boundary` and `date` are parameters so tests are deterministic.
-pub fn build_mime(msg: &OutgoingMessage, from: &str, reply: Option<&ReplyHeaders>, boundary: &str, date: &str) -> String {
-    let (html, text) = prepare_bodies(msg);
+/// Header block shared by every message shape (everything up to, not including, Content-Type).
+fn mime_headers(msg: &OutgoingMessage, from: &str, reply: Option<&ReplyHeaders>, date: &str) -> String {
     let mut h = String::new();
     fn line(h: &mut String, k: &str, v: &str) {
         h.push_str(k);
@@ -509,17 +598,21 @@ pub fn build_mime(msg: &OutgoingMessage, from: &str, reply: Option<&ReplyHeaders
         }
     }
     line(&mut h, "MIME-Version", "1.0");
+    h
+}
 
+/// The text of the message as one MIME entity: its own headers, a blank line, and the content
+/// (plain text, or multipart/alternative with the plain text first).
+fn body_entity(msg: &OutgoingMessage, boundary: &str) -> String {
+    let (html, text) = prepare_bodies(msg);
+    let mut h = String::new();
     match html {
         None => {
-            line(&mut h, "Content-Type", "text/plain; charset=UTF-8");
-            line(&mut h, "Content-Transfer-Encoding", "base64");
-            h.push_str("\r\n");
+            h.push_str("Content-Type: text/plain; charset=UTF-8\r\nContent-Transfer-Encoding: base64\r\n\r\n");
             h.push_str(&b64_wrapped(text.as_bytes()));
         }
         Some(html) => {
-            line(&mut h, "Content-Type", &format!("multipart/alternative; boundary=\"{}\"", boundary));
-            h.push_str("\r\n");
+            h.push_str(&format!("Content-Type: multipart/alternative; boundary=\"{}\"\r\n\r\n", boundary));
             for (ctype, content) in [("text/plain", text.as_str()), ("text/html", html.as_str())] {
                 h.push_str(&format!("--{}\r\nContent-Type: {}; charset=UTF-8\r\nContent-Transfer-Encoding: base64\r\n\r\n", boundary, ctype));
                 h.push_str(&b64_wrapped(content.as_bytes()));
@@ -528,6 +621,117 @@ pub fn build_mime(msg: &OutgoingMessage, from: &str, reply: Option<&ReplyHeaders
         }
     }
     h
+}
+
+/// Build the RFC 5322 message for a message **without attachments**. `boundary` and `date` are
+/// parameters so tests are deterministic. With files use `write_mime`, which streams them.
+pub fn build_mime(msg: &OutgoingMessage, from: &str, reply: Option<&ReplyHeaders>, boundary: &str, date: &str) -> String {
+    let mut h = mime_headers(msg, from, reply, date);
+    h.push_str(&body_entity(msg, boundary));
+    h
+}
+
+/// A file name as a quoted-string: printable ASCII only, quotes and backslashes made harmless.
+fn ascii_filename(name: &str) -> String {
+    name.chars().map(|c| if c.is_ascii_graphic() || c == ' ' { if c == '"' || c == '\\' { '_' } else { c } } else { '_' }).collect()
+}
+
+/// RFC 5987 percent-encoding of a UTF-8 parameter value (`filename*=UTF-8''...`).
+fn rfc5987(name: &str) -> String {
+    let mut out = String::new();
+    for b in name.bytes() {
+        if b.is_ascii_alphanumeric() || b"!#$&+-.^_`|~".contains(&b) {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{:02X}", b));
+        }
+    }
+    out
+}
+
+/// `Content-Type` value that cannot break the header: a plain `type/subtype` token or octet-stream.
+fn safe_content_type(t: &str) -> String {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| Regex::new(r"^[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]*/[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]*$").unwrap());
+    if re.is_match(t) { t.to_string() } else { "application/octet-stream".to_string() }
+}
+
+/// Headers of one attachment part. When the name is not plain ASCII both forms are given, **the
+/// RFC 2231 `*` form first**: measured against Gmail, whichever of the two comes first wins, so
+/// the ASCII fallback only serves clients that do not understand `*`.
+fn attachment_headers(a: &OutgoingAttachment) -> String {
+    let name = a.display_name();
+    let plain = ascii_filename(&name);
+    let star = if plain != name { Some(rfc5987(&name)) } else { None };
+    let params = |key: &str| match &star {
+        Some(star) => format!(";\r\n\t{}*=UTF-8''{};\r\n\t{}=\"{}\"", key, star, key, plain),
+        None => format!(";\r\n\t{}=\"{}\"", key, plain),
+    };
+    format!(
+        "Content-Type: {}{}\r\nContent-Disposition: attachment{}\r\nContent-Transfer-Encoding: base64\r\n\r\n",
+        safe_content_type(&a.mime_type()),
+        params("name"),
+        params("filename")
+    )
+}
+
+/// Base64 of everything `input` yields, in 76-column CRLF lines, written as it is read: memory
+/// use is one buffer, whatever the file size.
+fn write_b64_stream<R: std::io::Read, W: std::io::Write>(input: &mut R, w: &mut W) -> std::io::Result<()> {
+    // A multiple of 57 bytes encodes to whole 76-character lines; only the last chunk is short.
+    const CHUNK: usize = 57 * 2048;
+    let mut buf = vec![0u8; CHUNK];
+    loop {
+        let mut filled = 0;
+        while filled < CHUNK {
+            let n = input.read(&mut buf[filled..])?;
+            if n == 0 {
+                break;
+            }
+            filled += n;
+        }
+        if filled == 0 {
+            return Ok(());
+        }
+        let enc = b64(&buf[..filled]);
+        let mut out = String::with_capacity(enc.len() + enc.len() / 38 + 2);
+        for line in enc.as_bytes().chunks(76) {
+            out.push_str(std::str::from_utf8(line).unwrap());
+            out.push_str("\r\n");
+        }
+        w.write_all(out.as_bytes())?;
+        if filled < CHUNK {
+            return Ok(());
+        }
+    }
+}
+
+/// Write the whole message, attachments included, to `w`. Files are read and encoded in
+/// chunks; nothing is held in memory but the text of the message. The outer boundary is derived
+/// from `boundary` (`<boundary>-mixed`) so the same value drives both levels in tests.
+pub fn write_mime<W: std::io::Write>(
+    w: &mut W,
+    msg: &OutgoingMessage,
+    attachments: &[OutgoingAttachment],
+    from: &str,
+    reply: Option<&ReplyHeaders>,
+    boundary: &str,
+    date: &str,
+) -> std::io::Result<()> {
+    if attachments.is_empty() {
+        return w.write_all(build_mime(msg, from, reply, boundary, date).as_bytes());
+    }
+    let outer = format!("{}-mixed", boundary);
+    w.write_all(mime_headers(msg, from, reply, date).as_bytes())?;
+    w.write_all(format!("Content-Type: multipart/mixed; boundary=\"{}\"\r\n\r\n--{}\r\n", outer, outer).as_bytes())?;
+    w.write_all(body_entity(msg, boundary).as_bytes())?;
+    for a in attachments {
+        w.write_all(format!("--{}\r\n", outer).as_bytes())?;
+        w.write_all(attachment_headers(a).as_bytes())?;
+        let mut f = std::fs::File::open(&a.path).map_err(|e| std::io::Error::new(e.kind(), format!("{}: {}", a.display_name(), e)))?;
+        write_b64_stream(&mut f, w)?;
+    }
+    w.write_all(format!("--{}--\r\n", outer).as_bytes())
 }
 
 // ─────────────────────────────────────────────────────────── retry policy
@@ -812,5 +1016,233 @@ mod tests {
         assert!(r.windows(2).all(|w| w[1].0 == w[0].1 + 1));
         assert_eq!(UPLOAD_CHUNK % 327_680, 0);
         assert!(UPLOAD_CHUNK <= 4 * 1024 * 1024);
+    }
+
+    // ---- provider limits (phase 0 measured: Gmail upload endpoints stop at 36,700,160 bytes)
+
+    const MIB: u64 = 1024 * 1024;
+
+    #[test]
+    fn graph_counts_raw_bytes_against_150_mb() {
+        let ok = check_attachments("exchange", 100, &[("a.bin".into(), 100 * MIB), ("b.bin".into(), 50 * MIB)]);
+        assert_eq!(ok.counted, 150 * MIB);
+        assert!(!ok.over_hard() && !ok.over_warn() && ok.error().is_none());
+        let over = check_attachments("exchange", 100, &[("a.bin".into(), 40 * MIB), ("big.iso".into(), 111 * MIB)]);
+        assert_eq!(over.error().unwrap(), "attachments total 151.0 MB; the limit is 150.0 MB (the biggest is big.iso, 111.0 MB)");
+    }
+
+    #[test]
+    fn gmail_counts_the_encoded_message_and_names_the_biggest_file() {
+        // 24 MB of files encode to about 32.9 MB: under the hard limit, over the soft one.
+        let m = check_attachments("gmail", 1000, &[("a.pdf".into(), 24_000_000)]);
+        assert!(m.counted > 32_000_000 && m.counted < 33_500_000, "{}", m.counted);
+        assert!(!m.over_hard() && m.over_warn());
+        assert!(m.error().is_none(), "a warning is not a refusal");
+        // 27 MB of files encode past 35 MiB: refused, with the numbers.
+        let big = check_attachments("gmail", 1000, &[("small.txt".into(), 1000), ("huge.zip".into(), 27 * MIB)]);
+        assert!(big.over_hard());
+        let e = big.error().unwrap();
+        assert!(e.contains("Gmail takes at most 35.0 MB") && e.contains("the biggest is huge.zip, 27.0 MB"), "{}", e);
+        // about 25 MB of raw files is the edge (35 MiB / 1.37)
+        assert!(!check_attachments("gmail", 0, &[("a".into(), 26_500_000)]).over_hard());
+        assert!(check_attachments("gmail", 0, &[("a".into(), 26_900_000)]).over_hard());
+    }
+
+    #[test]
+    fn the_encoded_size_estimate_is_never_below_the_real_one() {
+        // Real encoding: base64 (4 per 3) with CRLF every 76 characters, plus part headers.
+        for raw in [0u64, 1, 2, 3, 57, 58, 1_000, 1_048_576, 10_000_001] {
+            let real = raw.div_ceil(3) * 4 + (raw.div_ceil(3) * 4).div_ceil(76) * 2 + 200;
+            assert!(encoded_part_size(raw) >= real, "{}", raw);
+        }
+    }
+
+    #[test]
+    fn limits_table_per_provider() {
+        let g = attachment_limits("gmail");
+        assert_eq!((g.basis, g.hard, g.warn), ("encoded", 36_700_160, Some(25_000_000)));
+        let x = attachment_limits("exchange");
+        assert_eq!((x.basis, x.hard, x.warn), ("raw", 150 * MIB, None));
+        assert_eq!(serde_json::to_value(&g).unwrap()["hard"], 36_700_160);
+    }
+
+    #[test]
+    fn validate_uses_the_accounts_provider() {
+        let d = tmpdir("lim");
+        let mut m = msg("text", "hi", "system");
+        m.account_id = "gmail-abc123".into();
+        let p = d.join("big.bin");
+        let f = std::fs::File::create(&p).unwrap();
+        f.set_len(27 * MIB).unwrap(); // sparse: costs no disk
+        m.attachments = vec![OutgoingAttachment { path: p.to_string_lossy().into(), ..Default::default() }];
+        assert!(m.validate().unwrap_err().contains("Gmail takes at most"));
+        m.account_id = "exchange-abc123".into();
+        assert!(m.validate().is_ok(), "27 MB is fine for Graph");
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    // ---- MIME with attachments (goldens by structure; no MIME parser in the tree)
+
+    const DATE: &str = "Thu, 08 Oct 2026 12:00:00 +0000";
+
+    fn mime_with(m: &OutgoingMessage, files: &[OutgoingAttachment], reply: Option<&ReplyHeaders>) -> String {
+        let mut out = Vec::new();
+        write_mime(&mut out, m, files, "me@example.com", reply, "BND", DATE).unwrap();
+        String::from_utf8(out).expect("MIME is 7-bit ASCII")
+    }
+
+    /// The attachment parts of a mixed message: (headers, decoded bytes).
+    fn attachment_parts_of(raw: &str) -> Vec<(String, Vec<u8>)> {
+        use base64::Engine;
+        let mut out = Vec::new();
+        for part in raw.split("--BND-mixed\r\n").skip(1) {
+            let Some((head, rest)) = part.split_once("\r\n\r\n") else { continue };
+            if !head.contains("Content-Disposition: attachment") {
+                continue;
+            }
+            let body = rest.split("\r\n--BND-mixed").next().unwrap().replace("\r\n", "");
+            out.push((head.to_string(), base64::engine::general_purpose::STANDARD.decode(body).unwrap()));
+        }
+        out
+    }
+
+    fn disk_file(dir: &std::path::Path, name: &str, bytes: &[u8]) -> OutgoingAttachment {
+        file_in(dir, name, bytes)
+    }
+
+    #[test]
+    fn one_file_makes_a_mixed_message_with_the_text_first() {
+        let d = tmpdir("m1");
+        let a = disk_file(&d, "report.pdf", b"%PDF-1.4 hello");
+        let raw = mime_with(&msg("text", "see attached", "system"), &[a], None);
+        assert!(raw.contains("MIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=\"BND-mixed\"\r\n\r\n--BND-mixed\r\nContent-Type: text/plain; charset=UTF-8\r\n"), "{}", raw);
+        assert_eq!(decode_part(&raw, "text/plain"), "see attached");
+        let parts = attachment_parts_of(&raw);
+        assert_eq!(parts.len(), 1);
+        assert!(parts[0].0.contains("Content-Type: application/pdf;\r\n\tname=\"report.pdf\""), "{}", parts[0].0);
+        assert!(parts[0].0.contains("filename=\"report.pdf\"") && !parts[0].0.contains("filename*"), "plain names have no RFC 2231 form");
+        assert_eq!(parts[0].1, b"%PDF-1.4 hello");
+        assert!(raw.ends_with("--BND-mixed--\r\n"));
+        for l in raw.split("\r\n") { assert!(l.len() <= 998, "line too long"); }
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn many_files_keep_order_and_bytes_across_encoding_chunk_edges() {
+        let d = tmpdir("m5");
+        // Sizes chosen around the 57-byte line and the 57*2048-byte chunk.
+        let chunk = 57 * 2048;
+        let sizes = [0usize, 1, 2, 56, 57, 58, chunk - 1, chunk, chunk + 1, 2 * chunk + 5];
+        let mut files = Vec::new();
+        let mut want: Vec<Vec<u8>> = Vec::new();
+        for (i, n) in sizes.iter().enumerate() {
+            let bytes: Vec<u8> = (0..*n).map(|k| ((k * 31 + i * 7) % 251) as u8).collect();
+            files.push(disk_file(&d, &format!("f{}.bin", i), &bytes));
+            want.push(bytes);
+        }
+        let raw = mime_with(&msg("text", "x", "system"), &files, None);
+        let parts = attachment_parts_of(&raw);
+        assert_eq!(parts.len(), sizes.len());
+        for (i, (head, bytes)) in parts.iter().enumerate() {
+            assert!(head.contains(&format!("filename=\"f{}.bin\"", i)), "{}", head);
+            assert_eq!(bytes, &want[i], "file {} ({} bytes)", i, sizes[i]);
+        }
+        // every base64 line is at most 76 characters
+        for l in raw.split("\r\n") {
+            if !l.is_empty() && !l.contains(':') && !l.starts_with("--") && !l.starts_with('\t') { assert!(l.len() <= 76, "{}", l.len()); }
+        }
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn a_non_ascii_name_gets_an_ascii_fallback_and_an_rfc_2231_form() {
+        let d = tmpdir("mu");
+        let mut a = disk_file(&d, "plain.txt", b"x");
+        a.name = "Prüfung \"Q3\" – 日本語.pdf".into();
+        let raw = mime_with(&msg("text", "x", "system"), &[a], None);
+        let head = &attachment_parts_of(&raw)[0].0;
+        assert!(head.contains("filename=\"Pr_fung _Q3_ _ ___.pdf\""), "{}", head);
+        assert!(head.contains("filename*=UTF-8''Pr%C3%BCfung%20%22Q3%22%20%E2%80%93%20%E6%97%A5%E6%9C%AC%E8%AA%9E.pdf"), "{}", head);
+        // Gmail uses the first of the two, so the `*` form must come first
+        assert!(head.find("filename*=").unwrap() < head.find("filename=\"").unwrap(), "{}", head);
+        assert!(head.find("name*=").unwrap() < head.find("name=\"").unwrap(), "{}", head);
+        assert!(head.contains("name*=UTF-8''Pr%C3%BCfung"), "Content-Type carries it too: {}", head);
+        assert!(raw.is_ascii());
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn html_with_a_file_nests_alternative_inside_mixed() {
+        let d = tmpdir("mh");
+        let a = disk_file(&d, "a.txt", b"data");
+        let raw = mime_with(&msg("html", QT_HTML, "system"), &[a], None);
+        let mixed = raw.find("Content-Type: multipart/mixed").unwrap();
+        let alt = raw.find("Content-Type: multipart/alternative; boundary=\"BND\"").unwrap();
+        let att = raw.find("Content-Disposition: attachment").unwrap();
+        assert!(mixed < alt && alt < att);
+        assert!(raw.contains("--BND--\r\n--BND-mixed\r\n"), "the alternative is closed before the file starts");
+        assert!(decode_part(&raw, "text/plain").starts_with("On Oct 7 & Pat Lee"));
+        assert_eq!(attachment_parts_of(&raw)[0].1, b"data");
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn a_threaded_reply_with_a_file_keeps_its_headers_and_one_content_type() {
+        let d = tmpdir("mr");
+        let a = disk_file(&d, "a.txt", b"data");
+        let r = ReplyHeaders { message_id: "<m2@x>".into(), references: "<m1@x>".into() };
+        let mut m = msg("text", "re", "system");
+        m.kind = "reply".into();
+        let raw = mime_with(&m, &[a], Some(&r));
+        assert!(raw.contains("In-Reply-To: <m2@x>\r\nReferences: <m1@x> <m2@x>\r\n"));
+        let head = raw.split("\r\n\r\n").next().unwrap();
+        assert_eq!(head.matches("Content-Type:").count(), 1, "{}", head);
+        assert!(head.find("In-Reply-To").unwrap() < head.find("Content-Type").unwrap());
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn a_large_file_is_streamed_in_small_writes() {
+        struct Probe { biggest: usize, total: u64 }
+        impl std::io::Write for Probe {
+            fn write(&mut self, b: &[u8]) -> std::io::Result<usize> { self.biggest = self.biggest.max(b.len()); self.total += b.len() as u64; Ok(b.len()) }
+            fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+        }
+        let d = tmpdir("ml");
+        let p = d.join("big.bin");
+        std::fs::File::create(&p).unwrap().set_len(40 * 1024 * 1024).unwrap(); // sparse
+        let a = OutgoingAttachment { path: p.to_string_lossy().into(), ..Default::default() };
+        let mut probe = Probe { biggest: 0, total: 0 };
+        write_mime(&mut probe, &msg("text", "x", "system"), &[a], "", None, "BND", DATE).unwrap();
+        assert!(probe.biggest < 200_000, "largest single write {} bytes: the file must not be buffered whole", probe.biggest);
+        assert!(probe.total >= 40 * 1024 * 1024 * 4 / 3 && probe.total <= encoded_part_size(40 * 1024 * 1024) + 2000, "{}", probe.total);
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn a_missing_file_is_an_error_naming_the_file_not_a_truncated_message() {
+        let a = OutgoingAttachment { path: "/nonexistent/gone.txt".into(), ..Default::default() };
+        let mut out = Vec::new();
+        let e = write_mime(&mut out, &msg("text", "x", "system"), &[a], "", None, "BND", DATE).unwrap_err();
+        assert!(e.to_string().starts_with("gone.txt:"), "{}", e);
+    }
+
+    #[test]
+    fn content_types_and_names_cannot_inject_headers() {
+        assert_eq!(safe_content_type("application/pdf"), "application/pdf");
+        assert_eq!(safe_content_type("text/x-custom+json"), "text/x-custom+json");
+        assert_eq!(safe_content_type("x/y\r\nBcc: evil@example.com"), "application/octet-stream");
+        assert_eq!(safe_content_type("nonsense"), "application/octet-stream");
+        let a = OutgoingAttachment { path: "/x".into(), name: "a\r\nBcc: evil@example.com".into(), ..Default::default() };
+        assert!(!attachment_headers(&a).contains("\r\nBcc:"), "{}", attachment_headers(&a));
+        assert_eq!(rfc5987("a b"), "a%20b");
+    }
+
+    #[test]
+    fn no_files_means_the_old_message_byte_for_byte() {
+        let m = msg("html", QT_HTML, "system");
+        let mut out = Vec::new();
+        write_mime(&mut out, &m, &[], "me@example.com", None, "BND", DATE).unwrap();
+        assert_eq!(String::from_utf8(out).unwrap(), build_mime(&m, "me@example.com", None, "BND", DATE));
     }
 }
