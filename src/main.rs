@@ -1729,10 +1729,6 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                     );
                     let _ = stream.write_all(response.as_bytes());
                     continue;
-                        body.len(), body
-                    );
-                    let _ = stream.write_all(response.as_bytes());
-                    continue;
                 }
                 // ── GET /compose/originals?id=MESSAGE — the attachments of the message being forwarded ──
                 if first_line.contains("GET /compose/originals") {
@@ -1752,6 +1748,10 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                     let body = serde_json::to_string(&omalook::compose::attachment_limits(&provider)).unwrap_or_else(|_| "{}".into());
                     let response = format!(
                         "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                        body.len(), body
+                    );
+                    let _ = stream.write_all(response.as_bytes());
+                    continue;
                 }
 
                 // ── POST /calendar/event (JSON body; ?dry_run=1) — queue a new event; POST /calendar/event/undo?id= —
