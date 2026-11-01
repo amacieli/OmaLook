@@ -166,19 +166,24 @@ else reaches the editor while it is open. Palette twins (only while a compose pa
 `:detach` (the last file), `:detach-all`. Commands: `compose.attach`, `compose.attachments`, `compose.detach`,
 `compose.detachall`.
 
-In the file browser (starts in the last folder you used):
+In the file browser (starts in the last folder you used). Keys are commands, as in the message list; `/` opens the filter box:
 
 | Key | Action |
 |-----|--------|
-| type | Filter the list: plain text matches part of the name; with `*` or `?` it is a pattern (`*.pdf`, `2026-*.png`) |
-| `Up` / `Down`, `PgUp` / `PgDn`, `Ctrl+P` / `Ctrl+N` | Move |
-| `v` | Tick or untick the highlighted file and move down (while the filter box is empty; to filter on a name starting with v type `*v`). Ticks stay when you change folder |
-| `Right` / `Left` | Open the folder under the cursor / go to the parent (filter box empty) |
+| `j` / `k`, `Up` / `Down`, `PgUp` / `PgDn`, `Ctrl+P` / `Ctrl+N` | Move |
+| `v` | Tick or untick the highlighted file and move down. Ticks stay when you change folder |
+| `l` / `Right` | Open the folder under the cursor |
+| `h` / `Left` / `Backspace` | Parent folder (first clears a kept filter) |
+| `/` | Filter: type part of a name, or a pattern with `*` / `?` (`*.pdf`, `2026-*.png`). `Enter` keeps the filter and returns to the commands; `Esc` clears it |
+| `g` or `~` | Jump to a path: type it, `Enter` goes there, `Esc` cancels |
 | `Enter` | With files ticked: attach them and close, wherever the cursor is. With none ticked: open the folder, or attach the highlighted file |
-| `Backspace` (empty filter) | Parent folder |
-| `/` or `~` first, then `Enter` | Jump to that path |
+| `Ctrl+T` | Tick every file the filter shows (`/` `*.pdf` `Enter`, then `Ctrl+T`) |
+| `Ctrl+A` | Tick every file in the folder (as filtered) |
+| `Ctrl+U` | Clear all ticks |
+| `Ctrl+S` | Cycle the sort: name, newest first, biggest first (folders stay on top) |
+| `Ctrl+B` | Places: Home, Desktop, Documents, Downloads, Pictures, Videos, Music, then recent folders; `Enter` goes there, `Esc` returns |
 | `Ctrl+H` | Show or hide hidden files |
-| `Esc` | Clear the filter, then close places, then close |
+| `Esc` | Close the filter/path box, else clear a kept filter, else close places, else close the dialog |
 
 The footer shows the ticked count and size against what the From account still has room for; it turns red when the set is too big.
 

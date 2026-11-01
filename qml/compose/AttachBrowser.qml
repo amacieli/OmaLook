@@ -12,7 +12,8 @@ import "pick.js" as Pick
 // one folder at a time through `listDir(path, showHidden, callback)` (the daemon's /fs/list).
 //
 //   Type          filter the list           Up / Down / PgUp / PgDn   move
-//   v             tick / untick the file (filter box empty)    Right  open folder    Left / Backspace  parent
+//   Keys are commands (vim style); `/` opens the filter box, `g` or `~` the go-to-path box.
+//   j / k / arrows  move    v  tick / untick    l / Right  open folder    h / Left / Backspace  parent
 //   Enter         attach the ticked files and close; with none ticked: open folder / attach this file
 //   / or ~ first  Enter jumps to that path  Ctrl+H                    show hidden files
 //   Esc           clear filter, then close
@@ -54,7 +55,8 @@ FocusScope {
   readonly property bool overLimit: Pick.over(capacity, baseBytes, ticked.bytes)
 
   readonly property string filter: input.text.trim().toLowerCase()
-  readonly property bool pathMode: input.text.length > 0 && (input.text[0] === "/" || input.text[0] === "~")
+  property string inputMode: ""           // "" (keys are commands) | "filter" | "path"
+  readonly property bool pathMode: inputMode === "path"
 
   // Rows: ".." first (when there is a parent), then the entries matching the filter.
   readonly property var rows: {
@@ -81,6 +83,7 @@ FocusScope {
     marked = ({})
     placesMode = false
     input.text = ""
+    inputMode = ""
     opened = true
     go(startDir !== "" ? startDir : "~")
     input.forceActiveFocus()
@@ -96,6 +99,7 @@ FocusScope {
       loading = false
       if (!r || r.error || !r.path) {
         error = r && r.error ? String(r.error) : "could not read the folder"
+        if (inputMode === "path") { input.text = ""; inputMode = "" }
         return
       }
       error = ""
@@ -105,6 +109,7 @@ FocusScope {
       entries = r.entries || []
       truncated = !!r.truncated
       input.text = ""
+      inputMode = ""
       cur = 0
       listView.positionViewAtBeginning()
       root.navigated(r.path)
@@ -143,7 +148,7 @@ FocusScope {
   function tickShown() { if (placesMode) return; _setMarks() }
   function clearTicks() { marked = ({}); error = "" }
   function cycleSort() { sortKey = Pick.nextSort(sortKey); cur = 0; listView.positionViewAtBeginning() }
-  function togglePlaces() { placesMode = !placesMode; input.text = ""; cur = 0; listView.positionViewAtBeginning() }
+  function togglePlaces() { placesMode = !placesMode; input.text = ""; inputMode = ""; cur = 0; listView.positionViewAtBeginning() }
 
   function activate() {
     if (pathMode) { go(input.text.trim()); return }
@@ -223,37 +228,55 @@ FocusScope {
       TextField {
         id: input
         Layout.fillWidth: true
-        placeholderText: "Type to filter (*.pdf works), or / or ~ to jump to a path"
+        placeholderText: root.inputMode === "" ? "/ filter (*.pdf works) · g go to a path" : (root.inputMode === "filter" ? "Filter: name or pattern, Enter keeps it, Esc clears" : "Path, Enter goes there")
         focus: true
+        // Vim style: keys are commands until `/` (filter) or `g` / `~` (go to a path) opens the box.
+        readOnly: root.inputMode === ""
         Keys.onPressed: function(e) {
           var ctrl = e.modifiers & Qt.ControlModifier
+          var plain = !ctrl && !(e.modifiers & Qt.AltModifier)
+          var typing = root.inputMode !== ""
           if (e.key === Qt.Key_Escape) {
-            if (text !== "") text = ""
+            if (typing) { root.inputMode = ""; text = "" }
+            else if (text !== "") text = ""
             else if (root.placesMode) root.placesMode = false
             else root.canceled()
             e.accepted = true
-          } else if (e.key === Qt.Key_Down) { root._move(1); e.accepted = true }
-          else if (e.key === Qt.Key_Up) { root._move(-1); e.accepted = true }
+          } else if (e.key === Qt.Key_Down || (!typing && plain && e.key === Qt.Key_J)) { root._move(1); e.accepted = true }
+          else if (e.key === Qt.Key_Up || (!typing && plain && e.key === Qt.Key_K)) { root._move(-1); e.accepted = true }
           else if (e.key === Qt.Key_PageDown) { root._move(10); e.accepted = true }
           else if (e.key === Qt.Key_PageUp) { root._move(-10); e.accepted = true }
-          else if (e.key === Qt.Key_Return || e.key === Qt.Key_Enter) { root.activate(); e.accepted = true }
-          else if (e.key === Qt.Key_V && !ctrl && !(e.modifiers & Qt.AltModifier) && text === "") { root.toggleMark(root.rows[root.cur]); root._move(1); e.accepted = true }
-          else if (e.key === Qt.Key_Tab) { e.accepted = true }
-          else if (e.key === Qt.Key_Right && text === "") { root.openCurrent(); e.accepted = true }
-          else if (e.key === Qt.Key_Left && text === "" && root.parentPath !== "" && !root.placesMode) { root.go(root.parentPath); e.accepted = true }
-          else if (e.key === Qt.Key_Backtab) { e.accepted = true }
-          else if (e.key === Qt.Key_Backspace && text === "" && root.placesMode) { root.placesMode = false; e.accepted = true }
-          else if (e.key === Qt.Key_Backspace && text === "" && root.parentPath !== "") { root.go(root.parentPath); e.accepted = true }
+          else if (e.key === Qt.Key_Return || e.key === Qt.Key_Enter) {
+            if (root.inputMode === "filter") root.inputMode = ""      // keep the filter, back to commands
+            else { root.activate(); root.inputMode = "" }
+            e.accepted = true
+          }
           else if (ctrl && e.key === Qt.Key_H) { root.showHidden = !root.showHidden; root.go(root.path); e.accepted = true }
           else if (ctrl && e.key === Qt.Key_T) { root.tickShown(); e.accepted = true }
           else if (ctrl && e.key === Qt.Key_A) { root.tickShown(); e.accepted = true }
           else if (ctrl && e.key === Qt.Key_U) { root.clearTicks(); e.accepted = true }
           else if (ctrl && e.key === Qt.Key_S) { root.cycleSort(); e.accepted = true }
-          else if (ctrl && e.key === Qt.Key_B) { root.togglePlaces(); e.accepted = true }
+          else if (ctrl && e.key === Qt.Key_B) { root.inputMode = ""; root.togglePlaces(); e.accepted = true }
           else if (ctrl && e.key === Qt.Key_N) { root._move(1); e.accepted = true }
           else if (ctrl && e.key === Qt.Key_P) { root._move(-1); e.accepted = true }
-          // Everything else is text; nothing may leak to the compose pane's shortcuts.
-          else if (ctrl) e.accepted = !(e.key === Qt.Key_C || e.key === Qt.Key_V || e.key === Qt.Key_X || e.key === Qt.Key_Z)
+          else if (typing) {
+            // Text goes to the box; nothing may leak to the compose pane's shortcuts.
+            if (e.key === Qt.Key_Tab || e.key === Qt.Key_Backtab) e.accepted = true
+            else if (ctrl) e.accepted = !(e.key === Qt.Key_C || e.key === Qt.Key_V || e.key === Qt.Key_X || e.key === Qt.Key_Z)
+          } else {
+            // Command mode: every key is ours; none reaches the box or the compose pane.
+            e.accepted = true
+            if (!plain) return
+            if (e.key === Qt.Key_V) { root.toggleMark(root.rows[root.cur]); root._move(1) }
+            else if (e.key === Qt.Key_Slash) { root.placesMode = false; root.inputMode = "filter"; text = "" }
+            else if (e.key === Qt.Key_G || e.key === Qt.Key_AsciiTilde) { root.placesMode = false; root.inputMode = "path"; text = "~/" }
+            else if (e.key === Qt.Key_Right || e.key === Qt.Key_L) root.openCurrent()
+            else if (e.key === Qt.Key_Left || e.key === Qt.Key_H || e.key === Qt.Key_Backspace) {
+              if (root.placesMode) root.placesMode = false
+              else if (text !== "") text = ""
+              else if (root.parentPath !== "") root.go(root.parentPath)
+            }
+          }
         }
       }
 
@@ -333,7 +356,7 @@ FocusScope {
             ? root.markedCount + " ticked · " + Fmt.bytes(root.ticked.bytes) + (root.capacity > 0 ? " of " + Fmt.bytes(Math.max(root.capacity - root.baseBytes, 0)) + " free" : "")
               + (root.overLimit ? " · TOO BIG, Send will refuse" : "") + " · Enter attaches them · "
             : "")
-          + "v tick · Right open folder · Enter done · Ctrl+T tick shown · Ctrl+U clear · Ctrl+S sort · Ctrl+B places · Esc close"
+          + "v tick · / filter · g path · l open · Enter done · Ctrl+T tick shown · Ctrl+U clear · Ctrl+S sort · Ctrl+B places · Esc close"
       }
     }
   }
