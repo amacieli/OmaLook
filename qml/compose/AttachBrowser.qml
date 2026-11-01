@@ -12,8 +12,8 @@ import "pick.js" as Pick
 // one folder at a time through `listDir(path, showHidden, callback)` (the daemon's /fs/list).
 //
 //   Type          filter the list           Up / Down / PgUp / PgDn   move
-//   Enter         open folder; on a file: attach the ticked files (or this one)
-//   Tab           tick / untick the file    Backspace (empty filter)  parent folder
+//   v             tick / untick the file (filter box empty)    Right  open folder    Left / Backspace  parent
+//   Enter         attach the ticked files and close; with none ticked: open folder / attach this file
 //   / or ~ first  Enter jumps to that path  Ctrl+H                    show hidden files
 //   Esc           clear filter, then close
 //   Filter        plain text = part of the name; with * or ? it is a pattern (*.pdf, 2026-*.png)
@@ -150,17 +150,30 @@ FocusScope {
     var row = rows[cur]
     if (!row) return
     if (row.place) { go(row.path); return }
+    // Ticks win: Enter closes the dialog with whatever is ticked, wherever the cursor is.
+    if (markedCount > 0) { _finish(); return }
     if (row.up) { go(parentPath); return }
     if (row.dir) { go(_join(path, row.name)); return }
+    var p = _join(path, row.name)
+    if (_isAttached(p)) { error = row.name + " is already attached"; return }
+    opened = false
+    picked([{ path: p, name: row.name, size: row.size }])
+  }
+
+  function _finish() {
     var files = []
-    if (markedCount > 0) for (var k in marked) files.push(marked[k])
-    else {
-      var p = _join(path, row.name)
-      if (_isAttached(p)) { error = row.name + " is already attached"; return }
-      files.push({ path: p, name: row.name, size: row.size })
-    }
+    for (var k in marked) files.push(marked[k])
     opened = false
     picked(files)
+  }
+
+  // Right: open the folder under the cursor (Enter closes the dialog once something is ticked).
+  function openCurrent() {
+    var row = rows[cur]
+    if (!row) return
+    if (row.place) go(row.path)
+    else if (row.up) go(parentPath)
+    else if (row.dir) go(_join(path, row.name))
   }
 
   function _move(d) { if (rows.length > 0) { cur = Math.min(Math.max(cur + d, 0), rows.length - 1); listView.positionViewAtIndex(cur, ListView.Contain) } }
@@ -224,7 +237,10 @@ FocusScope {
           else if (e.key === Qt.Key_PageDown) { root._move(10); e.accepted = true }
           else if (e.key === Qt.Key_PageUp) { root._move(-10); e.accepted = true }
           else if (e.key === Qt.Key_Return || e.key === Qt.Key_Enter) { root.activate(); e.accepted = true }
-          else if (e.key === Qt.Key_Tab) { root.toggleMark(root.rows[root.cur]); root._move(1); e.accepted = true }
+          else if (e.key === Qt.Key_V && !ctrl && !(e.modifiers & Qt.AltModifier) && text === "") { root.toggleMark(root.rows[root.cur]); root._move(1); e.accepted = true }
+          else if (e.key === Qt.Key_Tab) { e.accepted = true }
+          else if (e.key === Qt.Key_Right && text === "") { root.openCurrent(); e.accepted = true }
+          else if (e.key === Qt.Key_Left && text === "" && root.parentPath !== "" && !root.placesMode) { root.go(root.parentPath); e.accepted = true }
           else if (e.key === Qt.Key_Backtab) { e.accepted = true }
           else if (e.key === Qt.Key_Backspace && text === "" && root.placesMode) { root.placesMode = false; e.accepted = true }
           else if (e.key === Qt.Key_Backspace && text === "" && root.parentPath !== "") { root.go(root.parentPath); e.accepted = true }
@@ -315,9 +331,9 @@ FocusScope {
         dim: !root.overLimit
         text: (root.markedCount > 0
             ? root.markedCount + " ticked · " + Fmt.bytes(root.ticked.bytes) + (root.capacity > 0 ? " of " + Fmt.bytes(Math.max(root.capacity - root.baseBytes, 0)) + " free" : "")
-              + (root.overLimit ? " · TOO BIG, Send will refuse" : "") + " · Enter attaches · "
+              + (root.overLimit ? " · TOO BIG, Send will refuse" : "") + " · Enter attaches them · "
             : "")
-          + "Tab tick · Ctrl+T tick shown · Ctrl+U clear · Ctrl+S sort · Ctrl+B places · Esc close"
+          + "v tick · Right open folder · Enter done · Ctrl+T tick shown · Ctrl+U clear · Ctrl+S sort · Ctrl+B places · Esc close"
       }
     }
   }

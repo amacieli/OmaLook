@@ -172,13 +172,9 @@ In the file browser (starts in the last folder you used):
 |-----|--------|
 | type | Filter the list: plain text matches part of the name; with `*` or `?` it is a pattern (`*.pdf`, `2026-*.png`) |
 | `Up` / `Down`, `PgUp` / `PgDn`, `Ctrl+P` / `Ctrl+N` | Move |
-| `Enter` | On a folder: open it. On a file: attach every ticked file, or just this one if none is ticked |
-| `Tab` | Tick or untick the highlighted file and move down. Ticks stay when you change folder, so files from several folders go in with one `Enter` |
-| `Ctrl+T` | Tick every file the filter shows (type `*.pdf`, then `Ctrl+T`) |
-| `Ctrl+A` | Tick every file in the folder (as filtered) |
-| `Ctrl+U` | Clear all ticks |
-| `Ctrl+S` | Cycle the sort: name, newest first, biggest first (folders stay on top) |
-| `Ctrl+B` | Places: Home, Desktop, Documents, Downloads, Pictures, Videos, Music, then recent folders; `Enter` goes there, `Esc` returns |
+| `v` | Tick or untick the highlighted file and move down (while the filter box is empty; to filter on a name starting with v type `*v`). Ticks stay when you change folder |
+| `Right` / `Left` | Open the folder under the cursor / go to the parent (filter box empty) |
+| `Enter` | With files ticked: attach them and close, wherever the cursor is. With none ticked: open the folder, or attach the highlighted file |
 | `Backspace` (empty filter) | Parent folder |
 | `/` or `~` first, then `Enter` | Jump to that path |
 | `Ctrl+H` | Show or hide hidden files |
