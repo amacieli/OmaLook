@@ -262,3 +262,14 @@ Findings that changed the code:
 5. **External picker:** worth building (phase 5), or is the improved built-in browser enough?
 6. **Sensitive-path tripwire** and **forgot-attachment check**: both on by default (proposed)?
 7. **Forward-as-.eml** (mutt style): wanted at all?
+
+## 9. Answers to questions in section 8.
+1. 
+2. block above the account limit - whatever the email provider, be it gmail, graph, or any other provider we add in the future.
+3. let's list for up to 3, for now, and we can adjust later if needed.
+4. proposed key binds are OK, but need to be aligned with my answers in the other PLAN document.
+5. i prefer a built-in picker, along the style of superfile, but maybe simpler, as the goal is just to pick files, not replicate all superfile functionality.
+6. no need for the sensitive path or forgot attachment tripwires at this time.
+7. i don't understand.
+
+

@@ -90,6 +90,7 @@ RowLayout {
       item.status = Qt.binding(function() { return root.app.composeStatus })
       item.listDir = function(path, hidden, cb) { root.app.listDir(path, hidden, cb) }
       item.browseDir = Qt.binding(function() { return root.app.attachBrowseDir })
+      item.recentDirs = Qt.binding(function() { return root.app.attachRecentDirs })
       item.fetchLimits = function(accountId, cb) { root.app.attachLimits(accountId, cb) }
       item.fetchOriginals = function(messageId, cb) { root.app.composeOriginals(messageId, cb) }
       item.forceActiveFocus()
@@ -103,7 +104,7 @@ RowLayout {
       ignoreUnknownSignals: true
       function onSendRequested(message) { root.app.submitCompose(message) }
       function onDiscardRequested() { root.app.closeCompose() }
-      function onBrowsed(dir) { root.app.attachBrowseDir = dir }
+      function onBrowsed(dir) { root.app.attachBrowseDir = dir; root.app.rememberAttachDir(dir) }
     }
     onStatusChanged: if (status === Loader.Error) {
       root.app.composeStatus = "Could not load the editor (is the OmaLook.Compose plugin on QML_IMPORT_PATH?)"

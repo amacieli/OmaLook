@@ -74,3 +74,11 @@ Free in the mail scope today: `A`, `S`, `o`, `d`, `D`. Proposed: `A` picker, `S`
 3. Hide inline images by default (toggle with `i`)? Proposed yes.
 4. Name collisions: auto-rename `name (1).ext` (proposed) vs. ask.
 5. Per-message subfolder in Downloads, or flat? Proposed flat (you said "individual files").
+
+## Answers from Adam
+1. Yes, A and S are OK.
+2. Save only
+3. This functionality is already in place - please don't change anything about how images are handled in the message preview.  Or, I am confused by what you mean by inline images in this context.
+4. Proposal is fine - auto-rename, no separate ask (that just adds complexity to the code as well as user workflow).
+5. Flat.
+

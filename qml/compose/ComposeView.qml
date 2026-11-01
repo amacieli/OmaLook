@@ -38,6 +38,7 @@ FocusScope {
   property var attachments: []
   property var listDir: null
   property string browseDir: ""
+  property var recentDirs: []
 
   signal browsed(string dir)
   signal sendRequested(var message)
@@ -498,6 +499,9 @@ FocusScope {
     z: 900
     listDir: root.listDir
     startDir: root.browseDir
+    recentDirs: root.recentDirs
+    capacity: Att.capacity(root.limits)
+    baseBytes: root.attachedBytes
     attached: root.attachments.map(function(a) { return a.path })
     onPicked: function(files) { root.addAttachments(files) }
     onCanceled: editor.forceActiveFocus()

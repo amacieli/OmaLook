@@ -1,10 +1,12 @@
 import QtQuick
 import QtQuick.Layouts
+import Quickshell
 import qs.Commons
 import qs.Commons as Commons
 import qs.Ui
 import "../common"
 import "../mail/format.js" as Fmt
+import "pick.js" as Pick
 
 // Keyboard-driven file browser for attaching files. An overlay over the compose pane; it lists
 // one folder at a time through `listDir(path, showHidden, callback)` (the daemon's /fs/list).
@@ -14,6 +16,10 @@ import "../mail/format.js" as Fmt
 //   Tab           tick / untick the file    Backspace (empty filter)  parent folder
 //   / or ~ first  Enter jumps to that path  Ctrl+H                    show hidden files
 //   Esc           clear filter, then close
+//   Filter        plain text = part of the name; with * or ? it is a pattern (*.pdf, 2026-*.png)
+//   Ctrl+T        tick every file the filter shows      Ctrl+A  tick all files in the folder
+//   Ctrl+U        clear all ticks (they survive folder changes)
+//   Ctrl+S        sort: name / newest / size            Ctrl+B  places and recent folders
 FocusScope {
   id: root
 
@@ -21,6 +27,9 @@ FocusScope {
   property var listDir: null              // function(path, hidden, cb(result))
   property string startDir: ""
   property var attached: []               // paths already on the message (shown ticked, not re-added)
+  property real capacity: 0               // bytes of files the From account takes (0 = unknown)
+  property real baseBytes: 0              // bytes already on the message
+  property var recentDirs: []             // folders visited before, newest first
 
   signal picked(var files)                // [{ path, name, size }]
   signal canceled()
@@ -37,6 +46,12 @@ FocusScope {
   property string error: ""
   property var marked: ({})               // path -> { path, name, size }
   property int cur: 0
+  property string sortKey: "name"
+  property bool placesMode: false
+  readonly property string home: Quickshell.env("HOME")
+  readonly property var placeList: Pick.places(home, recentDirs, null)
+  readonly property var ticked: Pick.totals(marked)
+  readonly property bool overLimit: Pick.over(capacity, baseBytes, ticked.bytes)
 
   readonly property string filter: input.text.trim().toLowerCase()
   readonly property bool pathMode: input.text.length > 0 && (input.text[0] === "/" || input.text[0] === "~")
@@ -44,13 +59,19 @@ FocusScope {
   // Rows: ".." first (when there is a parent), then the entries matching the filter.
   readonly property var rows: {
     var out = []
+    if (placesMode) {
+      for (var p = 0; p < placeList.length; p++) out.push({ place: true, name: placeList[p].label, path: placeList[p].path, dir: true, size: 0 })
+      return out
+    }
     if (parentPath !== "" && (filter === "" || pathMode)) out.push({ up: true, name: "..", dir: true, size: 0 })
-    if (!pathMode)
-      for (var i = 0; i < entries.length; i++)
-        if (filter === "" || entries[i].name.toLowerCase().indexOf(filter) >= 0) out.push(entries[i])
+    if (!pathMode) {
+      var list = Pick.sorted(entries, sortKey)
+      for (var i = 0; i < list.length; i++)
+        if (Pick.matches(filter, list[i].name)) out.push(list[i])
+    }
     return out
   }
-  readonly property int markedCount: Object.keys(marked).length
+  readonly property int markedCount: ticked.count
 
   onRowsChanged: cur = Math.min(Math.max(cur, 0), Math.max(rows.length - 1, 0))
 
@@ -58,6 +79,7 @@ FocusScope {
 
   function open() {
     marked = ({})
+    placesMode = false
     input.text = ""
     opened = true
     go(startDir !== "" ? startDir : "~")
@@ -77,6 +99,7 @@ FocusScope {
         return
       }
       error = ""
+      placesMode = false
       path = r.path
       parentPath = r.parent || ""
       entries = r.entries || []
@@ -91,7 +114,7 @@ FocusScope {
   function _isAttached(p) { return attached.indexOf(p) >= 0 }
 
   function toggleMark(row) {
-    if (!row || row.up || row.dir) { error = row && row.dir && !row.up ? "folders cannot be attached; zip it first" : ""; return }
+    if (!row || row.up || row.dir || row.place) { error = row && row.dir && !row.up ? "folders cannot be attached; zip it first" : ""; return }
     var p = _join(path, row.name)
     if (_isAttached(p)) { error = row.name + " is already attached"; return }
     error = ""
@@ -101,10 +124,32 @@ FocusScope {
     marked = m
   }
 
+  function _setMarks(add) {
+    var m = {}
+    for (var k in marked) m[k] = marked[k]
+    var n = 0
+    for (var i = 0; i < rows.length; i++) {
+      var r = rows[i]
+      if (r.up || r.dir || r.place) continue
+      var p = _join(path, r.name)
+      if (_isAttached(p) || m[p]) continue
+      m[p] = { path: p, name: r.name, size: r.size }
+      n++
+    }
+    marked = m
+    error = n === 0 ? "no files to tick here" : ""
+  }
+
+  function tickShown() { if (placesMode) return; _setMarks() }
+  function clearTicks() { marked = ({}); error = "" }
+  function cycleSort() { sortKey = Pick.nextSort(sortKey); cur = 0; listView.positionViewAtBeginning() }
+  function togglePlaces() { placesMode = !placesMode; input.text = ""; cur = 0; listView.positionViewAtBeginning() }
+
   function activate() {
     if (pathMode) { go(input.text.trim()); return }
     var row = rows[cur]
     if (!row) return
+    if (row.place) { go(row.path); return }
     if (row.up) { go(parentPath); return }
     if (row.dir) { go(_join(path, row.name)); return }
     var files = []
@@ -147,7 +192,11 @@ FocusScope {
         Layout.fillWidth: true
         UiText { text: "Attach files"; font.bold: true; font.pixelSize: Style.font.heading }
         Item { Layout.fillWidth: true }
-        UiText { text: root.showHidden ? "hidden files shown" : ""; dim: true; font.pixelSize: Style.font.caption }
+        UiText {
+          text: (root.placesMode ? "places · " : "") + "sort: " + root.sortKey + (root.showHidden ? " · hidden files shown" : "")
+          dim: true
+          font.pixelSize: Style.font.caption
+        }
       }
 
       UiText {
@@ -161,12 +210,14 @@ FocusScope {
       TextField {
         id: input
         Layout.fillWidth: true
-        placeholderText: "Type to filter, or / or ~ to jump to a path"
+        placeholderText: "Type to filter (*.pdf works), or / or ~ to jump to a path"
         focus: true
         Keys.onPressed: function(e) {
           var ctrl = e.modifiers & Qt.ControlModifier
           if (e.key === Qt.Key_Escape) {
-            if (text !== "") text = ""; else root.canceled()
+            if (text !== "") text = ""
+            else if (root.placesMode) root.placesMode = false
+            else root.canceled()
             e.accepted = true
           } else if (e.key === Qt.Key_Down) { root._move(1); e.accepted = true }
           else if (e.key === Qt.Key_Up) { root._move(-1); e.accepted = true }
@@ -175,12 +226,18 @@ FocusScope {
           else if (e.key === Qt.Key_Return || e.key === Qt.Key_Enter) { root.activate(); e.accepted = true }
           else if (e.key === Qt.Key_Tab) { root.toggleMark(root.rows[root.cur]); root._move(1); e.accepted = true }
           else if (e.key === Qt.Key_Backtab) { e.accepted = true }
+          else if (e.key === Qt.Key_Backspace && text === "" && root.placesMode) { root.placesMode = false; e.accepted = true }
           else if (e.key === Qt.Key_Backspace && text === "" && root.parentPath !== "") { root.go(root.parentPath); e.accepted = true }
           else if (ctrl && e.key === Qt.Key_H) { root.showHidden = !root.showHidden; root.go(root.path); e.accepted = true }
+          else if (ctrl && e.key === Qt.Key_T) { root.tickShown(); e.accepted = true }
+          else if (ctrl && e.key === Qt.Key_A) { root.tickShown(); e.accepted = true }
+          else if (ctrl && e.key === Qt.Key_U) { root.clearTicks(); e.accepted = true }
+          else if (ctrl && e.key === Qt.Key_S) { root.cycleSort(); e.accepted = true }
+          else if (ctrl && e.key === Qt.Key_B) { root.togglePlaces(); e.accepted = true }
           else if (ctrl && e.key === Qt.Key_N) { root._move(1); e.accepted = true }
           else if (ctrl && e.key === Qt.Key_P) { root._move(-1); e.accepted = true }
           // Everything else is text; nothing may leak to the compose pane's shortcuts.
-          else if (ctrl) e.accepted = !(e.key === Qt.Key_A || e.key === Qt.Key_C || e.key === Qt.Key_V || e.key === Qt.Key_X || e.key === Qt.Key_Z)
+          else if (ctrl) e.accepted = !(e.key === Qt.Key_C || e.key === Qt.Key_V || e.key === Qt.Key_X || e.key === Qt.Key_Z)
         }
       }
 
@@ -197,8 +254,8 @@ FocusScope {
           id: row
           required property var modelData
           required property int index
-          readonly property string full: modelData.up ? "" : root._join(root.path, modelData.name)
-          readonly property bool ticked: !modelData.up && (root.marked[full] !== undefined || root._isAttached(full))
+          readonly property string full: (modelData.up || modelData.place) ? "" : root._join(root.path, modelData.name)
+          readonly property bool ticked: !modelData.up && !modelData.place && (root.marked[full] !== undefined || root._isAttached(full))
           width: listView.width
           height: Style.spacing.popupRowHeight
           radius: Style.cornerRadius
@@ -213,13 +270,14 @@ FocusScope {
             UiText { Layout.preferredWidth: Style.space(18); text: row.modelData.dir ? "\uf07b" : "\uf15b"; dim: !row.modelData.dir }
             UiText {
               Layout.fillWidth: true
-              text: row.modelData.dir && !row.modelData.up ? row.modelData.name + "/" : row.modelData.name
+              text: row.modelData.place ? row.modelData.name + "   " + Pick.shortDir(row.modelData.path, root.home)
+                : (row.modelData.dir && !row.modelData.up ? row.modelData.name + "/" : row.modelData.name)
               elide: Text.ElideMiddle
               foreground: Commons.Color.popups.text
               dim: root._isAttached(row.full)
             }
             UiText {
-              text: row.modelData.dir ? "" : Fmt.bytes(row.modelData.size)
+              text: row.modelData.dir ? "" : Fmt.bytes(row.modelData.size) + (root.sortKey === "newest" && row.modelData.mtime ? "  " + Qt.formatDate(new Date(row.modelData.mtime * 1000), "yyyy-MM-dd") : "")
               dim: true
               font.pixelSize: Style.font.caption
             }
@@ -251,11 +309,15 @@ FocusScope {
 
       UiText {
         Layout.fillWidth: true
-        dim: true
         font.pixelSize: Style.font.caption
         elide: Text.ElideRight
-        text: (root.markedCount > 0 ? root.markedCount + " ticked · Enter attaches them · " : "")
-          + "Enter open/attach · Tab tick · Backspace up · Ctrl+H hidden · Esc close"
+        foreground: root.overLimit ? Commons.Color.urgent : Commons.Color.foreground
+        dim: !root.overLimit
+        text: (root.markedCount > 0
+            ? root.markedCount + " ticked · " + Fmt.bytes(root.ticked.bytes) + (root.capacity > 0 ? " of " + Fmt.bytes(Math.max(root.capacity - root.baseBytes, 0)) + " free" : "")
+              + (root.overLimit ? " · TOO BIG, Send will refuse" : "") + " · Enter attaches · "
+            : "")
+          + "Tab tick · Ctrl+T tick shown · Ctrl+U clear · Ctrl+S sort · Ctrl+B places · Esc close"
       }
     }
   }

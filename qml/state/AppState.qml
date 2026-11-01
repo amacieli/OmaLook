@@ -828,6 +828,14 @@ Item {
   // File browser for attachments: the daemon lists one folder at a time; the last folder used is
   // where the browser opens next time (this session).
   property string attachBrowseDir: ""
+  // Folders the attach browser visited, newest first (up to 8; Ctrl+B lists them).
+  property var attachRecentDirs: []
+  function rememberAttachDir(dir) {
+    var next = [dir]
+    for (var i = 0; i < attachRecentDirs.length && next.length < 8; i++)
+      if (attachRecentDirs[i] !== dir) next.push(attachRecentDirs[i])
+    attachRecentDirs = next
+  }
 
   function listDir(path, hidden, cb) {
     request("GET", "/fs/list?path=" + encodeURIComponent(path) + (hidden ? "&hidden=1" : ""), function(xhr) {

@@ -170,14 +170,21 @@ In the file browser (starts in the last folder you used):
 
 | Key | Action |
 |-----|--------|
-| type | Filter the list |
+| type | Filter the list: plain text matches part of the name; with `*` or `?` it is a pattern (`*.pdf`, `2026-*.png`) |
 | `Up` / `Down`, `PgUp` / `PgDn`, `Ctrl+P` / `Ctrl+N` | Move |
 | `Enter` | On a folder: open it. On a file: attach every ticked file, or just this one if none is ticked |
-| `Tab` | Tick or untick the highlighted file and move down. Ticks are lost when you change folder (OL-035 phase 4 will keep them) |
+| `Tab` | Tick or untick the highlighted file and move down. Ticks stay when you change folder, so files from several folders go in with one `Enter` |
+| `Ctrl+T` | Tick every file the filter shows (type `*.pdf`, then `Ctrl+T`) |
+| `Ctrl+A` | Tick every file in the folder (as filtered) |
+| `Ctrl+U` | Clear all ticks |
+| `Ctrl+S` | Cycle the sort: name, newest first, biggest first (folders stay on top) |
+| `Ctrl+B` | Places: Home, Desktop, Documents, Downloads, Pictures, Videos, Music, then recent folders; `Enter` goes there, `Esc` returns |
 | `Backspace` (empty filter) | Parent folder |
 | `/` or `~` first, then `Enter` | Jump to that path |
 | `Ctrl+H` | Show or hide hidden files |
-| `Esc` | Clear the filter, then close |
+| `Esc` | Clear the filter, then close places, then close |
+
+The footer shows the ticked count and size against what the From account still has room for; it turns red when the set is too big.
 
 Limits are checked live by the meter, when you press Send, and again just before the message goes out: Exchange takes
 150 MB of files in total; Gmail's limit is on the encoded message (files grow by about a third), so about 26 MB of files, and
