@@ -5,6 +5,10 @@ IDs are stable (never reused). Status: `open` | `investigating` | `planned` | `i
 
 ## Issues
 
+### OL-035 — Attach files to outgoing mail on Graph and Gmail; compact attachment display; better pickers (planned, not started)
+- **Wanted (user, 2026-11-01):** file pickers that allow one or many files in one go, a compact view of what is attached, Graph and Gmail.
+- **Plan:** `docs/PLAN-compose-attachments.md` (Gmail MIME/limits, spool snapshot, one-line strip + list panel, picker upgrades, clipboard/drag-drop/external picker, forgot-attachment check; phases 0-7). Questions in §8 open.
+
 ### OL-034 — Messages deleted on another client disappear from OmaLook (done 2026-10-31, commit 5b21dc8, tested live by user)
 - **Symptom:** a message deleted elsewhere stayed in the list for hours until a manual refresh.
 - **Causes:** (1) Gmail sync never looked for deletions. (2) Exchange removals were already applied by the Graph delta feed, but `refreshMessages()` (OL-033) only handled new mail and reloaded on other changes only while 200 or fewer rows were loaded, so a deeper list never dropped the row.
@@ -142,7 +146,8 @@ IDs are stable (never reused). Status: `open` | `investigating` | `planned` | `i
 - **To do:** find the existing health signals for the daemon (backend HTTP on 27182), the MCP listener (27183) and `kdeconnectd` (reuse the SMS daemon's check; see OL-009 for the parse issue); add the indicator to the shell chrome in QML; verify each letter flips case when its service is stopped and started.
 
 ### OL-012 — Distribution lists (open, not started)
-- **Wanted (user, 2026-10-17):** add distribution lists. No design details recorded yet; scope to be discussed before planning.
+- **Wanted (user, 2026-10-17):** add distribution lists, usable from any account and synced with one or several accounts.
+- **Plan:** `docs/PLAN-distribution-lists.md` (2026-11-01; local lists as source of truth, Google label two-way, Graph via category mirror because Graph v1.0 has no personal contact-group API, import/export; phases 0-6). Phase 0 also fixes contact-sync defects (suspected folder-id collision between Graph accounts, no upstream deletes). Questions in §9 open.
 
 ### OL-011 — Per-element colours: choose theme colour and intensity for each interface element (planned, not started)
 - **Wanted (user, 2026-10-17):** name every element of the OmaLook interface (box edges, titles, subject lines, dates, …) and let the user pick a theme colour and an intensity for each, with one dropdown per choice and a live preview; keyboard-driven with vim-style chords.
