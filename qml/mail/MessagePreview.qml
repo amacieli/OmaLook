@@ -380,6 +380,15 @@ Item {
     return htmlMode && webkitOk && !webkitBroken && !!root.body && root.body.type === "html"
   }
 
+  // ---- copy the mouse selection (Ctrl+C). The selectable texts never take keyboard focus, so
+  // the shortcut is what gets the selection onto the clipboard; it is only live while something is selected.
+  readonly property var _selSrc: htmlScroll.visible && htmlText.visible ? htmlText : sysText
+  Shortcut {
+    sequences: [StandardKey.Copy]
+    enabled: root.visible && root._selSrc.selectedText !== ""
+    onActivated: { root._selSrc.copy(); root.notice("copied selection") }
+  }
+
   // ---- empty state
   ColumnLayout {
     anchors.centerIn: parent
@@ -416,7 +425,7 @@ Item {
       Layout.margins: Style.spacing.huge
       spacing: Style.spacing.md
 
-      UiText {
+      SelectableText {
         text: (root.message && root.message.subject) || "(no subject)"
         Layout.fillWidth: true
         foreground: Hues.brightForeground
@@ -639,7 +648,7 @@ Item {
             height: scroll.height
           }
 
-          UiText {
+          SelectableText {
             id: sysText
             readonly property bool linked: root.statusText === "" && !root.renderPending && root.plainHtml !== ""
             width: scroll.availableWidth
@@ -647,25 +656,16 @@ Item {
             rightPadding: Style.spacing.huge
             topPadding: Style.spacing.xxxl
             bottomPadding: Style.spacing.huge * 1.3
-            textFormat: linked ? Text.RichText : Text.PlainText
-            linkColor: Hues.cyan
+            textFormat: linked ? TextEdit.RichText : TextEdit.PlainText
             text: root.statusText !== ""
               ? root.statusText + (root.fallbackText !== "" ? "\n\n" + root.fallbackText : "")
-              : (root.renderPending ? "rendering…" : (linked ? Fmt.markLinks(root.plainHtml, root.shownLink, root.hintMode ? root.hintList : null, root.hintTyped, root.hl) : root.plainText))
+              : (root.renderPending ? "rendering…" : (linked ? "<div style=\"line-height:140%\">" + Fmt.markLinks(root.plainHtml, root.shownLink, root.hintMode ? root.hintList : null, root.hintTyped, root.hl) + "</div>" : root.plainText))
             dim: root.statusText !== "" || root.renderPending
-            wrapMode: Text.WordWrap
-            lineHeight: 1.4
             onLinkActivated: function(link) {
               var n = link.indexOf("omalook-link:") === 0 ? Number(link.slice(13)) : -1
               if (n >= 0 && n < root.sysLinks.length) Qt.openUrlExternally(root.sysLinks[n].href)
             }
             onWidthChanged: root._sysY = null
-            // Hand cursor over a link (links are underlined by the rich-text renderer).
-            MouseArea {
-              anchors.fill: parent
-              acceptedButtons: Qt.NoButton
-              cursorShape: sysText.hoveredLink !== "" ? Qt.PointingHandCursor : Qt.ArrowCursor
-            }
           }
         }
       }
@@ -788,14 +788,20 @@ Item {
               width: parent.width - Style.spacing.huge * 2
               spacing: Style.spacing.lg
 
-              Text {
+              TextEdit {
                 id: htmlText
                 Layout.fillWidth: true
                 visible: root.statusText === "" && !root.htmlBusy
-                textFormat: Text.RichText
-                wrapMode: Text.Wrap
+                readOnly: true
+                selectByMouse: true
+                activeFocusOnPress: false
+                activeFocusOnTab: false
+                persistentSelection: true
+                selectionColor: "#3390ff"
+                selectedTextColor: "#ffffff"
+                textFormat: TextEdit.RichText
+                wrapMode: TextEdit.Wrap
                 color: "#000000"
-                linkColor: "#0563c1"
                 font.family: "Calibri"   // fontconfig maps it to Carlito if installed, else a sans
                 font.pixelSize: 15
                 text: root.rendered.html
@@ -803,7 +809,7 @@ Item {
                 MouseArea {
                   anchors.fill: parent
                   acceptedButtons: Qt.NoButton
-                  cursorShape: htmlText.hoveredLink !== "" ? Qt.PointingHandCursor : Qt.ArrowCursor
+                  cursorShape: htmlText.hoveredLink !== "" ? Qt.PointingHandCursor : Qt.IBeamCursor
                 }
               }
 

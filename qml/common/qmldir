@@ -4,3 +4,4 @@ PaneFrame 1.0 PaneFrame.qml
 ThemedScrollBar 1.0 ThemedScrollBar.qml
 UiText 1.0 UiText.qml
 VSeparator 1.0 VSeparator.qml
+SelectableText 1.0 SelectableText.qml
