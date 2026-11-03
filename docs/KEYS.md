@@ -119,6 +119,11 @@ reloads. The reply goes to the organizer silently (no comment). You can change y
 the banner re-checks the server after a few minutes, so an answer given in Outlook or on a phone shows up too.
 Not answerable: your own meetings, cancelled meetings, and messages that are only someone's reply.
 
+A **meeting cancellation** gets `y` instead (`invite.remove`, also `:remove`): it removes the cancelled meeting from your
+calendar and marks the cancellation read. The banner says whether the cancellation covers one meeting or the whole
+series; a series asks for confirmation first. If the meeting is already off your calendar, `y` only marks the mail read.
+Answering a meeting request (accept, tentative, decline) also marks the request read.
+
 The keys are active only on an answerable invitation, so `m` still means move to folder on ordinary mail. Commands:
 `invite.accept`, `invite.tentative`, `invite.decline` (also `:accept`, `:tentative`, `:decline`). Responding needs the
 `Calendars.ReadWrite` permission; without it the banner says so instead of failing silently. Gmail accounts are not

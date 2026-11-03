@@ -10,9 +10,14 @@ use serde_json::{json, Value};
 
 /// The Graph `$select`/`$expand` that returns the message kind and its event in one request. The
 /// `microsoft.graph.eventMessage/` cast is required: plain `$select=meetingMessageType` is a 400.
-pub const INFO_QUERY: &str = "$select=id,microsoft.graph.eventMessage/meetingMessageType\
+///
+/// `eventMessage/type` says what the mail covers: `seriesMaster` for a whole series (a series
+/// cancellation), `singleInstance` also for the cancellation of ONE occurrence of a series (checked
+/// on live mail), so the event's own `type` and `seriesMasterId` are fetched as well.
+pub const INFO_QUERY: &str = "$select=id,microsoft.graph.eventMessage/meetingMessageType,\
+microsoft.graph.eventMessage/type\
 &$expand=microsoft.graph.eventMessage/event($select=id,subject,start,end,isAllDay,location,\
-isCancelled,isOrganizer,responseStatus,organizer)";
+isCancelled,isOrganizer,responseStatus,organizer,type,seriesMasterId)";
 
 /// The response words the UI uses, mapped to the Graph event action and the `responseStatus` the
 /// event is left with. `None` for anything else.
@@ -37,6 +42,10 @@ pub struct InviteInfo {
     pub response: String,
     pub is_organizer: bool,
     pub is_cancelled: bool,
+    /// The mail covers a whole recurring series (`eventMessage/type == seriesMaster`).
+    pub series: bool,
+    /// The event is an occurrence/exception of a series (it has a `seriesMasterId`).
+    pub of_series: bool,
     pub all_day: bool,
     pub subject: String,
     pub organizer: String,
@@ -59,13 +68,14 @@ impl InviteInfo {
     /// Parse the reply of `GET /me/messages/{id}?INFO_QUERY`.
     pub fn from_graph(v: &Value) -> Self {
         let kind = v["meetingMessageType"].as_str().filter(|k| !k.is_empty()).unwrap_or("none").to_string();
-        let mut info = Self { kind, ..Default::default() };
+        let mut info = Self { kind, series: v["type"].as_str() == Some("seriesMaster"), ..Default::default() };
         let ev = &v["event"];
         if ev.is_object() {
             info.event_id = ev["id"].as_str().map(str::to_string);
             info.response = ev["responseStatus"]["response"].as_str().unwrap_or("none").to_string();
             info.is_organizer = ev["isOrganizer"].as_bool().unwrap_or(false);
             info.is_cancelled = ev["isCancelled"].as_bool().unwrap_or(false);
+            info.of_series = ev["seriesMasterId"].as_str().is_some_and(|m| !m.is_empty());
             info.all_day = ev["isAllDay"].as_bool().unwrap_or(false);
             info.subject = ev["subject"].as_str().unwrap_or("").to_string();
             info.location = ev["location"]["displayName"].as_str().unwrap_or("").to_string();
@@ -88,6 +98,12 @@ impl InviteInfo {
     /// meetings, and a cancelled meeting cannot be answered.)
     pub fn actionable(&self) -> bool {
         self.kind == "meetingRequest" && self.event_id.is_some() && !self.is_organizer && !self.is_cancelled
+    }
+
+    /// A cancellation whose event is still on the user's calendar: `y` removes it. `series` says
+    /// whether that is the whole recurring series or only the one meeting.
+    pub fn removable(&self) -> bool {
+        self.kind == "meetingCancelled" && self.event_id.is_some() && !self.is_organizer
     }
 
     /// Start date of the event in local time, for refreshing the calendar around it.
@@ -120,6 +136,9 @@ impl InviteInfo {
             "isOrganizer": self.is_organizer,
             "cancelled": self.is_cancelled || self.kind == "meetingCancelled",
             "hasEvent": self.event_id.is_some(),
+            "removable": self.removable(),
+            "series": self.series,
+            "ofSeries": self.of_series,
             "subject": self.subject,
             "when": self.when_text(),
             "location": short(&self.location, 60),
@@ -196,6 +215,36 @@ mod tests {
         assert!(!InviteInfo::from_graph(&sample("meetingAccepted", "organizer", true, false, true)).actionable());
         assert!(!InviteInfo::from_graph(&sample("meetingCancelled", "notResponded", false, true, true)).actionable());
         assert!(!InviteInfo::from_graph(&json!({})).actionable());
+    }
+
+    #[test]
+    fn a_cancellation_still_on_the_calendar_is_removable() {
+        let c = InviteInfo::from_graph(&sample("meetingCancelled", "notResponded", false, true, true));
+        assert!(c.removable());
+        assert!(!c.series);
+        assert_eq!(c.to_json()["removable"], true);
+        // nothing on the calendar any more, other kinds of mail, own meeting
+        assert!(!InviteInfo::from_graph(&sample("meetingCancelled", "none", false, true, false)).removable());
+        assert!(!InviteInfo::from_graph(&sample("meetingRequest", "notResponded", false, false, true)).removable());
+        assert!(!InviteInfo::from_graph(&sample("meetingCancelled", "organizer", true, true, true)).removable());
+    }
+
+    #[test]
+    fn series_and_single_occurrence_cancellations_are_told_apart() {
+        // whole series: the mail itself says seriesMaster
+        let mut v = sample("meetingCancelled", "notResponded", false, false, true);
+        v["type"] = json!("seriesMaster");
+        let s = InviteInfo::from_graph(&v);
+        assert!(s.series && !s.of_series);
+        assert_eq!(s.to_json()["series"], true);
+        // one occurrence: the mail says singleInstance (live data), the event belongs to a series
+        let mut v = sample("meetingCancelled", "notResponded", false, true, true);
+        v["type"] = json!("singleInstance");
+        v["event"]["type"] = json!("exception");
+        v["event"]["seriesMasterId"] = json!("MASTER");
+        let o = InviteInfo::from_graph(&v);
+        assert!(!o.series && o.of_series && o.removable());
+        assert_eq!(o.to_json()["ofSeries"], true);
     }
 
     #[test]

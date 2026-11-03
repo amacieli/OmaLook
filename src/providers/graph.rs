@@ -132,6 +132,21 @@ impl GraphEmailProvider {
         Self::check_response(response).await.map(|_| ())
     }
 
+    /// Remove an event from the user's own calendar (`DELETE /me/events/{id}`; 204, no body). For
+    /// an attendee this only drops their copy: the organizer's meeting is untouched and nothing is
+    /// sent. On an occurrence it removes that occurrence, on a series master the whole series.
+    pub async fn delete_event(&self, event_id: &str) -> Result<()> {
+        let token = self.get_token().await?;
+        let client = reqwest::Client::new();
+        let response = client
+            .delete(format!("https://graph.microsoft.com/v1.0/me/events/{}", urlencoding::encode(event_id)))
+            .header("Authorization", format!("Bearer {}", token))
+            .send()
+            .await
+            .map_err(|e| crate::errors::OmarchyError::HttpError(e.to_string()))?;
+        Self::check_response(response).await.map(|_| ())
+    }
+
     /// Full body of one message: (content type "html"|"text", content).
     pub async fn fetch_message_body(&self, id: &str) -> Result<(String, String)> {
         let token = self.get_token().await?;

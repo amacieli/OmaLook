@@ -341,7 +341,8 @@ Item {
   // `response` is the user's own answer on the event ("notResponded", "accepted", ...).
   function _emptyInvite(id, state, error) {
     return { id: id, state: state, error: error || "", type: "", actionable: false, response: "",
-             organizer: "", isOrganizer: false, cancelled: false, hasEvent: false, when: "", location: "" }
+             organizer: "", isOrganizer: false, cancelled: false, hasEvent: false, when: "", location: "",
+             removable: false, series: false, ofSeries: false, subject: "" }
   }
   property var invite: _emptyInvite("", "idle")
   property var _inviteCache: ({})
@@ -354,6 +355,7 @@ Item {
     o.type = r.type || ""; o.actionable = !!r.actionable; o.response = r.response || ""
     o.organizer = r.organizer || ""; o.isOrganizer = !!r.isOrganizer; o.cancelled = !!r.cancelled
     o.hasEvent = !!r.hasEvent; o.when = r.when || ""; o.location = r.location || ""
+    o.removable = !!r.removable; o.series = !!r.series; o.ofSeries = !!r.ofSeries; o.subject = r.subject || ""
     return o
   }
 
@@ -409,6 +411,54 @@ Item {
       markRead(id)   // answering an invitation deals with it: it no longer counts as unread
       var label = choice === "accept" ? "Accepted" : choice === "tentative" ? "Tentatively accepted" : "Declined"
       notify(label + (r.calendar !== "refreshed" ? " (calendar not refreshed: " + (r.calendar || "") + ")" : ""))
+    })
+  }
+
+  // `y` on a meeting cancellation: take the cancelled meeting off the calendar and mark the mail
+  // read. The cancellation says whether it is one meeting or a whole series; a series asks first.
+  // A meeting that is already off the calendar only gets the mail marked read.
+  function removeCancelled() {
+    var id = invite.id
+    if (invite.type !== "meetingCancelled" || invite.state !== "ready" || id !== currentMessageId) return
+    if (!invite.hasEvent) { markRead(id); notify("Already off your calendar; marked read"); return }
+    if (invite.series) {
+      pendingConfirm = {
+        message: "Remove the whole recurring series \u201c" + invite.subject + "\u201d from your calendar?",
+        confirmText: "Remove series",
+        run: function() { _removeCancelledNow(id) }
+      }
+      return
+    }
+    _removeCancelledNow(id)
+  }
+
+  // The cancellation banner as it was, in `state` (while the removal runs, and after a failed one).
+  function _cancellationState(i, state) {
+    return _inviteFrom(i.id, { type: i.type, cancelled: true, hasEvent: true, removable: true, series: i.series,
+                               ofSeries: i.ofSeries, subject: i.subject, organizer: i.organizer, when: i.when,
+                               location: i.location, response: i.response }, state)
+  }
+
+  function _removeCancelledNow(id) {
+    if (id !== currentMessageId || invite.state === "sending") return
+    var before = invite
+    var series = before.series
+    _setInvite(id, _cancellationState(before, "sending"))
+    request("POST", "/messages/invite?id=" + encodeURIComponent(id) + "&choice=remove", function(xhr) {
+      var r = null
+      try { r = JSON.parse(xhr.responseText) } catch (e) { r = null }
+      if (!r || r.error !== undefined || r.ok !== true) {
+        var msg = r && r.error ? String(r.error) : "could not reach the backend"
+        _setInvite(id, _cancellationState(before, "ready"))
+        notify(msg)
+        return
+      }
+      _inviteCache[id] = { r: r, at: Date.now() }
+      _setInvite(id, _inviteFrom(id, r, "ready"))
+      if (r.removed) calendarRev++
+      markRead(id)   // dealing with the cancellation: it no longer counts as unread
+      notify((series ? "Series removed from your calendar" : "Removed from your calendar")
+             + (r.removed && r.calendar !== "refreshed" ? " (calendar not refreshed: " + (r.calendar || "") + ")" : ""))
     })
   }
 

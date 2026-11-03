@@ -49,7 +49,7 @@ Item {
   // Two lines: what it is (and when/where), then what you can do or have done.
   readonly property string inviteTitle: {
     var i = root.invite
-    var what = i.cancelled ? "Meeting cancelled"
+    var what = i.cancelled ? (i.series ? "Meeting series cancelled" : "Meeting cancelled")
       : i.type === "meetingRequest" ? "Meeting invitation"
       : i.type === "meetingAccepted" ? "Meeting update: " + (i.organizer || "attendee") + " accepted"
       : i.type === "meetingTentativelyAccepted" ? "Meeting update: attendee tentatively accepted"
@@ -66,7 +66,11 @@ Item {
     if (i.state === "sending") return "sending response…"
     if (i.state === "loading") return "checking invitation…"
     if (i.state === "error" && i.error !== "") return i.error
-    if (i.cancelled) return i.hasEvent ? "No response needed" : "Removed from your calendar"
+    if (i.cancelled) {
+      if (!i.hasEvent) return "Not on your calendar   y mark read"
+      return (i.series ? "Cancels the whole series" : i.ofSeries ? "Cancels this one meeting only" : "Cancels this meeting")
+        + "   y remove from your calendar"
+    }
     if (i.type !== "meetingRequest") return "Informational, no response needed"
     if (i.isOrganizer) return "You are the organizer"
     if (!i.hasEvent) return "This meeting is no longer on your calendar"

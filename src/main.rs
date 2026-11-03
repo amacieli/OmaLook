@@ -376,6 +376,97 @@ fn invite_info_json(config_dir: &PathBuf, id: &str) -> String {
     }
 }
 
+/// Re-read the account's calendar around `date` after an invitation changed it. Returns
+/// `"refreshed"` or `"not refreshed: ..."`.
+fn refresh_calendar_note(rt: &tokio::runtime::Runtime, db_path: &str, account: &str, date: Option<chrono::NaiveDate>) -> String {
+    match Database::open_for_account(db_path, account) {
+        Err(e) => format!("not refreshed: {}", e),
+        Ok(cal_db) => {
+            let provider = Arc::new(omalook::providers::GraphCalendarProvider::new(AuthManager::for_account(account)));
+            let cal = omalook::calendar_daemon::CalendarDaemon::new(Default::default(), Arc::new(cal_db), provider);
+            let near = rt.block_on(cal.refresh_near_window());
+            let around = match date {
+                Some(d) => rt.block_on(cal.refresh_around(d)).map(|_| ()),
+                None => Ok(()),
+            };
+            match near.map(|_| ()).and(around) {
+                Ok(()) => "refreshed".to_string(),
+                Err(e) => { warn!("Calendar refresh after invitation change failed: {}", e); format!("not refreshed: {}", e) }
+            }
+        }
+    }
+}
+
+/// `y` on a meeting cancellation: remove the cancelled meeting (one occurrence or a whole series,
+/// as the cancellation says) from the user's calendar, then refresh the calendar. A cancellation
+/// whose meeting is no longer on the calendar succeeds without touching anything, so the caller
+/// can still mark the mail read. Returns the lookup JSON plus `"ok":true`, `"removed":bool`,
+/// `"series":bool`, `"calendar":...`, or `{"error":...}`.
+fn remove_cancelled_json(config_dir: &PathBuf, id: &str) -> String {
+    use omalook::invites::status_of;
+    let err = |m: &str| format!("{{\"error\":{}}}", serde_json::to_string(m).unwrap());
+    let db_path = config_dir.join("messages.db");
+    let db = match Database::open(db_path.to_str().unwrap_or("messages.db")) {
+        Ok(db) => db,
+        Err(e) => return err(&format!("database: {}", e)),
+    };
+    let account = match db.message_account(id) {
+        Ok(Some(a)) => a,
+        _ => return err("unknown message"),
+    };
+    if omalook::accounts::provider_of(&account) != "exchange" {
+        return err("removing cancelled meetings is only supported for Microsoft accounts");
+    }
+    let rt = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+        Ok(rt) => rt,
+        Err(e) => return err(&format!("runtime: {}", e)),
+    };
+    let graph = GraphEmailProvider::new(AuthManager::for_account(&account));
+    // Fresh lookup, never the cache: a stale answer here could delete the wrong thing.
+    let mut info = match rt.block_on(graph.fetch_invite_info(id)) {
+        Ok(i) => i,
+        Err(e) => {
+            warn!("Invite lookup before removing failed for {}: {}", id, e);
+            return err("could not read this message from the server");
+        }
+    };
+    if info.kind != "meetingCancelled" {
+        return err("this message is not a meeting cancellation");
+    }
+    let mut removed = false;
+    if let Some(event_id) = info.event_id.clone().filter(|_| info.removable()) {
+        match rt.block_on(graph.delete_event(&event_id)) {
+            Ok(()) => removed = true,
+            // Already gone (removed in Outlook, or the server dropped it): the goal is met.
+            Err(e) if status_of(&e.to_string()) == Some(404) => {}
+            Err(e) => {
+                warn!("Removing cancelled meeting of {} failed: {}", id, e);
+                return match status_of(&e.to_string()) {
+                    Some(403) => err("not allowed: grant Calendars.ReadWrite to this account (sign in again after the Azure consent)"),
+                    _ => err("the server refused to remove the meeting"),
+                };
+            }
+        }
+    }
+    if removed {
+        info.event_id = None;
+        info.response = "none".to_string();
+    }
+    let mut out = info.to_json();
+    if let Err(e) = db.set_invite_info(id, &out.to_string()) {
+        warn!("Could not cache invite info of {}: {}", id, e);
+    }
+    let note = if removed {
+        refresh_calendar_note(&rt, db_path.to_str().unwrap_or("messages.db"), &account, info.start_date())
+    } else {
+        "refreshed".to_string()
+    };
+    out["ok"] = serde_json::json!(true);
+    out["removed"] = serde_json::json!(removed);
+    out["calendar"] = serde_json::json!(note);
+    out.to_string()
+}
+
 /// Answer an invitation (choice = accept | tentative | decline) on its Graph event, then
 /// refresh the calendar so the change shows at once. Returns the new `InviteInfo` JSON plus
 /// `"ok":true` and `"calendar":"refreshed"|"not refreshed: ..."`, or `{"error":...}`.
@@ -383,12 +474,15 @@ fn invite_info_json(config_dir: &PathBuf, id: &str) -> String {
 fn respond_invite_json(config_dir: &PathBuf, id: &str, choice: &str) -> String {
     use omalook::invites::{response_op, status_of};
     let err = |m: &str| format!("{{\"error\":{}}}", serde_json::to_string(m).unwrap());
-    let Some((op, new_response)) = response_op(choice) else {
-        return err("unknown response");
-    };
     if id.is_empty() {
         return err("missing id");
     }
+    if choice == "remove" {
+        return remove_cancelled_json(config_dir, id);
+    }
+    let Some((op, new_response)) = response_op(choice) else {
+        return err("unknown response");
+    };
     let db_path = config_dir.join("messages.db");
     let db = match Database::open(db_path.to_str().unwrap_or("messages.db")) {
         Ok(db) => db,
@@ -435,22 +529,7 @@ fn respond_invite_json(config_dir: &PathBuf, id: &str, choice: &str) -> String {
         warn!("Could not cache invite info of {}: {}", id, e);
     }
     // Every answer changes the calendar: accept/tentative add or update the event, decline removes it.
-    let note = match Database::open_for_account(db_path.to_str().unwrap_or("messages.db"), &account) {
-        Err(e) => format!("not refreshed: {}", e),
-        Ok(cal_db) => {
-            let provider = Arc::new(omalook::providers::GraphCalendarProvider::new(AuthManager::for_account(&account)));
-            let cal = omalook::calendar_daemon::CalendarDaemon::new(Default::default(), Arc::new(cal_db), provider);
-            let near = rt.block_on(cal.refresh_near_window());
-            let around = match info.start_date() {
-                Some(d) => rt.block_on(cal.refresh_around(d)).map(|_| ()),
-                None => Ok(()),
-            };
-            match near.map(|_| ()).and(around) {
-                Ok(()) => "refreshed".to_string(),
-                Err(e) => { warn!("Calendar refresh after RSVP failed: {}", e); format!("not refreshed: {}", e) }
-            }
-        }
-    };
+    let note = refresh_calendar_note(&rt, db_path.to_str().unwrap_or("messages.db"), &account, info.start_date());
     out["ok"] = serde_json::json!(true);
     out["calendar"] = serde_json::json!(note);
     out.to_string()
@@ -1935,7 +2014,7 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                     continue;
                 }
 
-                // ── POST /messages/invite?id=ID&choice=accept|tentative|decline — answer an invitation
+                // ── POST /messages/invite?id=ID&choice=accept|tentative|decline|remove — answer an invitation (remove: drop a cancelled meeting from the calendar)
                 // on Graph (silent reply), then refresh the calendar for accept/tentative. Slow, so it
                 // runs on its own thread. ──
                 if first_line.contains("POST /messages/invite") {
