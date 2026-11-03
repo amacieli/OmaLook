@@ -5,12 +5,12 @@ IDs are stable (never reused). Status: `open` | `investigating` | `planned` | `i
 
 ## Issues
 
-### OL-039 — Meeting cancellations: `y` removes the meeting from the calendar and marks the mail read; answered requests are marked read (built 2026-11-03, not yet tried on a live build)
+### OL-039 — Meeting cancellations: `y` removes the meeting from the calendar and marks the mail read; answered requests are marked read (done 2026-11-03, commit 19b5b6f, tried live by user: works)
 - **Wanted (user, 2026-11-03):** when a cancellation arrives, offer `y` to remove it from the calendar, covering both a single-occurrence cancellation and a whole-series one. `y` also marks the cancellation read. Answering an ordinary meeting request (accept, tentative, decline) marks that request read too.
 - **Found (live Graph, read-only probe of 8 real cancellations):** the cancellation mail carries `eventMessage/type`: `seriesMaster` for a series cancellation, but `singleInstance` also for the cancellation of ONE occurrence of a series, so the event's own `type` (`exception`) and `seriesMasterId` decide "one meeting" versus "series" for display. The cancelled occurrence is a real event on the calendar (`isCancelled: true`), so `DELETE /me/events/{id}` on the `event` the mail points to is the "Remove from Calendar" action; on a series master the same call removes the whole series. Old cancellations often have no event any more (empty `event`, or a 404 on the lookup).
 - **Built:** `invites.rs` (`INFO_QUERY` adds the two types, `removable()`, `series`, `ofSeries`), `graph.rs` `delete_event`, `main.rs` `POST /messages/invite?choice=remove` (fresh lookup, never the cache; 404 on delete counts as done; no event means nothing to delete), QML `invite.remove` on `y` (`:remove`), banner text says "Cancels this one meeting only" / "Cancels the whole series", and a series asks for confirmation first because the series master of an old cancellation can still be live (one real example: a Sept series cancellation whose master is still on the calendar). With the meeting already off the calendar, `y` only marks the mail read.
 - **Already there:** accept, tentative and decline already mark the request read (`d69d008`, `respondInvite` calls `markRead`). Not checked: answering from the calendar view, and whether the live `/opt/omalook` build has that commit.
-- **Checked:** 10 invite unit tests pass, release build. **Not checked:** the QML (no qmllint here), and a live removal.
+- **Checked:** 10 invite unit tests pass, release build, and the user tried it on a live build and confirmed it works (2026-11-03).
 - **Open question:** a recurring-series cancellation that leaves the master live; if Graph shows the master `isCancelled: false` after a real series cancellation, `y` plus confirmation still removes it.
 
 ### OL-038 — Revisit Gmail sign-in so it works like Outlook's: no JSON file to handle (done in tree 2026-11-03, option A; Google verification still optional/open)
@@ -278,5 +278,7 @@ WebKit helper, undo-send, rebindable keys with which-key and a palette. Mutt's e
 12. [ ] Inline images (cid) in HTML compose.
 
 ## Done
+- OL-039, meeting cancellations (2026-11-03): `19b5b6f`; `y` removes the cancelled meeting (one occurrence or a whole series, with confirmation) and marks the mail read.
+- OL-038, Gmail sign-in without a JSON file (2026-11-03): `1ff61e7`; the client is a build default. Google verification stays optional.
 - OL-020, one toggle for message view (2026-10-29): 6af96ac, d2a67a7, d475539, e0be4ce plus the `I` images cycle and leftover cleanup (see the issue entry).
 - Backlog 1, search and filtering (2026-10-12): `9f07565` pattern engine, `99bb981` prompt and list, `78db1be` cat fix, `6a7d613` quick filters + history, `7e13369` `fullbody:` via provider. Also fixed in this branch: the project rename had changed the keyring service name, which hid every saved sign-in.
