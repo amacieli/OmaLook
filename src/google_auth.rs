@@ -9,7 +9,8 @@
 //!
 //! The OAuth client (a "Desktop app" client created once by the developer in Google
 //! Cloud Console, like the Azure registration for Graph) is compiled into the binary by
-//! build.rs, so end users configure nothing. `<config dir>/google_client.json` (Google's
+//! build.rs (falling back to the committed `packaging/google_client.default.json`), so neither end
+//! users nor anyone building from a fresh clone fetch anything. `<config dir>/google_client.json` (Google's
 //! "Download JSON" file works as-is) overrides it for developers using their own project.
 //! Desktop clients carry a secret that Google documents as non-confidential; it is still
 //! kept out of the git history (build.rs reads it from a git-ignored file or env vars).

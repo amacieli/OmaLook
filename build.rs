@@ -4,6 +4,9 @@
 //! confidential) so a distributed binary can sign users in to Gmail without any setup on their
 //! side. Lookup order: env `OMALOOK_GOOGLE_CLIENT_ID` + `OMALOOK_GOOGLE_CLIENT_SECRET`,
 //! then `./google_client.json` (git-ignored), then `~/.config/omalook/google_client.json`.
+//! Last resort: `packaging/google_client.default.json`, committed on purpose. Google documents a
+//! desktop client's secret as non-confidential (Thunderbird ships its own), so a fresh clone builds
+//! a binary that signs in to Gmail with no file to fetch (OL-038).
 //! With none of them the binary still builds and falls back to that file at run time.
 
 use std::path::PathBuf;
@@ -32,9 +35,12 @@ fn main() {
         (Ok(i), Ok(s)) if !i.is_empty() && !s.is_empty() => Some((i, s)),
         _ => None,
     };
+    let default_file = PathBuf::from("packaging/google_client.default.json");
+    println!("cargo:rerun-if-changed=packaging/google_client.default.json");
     let client = from_env
         .or_else(|| client_from_json(&project_file))
-        .or_else(|| home_file.as_ref().and_then(client_from_json));
+        .or_else(|| home_file.as_ref().and_then(client_from_json))
+        .or_else(|| client_from_json(&default_file));
     match client {
         Some((id, secret)) => {
             println!("cargo:rustc-env=OMALOOK_GOOGLE_CLIENT_ID={}", id);

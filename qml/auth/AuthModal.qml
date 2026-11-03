@@ -89,7 +89,7 @@ Item {
           }
           UiText {
             Layout.fillWidth: true
-            text: "Your browser opens Google's own sign-in page. omalook never sees your password."
+            text: "Your browser opens Google's own sign-in page. omalook never sees your password.\nGoogle may say \u201cGoogle hasn't verified this app\u201d: choose Advanced, then Go to omalook, then Continue."
             dim: true
             wrapMode: Text.Wrap
             horizontalAlignment: Text.AlignHCenter

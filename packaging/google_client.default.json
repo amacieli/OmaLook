@@ -1,0 +1,9 @@
+{
+  "installed": {
+    "client_id": "832679326986-msq5kt13qqpp4gbdl19nnl3qbhu3effv.apps.googleusercontent.com",
+    "client_secret": "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",
+    "project_id": "omalook-510618",
+    "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+    "token_uri": "https://oauth2.googleapis.com/token"
+  }
+}
