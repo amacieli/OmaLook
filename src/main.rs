@@ -919,9 +919,22 @@ fn compose_send_response(config_dir: &PathBuf, stream: &mut std::net::TcpStream,
         Ok(b) => b,
         Err(e) => return err(&e),
     };
-    let msg: OutgoingMessage = match serde_json::from_str(&raw) {
+    let mut msg: OutgoingMessage = match serde_json::from_str(&raw) {
         Ok(m) => m,
         Err(e) => return err(&format!("unreadable message: {}", e)),
+    };
+    let db = match Database::open(config_dir.join("messages.db").to_str().unwrap_or("messages.db")) {
+        Ok(db) => db,
+        Err(e) => return err(&format!("database: {}", e)),
+    };
+    // Distribution lists become their members here, at queue time: the chip in the compose pane
+    // stays one chip, and what is stored in the outbox is the final address list.
+    let lists = db.lists_all().unwrap_or_default();
+    let expanded = match msg.expand_lists(&|id| {
+        lists.iter().find(|l| l.id == id).map(|l| (l.name.clone(), l.members.iter().map(|m| omalook::compose::Address { email: m.email.clone(), name: m.name.clone(), list: 0 }).collect()))
+    }) {
+        Ok(r) => r,
+        Err(e) => return err(&e),
     };
     if let Err(e) = msg.validate() {
         return err(&e);
@@ -930,10 +943,6 @@ fn compose_send_response(config_dir: &PathBuf, stream: &mut std::net::TcpStream,
     if !SCHEDULER.get().map(|s| s.is_running(&msg.account_id)).unwrap_or(false) {
         return err("that account is not signed in, so it cannot send");
     }
-    let db = match Database::open(config_dir.join("messages.db").to_str().unwrap_or("messages.db")) {
-        Ok(db) => db,
-        Err(e) => return err(&format!("database: {}", e)),
-    };
     let delay = omalook::settings::read_send_delay(&config_dir.join("settings.toml"));
     let now = Database::now_ms();
     let id = format!("ob-{:x}-{:03x}", now, COUNTER.fetch_add(1, Ordering::Relaxed) & 0xfff);
@@ -958,7 +967,11 @@ fn compose_send_response(config_dir: &PathBuf, stream: &mut std::net::TcpStream,
     }
     omalook::sync_state::request_outbox_run();
     info!("Compose: queued {} ({} → {} recipient(s)), sends in {}s", id, msg.account_id, msg.to.len() + msg.cc.len() + msg.bcc.len(), delay);
-    serde_json::json!({ "ok": true, "id": id, "delay_secs": delay }).to_string()
+    serde_json::json!({
+        "ok": true, "id": id, "delay_secs": delay,
+        "recipients": msg.to.len() + msg.cc.len() + msg.bcc.len(),
+        "lists": expanded.iter().map(|(n, c)| serde_json::json!({ "name": n, "count": c })).collect::<Vec<_>>(),
+    }).to_string()
 }
 
 /// GET /compose/originals?id=MESSAGE — the files attached to the message being forwarded, for the
@@ -1138,6 +1151,61 @@ fn sender_prefs_response(config_dir: &PathBuf, first_line: &str) -> String {
         })
     };
     result.unwrap_or_else(|e| err(&e.to_string()))
+}
+
+/// JSON body for the distribution-list endpoints (see the route comment).
+fn lists_response(config_dir: &PathBuf, first_line: &str) -> String {
+    use omalook::db::lists::ListOp;
+    let err = |m: &str| serde_json::json!({ "ok": false, "error": m }).to_string();
+    let db = match Database::open(config_dir.join("messages.db").to_str().unwrap_or("messages.db")) {
+        Ok(db) => db,
+        Err(e) => return err(&format!("database: {}", e)),
+    };
+    let status = |op: ListOp| match op {
+        ListOp::Done => "done", ListOp::Exists => "exists", ListOp::Invalid => "invalid", ListOp::Missing => "missing",
+    };
+    let id: i64 = query_param(first_line, "id").and_then(|v| v.parse().ok()).unwrap_or(0);
+    let name = query_param(first_line, "name").unwrap_or_default();
+    let email = query_param(first_line, "email").unwrap_or_default();
+    let r: Result<String, omalook::errors::OmarchyError> = if first_line.contains("POST /lists/create") {
+        db.list_create(&name).map(|(op, id)| serde_json::json!({ "ok": op == ListOp::Done, "status": status(op), "id": id }).to_string())
+    } else if first_line.contains("POST /lists/rename") {
+        db.list_rename(id, &name).map(|op| serde_json::json!({ "ok": op == ListOp::Done, "status": status(op) }).to_string())
+    } else if first_line.contains("POST /lists/delete") {
+        db.list_delete(id).map(|ok| serde_json::json!({ "ok": ok }).to_string())
+    } else if first_line.contains("POST /lists/members/add") {
+        db.list_member_add(id, &email, &name).map(|op| serde_json::json!({ "ok": op == ListOp::Done || op == ListOp::Exists, "status": status(op) }).to_string())
+    } else if first_line.contains("POST /lists/members/remove") {
+        db.list_member_remove(id, &email).map(|ok| serde_json::json!({ "ok": ok }).to_string())
+    } else {
+        db.lists_all().map(|l| serde_json::to_string(&l).unwrap_or_else(|_| "[]".into()))
+    };
+    r.unwrap_or_else(|e| err(&e.to_string()))
+}
+
+/// Addresses seen in mail (From / To / Cc / Bcc), best first, for recipient suggestions. The
+/// scan covers the newest messages and is reused for a minute.
+static ADDRESS_CACHE: std::sync::OnceLock<std::sync::Mutex<Option<(std::time::Instant, String)>>> = std::sync::OnceLock::new();
+const ADDRESS_SCAN_MESSAGES: usize = 40_000;
+const ADDRESS_MAX_RETURNED: usize = 6_000;
+
+fn addresses_json(config_dir: &PathBuf) -> String {
+    let cache = ADDRESS_CACHE.get_or_init(|| std::sync::Mutex::new(None));
+    if let Some((at, body)) = cache.lock().ok().and_then(|g| g.clone()) {
+        if at.elapsed() < std::time::Duration::from_secs(60) { return body; }
+    }
+    let body = match Database::open(config_dir.join("messages.db").to_str().unwrap_or("messages.db"))
+        .and_then(|db| db.harvest_addresses(ADDRESS_SCAN_MESSAGES))
+    {
+        Ok(v) => {
+            let rows: Vec<serde_json::Value> = v.iter().take(ADDRESS_MAX_RETURNED)
+                .map(|s| serde_json::json!({ "email": s.email, "name": s.name, "score": s.score })).collect();
+            serde_json::Value::Array(rows).to_string()
+        }
+        Err(e) => return serde_json::json!({ "ok": false, "error": e.to_string() }).to_string(),
+    };
+    if let Ok(mut g) = cache.lock() { *g = Some((std::time::Instant::now(), body.clone())); }
+    body
 }
 
 fn json_error_response(status: &str, msg: &str) -> String {
@@ -1854,11 +1922,12 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                     continue;
                 }
 
-                // ── GET|POST /settings/mail?send_delay=N — seconds a sent message waits before it goes ──
+                // ── GET|POST /settings/mail?send_delay=N&large_audience=N — seconds a sent message waits before it goes; recipient count above which Send asks to confirm (0 = never) ──
                 if first_line.contains("GET /settings/mail") || first_line.contains("POST /settings/mail") {
                     use omalook::models::MailSettings;
                     let settings_path = config_dir.join("settings.toml");
                     let mut secs = omalook::settings::read_send_delay(&settings_path);
+                    let mut large = omalook::settings::read_large_audience(&settings_path);
                     if first_line.contains("POST /settings/mail") {
                         if let Some(wanted) = query_param(first_line, "send_delay").and_then(|v| v.parse::<i32>().ok()) {
                             match omalook::settings::write_send_delay(&settings_path, wanted) {
@@ -1866,10 +1935,18 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                                 Err(e) => warn!("POST /settings/mail: could not save: {}", e),
                             }
                         }
+                        if let Some(wanted) = query_param(first_line, "large_audience").and_then(|v| v.parse::<i32>().ok()) {
+                            match omalook::settings::write_large_audience(&settings_path, wanted) {
+                                Ok(stored) => large = stored,
+                                Err(e) => warn!("POST /settings/mail: could not save: {}", e),
+                            }
+                        }
                     }
                     let body = serde_json::json!({
                         "send_delay_secs": secs,
                         "max_send_delay_secs": MailSettings::MAX_SEND_DELAY_SECS,
+                        "large_audience_confirm": large,
+                        "max_large_audience_confirm": MailSettings::MAX_LARGE_AUDIENCE,
                     }).to_string();
                     let response = format!(
                         "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
@@ -1975,6 +2052,24 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                             "[]".to_string()
                         }
                     };
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                        body.len(), body
+                    );
+                    let _ = stream.write_all(response.as_bytes());
+                    continue;
+                }
+
+                // ── Distribution lists (Settings → Lists; chips in the compose pane) ──────
+                //   GET  /lists                                  → [{id, name, members:[{email,name}]}]
+                //   POST /lists/create?name=N                    → {ok, status: done|exists|invalid, id}
+                //   POST /lists/rename?id=I&name=N               → {ok, status}
+                //   POST /lists/delete?id=I                      → {ok}
+                //   POST /lists/members/add?id=I&email=E[&name=N] → {ok, status: done|exists|invalid|missing}
+                //   POST /lists/members/remove?id=I&email=E      → {ok}
+                //   GET  /addresses                              → [{email, name, score}] seen in mail, best first
+                if first_line.starts_with("GET /lists") || first_line.starts_with("POST /lists/") || first_line.starts_with("GET /addresses") {
+                    let body = if first_line.starts_with("GET /addresses") { addresses_json(config_dir) } else { lists_response(config_dir, first_line) };
                     let response = format!(
                         "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                         body.len(), body

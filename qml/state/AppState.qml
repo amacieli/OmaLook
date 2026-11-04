@@ -17,7 +17,7 @@ Item {
   }
   property bool backendOnline: false
   onBackendOnlineChanged: {
-    if (backendOnline) { perfMark("backend first answered"); loadCalendarSettings(); loadUiSettings(); loadSenders(); loadMailSettings(); loadBackgroundSettings(); loadMcp(); loadSearchHistory(); loadViewState() }
+    if (backendOnline) { perfMark("backend first answered"); loadCalendarSettings(); loadUiSettings(); loadSenders(); loadLists(); loadMailSettings(); loadBackgroundSettings(); loadMcp(); loadSearchHistory(); loadViewState() }
   }
 
   // ---- launch timing (see src/perf.rs): marks are queued until the backend answers, then
@@ -63,6 +63,7 @@ Item {
     { id: "appearance",    icon: "\uf1fc", label: "Appearance"    },
     { id: "mail",          icon: "\uf0e0", label: "Mail"          },
     { id: "senders",       icon: "\uf2bd", label: "Senders"       },
+    { id: "lists",         icon: "\uf0c0", label: "Lists"         },
     { id: "calendar",      icon: "\uf073", label: "Calendar"      },
     { id: "sms",           icon: "\uf27a", label: "SMS"           },
     { id: "mcp",           icon: "\uf1e6", label: "MCP"           },
@@ -814,17 +815,105 @@ Item {
   property string composeDefaultMode: "system"   // [mail.compose] default_format, once settings carry it
   property var composeContacts: []               // [{ name, email }] for recipient suggestions
 
+  // Recipient suggestions: the address book first, then every address seen in mail (From, To, Cc
+  // and Bcc, sent items weighted up; GET /addresses), best first. Reloaded each time a compose opens.
+  property var _suggestContacts: null
+  property var _suggestSeen: null
   function loadComposeContacts() {
+    _suggestContacts = null; _suggestSeen = null
     request("GET", "/contacts?view=all", function(xhr) {
+      var out = []
+      try {
+        if (xhr.status === 200) {
+          var list = JSON.parse(xhr.responseText)
+          for (var i = 0; i < list.length; i++)
+            for (var j = 0; j < (list[i].emails || []).length; j++)
+              out.push({ name: list[i].display_name || "", email: list[i].emails[j] })
+        }
+      } catch (e) { console.log("[Compose] contacts parse error:", e) }
+      root._suggestContacts = out
+      root._mergeSuggestions()
+    })
+    request("GET", "/addresses", function(xhr) {
+      var out = []
+      try { if (xhr.status === 200) out = JSON.parse(xhr.responseText) } catch (e) { console.log("[Compose] addresses parse error:", e) }
+      root._suggestSeen = Array.isArray(out) ? out : []
+      root._mergeSuggestions()
+    })
+  }
+
+  function _mergeSuggestions() {
+    if (_suggestContacts === null || _suggestSeen === null) return
+    var have = {}, out = []
+    for (var i = 0; i < _suggestContacts.length; i++) {
+      var k = String(_suggestContacts[i].email).toLowerCase()
+      if (have[k]) continue
+      have[k] = true
+      out.push(_suggestContacts[i])
+    }
+    for (var j = 0; j < _suggestSeen.length; j++) {
+      var e = String(_suggestSeen[j].email).toLowerCase()
+      if (have[e]) continue
+      have[e] = true
+      out.push({ name: _suggestSeen[j].name || "", email: _suggestSeen[j].email })
+    }
+    composeContacts = out
+  }
+
+  // ---- distribution lists (Settings -> Lists; suggested in To / Cc / Bcc) ----------------
+  // [{ id, name, members: [{ email, name }] }] from GET /lists. The backend expands a list chip into
+  // its members when the message is queued.
+  property var dlLists: []
+  readonly property var composeLists: dlLists.map(function(l) { return { id: l.id, name: l.name, count: l.members.length } })
+  property string listNotice: ""
+  property int largeAudienceConfirm: 20
+
+  function loadLists(done) {
+    request("GET", "/lists", function(xhr) {
       if (xhr.status !== 200) return
       try {
-        var list = JSON.parse(xhr.responseText), out = []
-        for (var i = 0; i < list.length; i++)
-          for (var j = 0; j < (list[i].emails || []).length; j++)
-            out.push({ name: list[i].display_name || "", email: list[i].emails[j] })
-        root.composeContacts = out
-      } catch (e) { console.log("[Compose] contacts parse error:", e) }
+        var rows = JSON.parse(xhr.responseText)
+        if (Array.isArray(rows) && xhr.responseText !== root._listsJson) { root._listsJson = xhr.responseText; root.dlLists = rows }
+      } catch (e) { console.log("[Lists] parse error:", e) }
+      if (done) done()
     })
+  }
+  property string _listsJson: ""
+
+  function _listCall(path, done, okStatuses, messages) {
+    request("POST", path, function(xhr) {
+      var r = null
+      try { r = JSON.parse(xhr.responseText) } catch (e) { r = null }
+      var st = r && r.status ? r.status : (r && r.ok ? "done" : "error")
+      listNotice = (messages && messages[st]) || ""
+      loadLists(function() { if (done) done(r, st) })
+    })
+  }
+
+  function createList(name, done) {
+    var n = String(name || "").trim()
+    if (n === "") { listNotice = "Give the list a name."; if (done) done(null, "invalid"); return }
+    _listCall("/lists/create?name=" + encodeURIComponent(n), done, null,
+      { exists: "There is already a list called " + n + ".", invalid: "That is not a usable list name.", error: "Could not create the list." })
+  }
+  function renameList(id, name, done) {
+    var n = String(name || "").trim()
+    if (n === "") { listNotice = "Give the list a name."; if (done) done(null, "invalid"); return }
+    _listCall("/lists/rename?id=" + id + "&name=" + encodeURIComponent(n), done, null,
+      { exists: "There is already a list called " + n + ".", invalid: "That is not a usable list name.", error: "Could not rename the list." })
+  }
+  function deleteList(id, done) { _listCall("/lists/delete?id=" + id, done, null, { error: "Could not delete the list." }) }
+  function addListMember(id, email, name, done) {
+    var e = String(email || "").trim()
+    if (e === "") { listNotice = "Enter an email address."; if (done) done(null, "invalid"); return }
+    _listCall("/lists/members/add?id=" + id + "&email=" + encodeURIComponent(e) + "&name=" + encodeURIComponent(name || ""), done, null,
+      { exists: e.toLowerCase() + " is already in the list.", invalid: "That doesn't look like an email address.", missing: "That list no longer exists.", error: "Could not add the address." })
+  }
+  function removeListMember(id, email, done) { _listCall("/lists/members/remove?id=" + id + "&email=" + encodeURIComponent(email), done, null, { error: "Could not remove the address." }) }
+
+  function setLargeAudienceConfirm(n) {
+    largeAudienceConfirm = n
+    mailSettingsSave.restart()
   }
 
   function _addr(m) {
@@ -872,7 +961,7 @@ Item {
     composeStatus = ""
     composeInitial = init
     composing = true
-    if (composeContacts.length === 0) loadComposeContacts()
+    loadComposeContacts(); loadLists()
   }
 
   // File browser for attachments: the daemon lists one folder at a time; the last folder used is
@@ -928,6 +1017,7 @@ Item {
   function applyMailSettings(d) {
     if (d.send_delay_secs !== undefined) sendDelaySecs = d.send_delay_secs
     if (d.max_send_delay_secs) maxSendDelaySecs = d.max_send_delay_secs
+    if (d.large_audience_confirm !== undefined) largeAudienceConfirm = d.large_audience_confirm
   }
 
   function loadMailSettings() {
@@ -946,7 +1036,7 @@ Item {
   Timer {
     id: mailSettingsSave
     interval: 600
-    onTriggered: root.request("POST", "/settings/mail?send_delay=" + root.sendDelaySecs, function(xhr) {
+    onTriggered: root.request("POST", "/settings/mail?send_delay=" + root.sendDelaySecs + "&large_audience=" + root.largeAudienceConfirm, function(xhr) {
       if (xhr.status !== 200) return
       try { root.applyMailSettings(JSON.parse(xhr.responseText)) } catch (e) {}   // the backend clamps
     })
@@ -1117,11 +1207,12 @@ Item {
     composeInitial = {
       kind: m.kind, accountId: m.account_id, inReplyTo: m.in_reply_to || "",
       to: _addrText(m.to), cc: _addrText(m.cc), bcc: _addrText(m.bcc),
+      toEntries: m.to, ccEntries: m.cc, bccEntries: m.bcc,
       subject: m.subject, quote: null, restore: m.body, mode: m.mode, attachments: m.attachments || [],
       forwardedKeep: m.forwarded_keep
     }
     composing = true
-    if (composeContacts.length === 0) loadComposeContacts()
+    loadComposeContacts(); loadLists()
   }
 
   // The newest message still inside its delay (what `u` takes back).

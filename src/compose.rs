@@ -18,7 +18,14 @@ pub struct Address {
     pub email: String,
     #[serde(default)]
     pub name: String,
+    /// Distribution list id (see `db::lists`), 0 for a plain address. A list entry carries no
+    /// address of its own: `expand_lists` replaces it with the members before the message is
+    /// validated and queued.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub list: i64,
 }
+
+fn is_zero(n: &i64) -> bool { *n == 0 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct Body {
@@ -208,6 +215,35 @@ pub fn is_valid_email(email: &str) -> bool {
 }
 
 impl OutgoingMessage {
+    /// Replace every distribution-list entry in To / Cc / Bcc with the list's members, then make
+    /// sure nobody gets two copies: an address keeps its first place in To, then Cc, then Bcc
+    /// (so someone in the Bcc list who is also typed in To stays visible in To). `lookup` gives a
+    /// list's name and members, or None when it no longer exists. A message without list
+    /// entries is left untouched. Returns what each list expanded to, for the send toast.
+    pub fn expand_lists(&mut self, lookup: &dyn Fn(i64) -> Option<(String, Vec<Address>)>) -> Result<Vec<(String, usize)>, String> {
+        let any = self.to.iter().chain(&self.cc).chain(&self.bcc).any(|a| a.list != 0);
+        if !any { return Ok(vec![]); }
+        let mut report = Vec::new();
+        for field in [&mut self.to, &mut self.cc, &mut self.bcc] {
+            let mut out: Vec<Address> = Vec::with_capacity(field.len());
+            for a in field.drain(..) {
+                if a.list == 0 { out.push(a); continue; }
+                let Some((name, members)) = lookup(a.list) else {
+                    return Err(format!("the list {} no longer exists", if a.name.is_empty() { "you picked".to_string() } else { format!("\"{}\"", a.name) }));
+                };
+                if members.is_empty() { return Err(format!("the list \"{}\" has no members", name)); }
+                report.push((name, members.len()));
+                out.extend(members.into_iter().map(|m| Address { list: 0, ..m }));
+            }
+            *field = out;
+        }
+        let mut seen = std::collections::HashSet::new();
+        for field in [&mut self.to, &mut self.cc, &mut self.bcc] {
+            field.retain(|a| seen.insert(a.email.trim().to_ascii_lowercase()));
+        }
+        Ok(report)
+    }
+
     /// Refuse what could never be sent. The UI checks the same things first; this is the
     /// backstop for any other caller.
     pub fn validate(&self) -> Result<(), String> {
@@ -768,7 +804,35 @@ pub const MAX_ATTEMPTS: i64 = 4;
 mod tests {
     use super::*;
 
-    fn addr(e: &str, n: &str) -> Address { Address { email: e.into(), name: n.into() } }
+    #[test]
+    fn lists_expand_dedupe_across_fields_and_fail_loudly() {
+        let members = |l: i64| -> Option<(String, Vec<Address>)> {
+            match l {
+                1 => Some(("Cadets".into(), vec![addr("a@x.org", "A"), addr("B@x.org", ""), addr("me@x.org", "")])),
+                2 => Some(("Leaders".into(), vec![addr("b@x.org", ""), addr("lead@x.org", "L")])),
+                3 => Some(("Empty".into(), vec![])),
+                _ => None,
+            }
+        };
+        let entry = |l: i64, n: &str| Address { email: String::new(), name: n.into(), list: l };
+        let mut m = OutgoingMessage { to: vec![addr("me@x.org", "")], cc: vec![entry(2, "Leaders")], bcc: vec![entry(1, "Cadets"), addr("extra@x.org", "")], ..Default::default() };
+        let rep = m.expand_lists(&members).unwrap();
+        assert_eq!(rep, vec![("Leaders".to_string(), 2), ("Cadets".to_string(), 3)]);
+        let e = |v: &Vec<Address>| v.iter().map(|a| a.email.to_lowercase()).collect::<Vec<_>>();
+        assert_eq!(e(&m.to), vec!["me@x.org"]);
+        assert_eq!(e(&m.cc), vec!["b@x.org", "lead@x.org"]);
+        assert_eq!(e(&m.bcc), vec!["a@x.org", "extra@x.org"], "b@ stays in Cc, me@ stays in To");
+        assert!(m.to.iter().chain(&m.cc).chain(&m.bcc).all(|a| a.list == 0));
+        let mut gone = OutgoingMessage { to: vec![entry(9, "Old")], ..Default::default() };
+        assert!(gone.expand_lists(&members).unwrap_err().contains("no longer exists"));
+        let mut empty = OutgoingMessage { to: vec![entry(3, "Empty")], ..Default::default() };
+        assert!(empty.expand_lists(&members).unwrap_err().contains("no members"));
+        let mut plain = OutgoingMessage { to: vec![addr("a@x.org", ""), addr("A@x.org", "")], ..Default::default() };
+        assert_eq!(plain.expand_lists(&members).unwrap(), vec![]);
+        assert_eq!(plain.to.len(), 2, "no list entry: left exactly as typed");
+    }
+
+    fn addr(e: &str, n: &str) -> Address { Address { email: e.into(), name: n.into(), ..Default::default() } }
 
     fn msg(format: &str, content: &str, mode: &str) -> OutgoingMessage {
         OutgoingMessage {

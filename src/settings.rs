@@ -232,14 +232,34 @@ pub fn read_send_delay(path: &Path) -> u64 {
 /// Persist the send delay (clamped) into settings.toml, leaving every other setting as it
 /// was. Refuses to touch a file that does not parse. Returns what was stored.
 pub fn write_send_delay(path: &Path, secs: i32) -> Result<u64> {
+    write_mail(path, |m| m.send_delay_secs = secs).map(|m| m.send_delay_secs as u64)
+}
+
+/// Recipient count above which Send asks for confirmation (`[mail] large_audience_confirm`):
+/// default 20, 0 = never ask.
+pub fn read_large_audience(path: &Path) -> i32 {
+    fs::read_to_string(path)
+        .ok()
+        .and_then(|s| toml::from_str::<toml::Value>(&s).ok())
+        .and_then(|v| v.get("mail")?.get("large_audience_confirm")?.as_integer())
+        .map(|n| n.clamp(0, MailSettings::MAX_LARGE_AUDIENCE as i64) as i32)
+        .unwrap_or(MailSettings::DEFAULT_LARGE_AUDIENCE)
+}
+
+pub fn write_large_audience(path: &Path, n: i32) -> Result<i32> {
+    write_mail(path, |m| m.large_audience_confirm = n).map(|m| m.large_audience_confirm)
+}
+
+fn write_mail(path: &Path, change: impl FnOnce(&mut MailSettings)) -> Result<MailSettings> {
     let mut settings: Settings = match fs::read_to_string(path) {
         Ok(content) => toml::from_str(&content).map_err(|e| OmarchyError::SettingsError(e.to_string()))?,
         Err(_) => Settings::default(),
     };
-    settings.mail = MailSettings { send_delay_secs: secs }.sanitized();
+    change(&mut settings.mail);
+    settings.mail = settings.mail.sanitized();
     let content = toml::to_string_pretty(&settings).map_err(|e| OmarchyError::SettingsError(e.to_string()))?;
     fs::write(path, content)?;
-    Ok(settings.mail.send_delay_secs as u64)
+    Ok(settings.mail)
 }
 
 /// Persist calendar settings (clamped) into settings.toml, leaving every other setting as it
@@ -529,6 +549,13 @@ mod send_delay_tests {
         assert_eq!(write_send_delay(&p, 10).unwrap(), 10);
         assert_eq!(read_send_delay(&p), 10);
         assert_eq!(write_send_delay(&p, 500).unwrap(), 60);
+        assert_eq!(read_large_audience(&p), 20, "default when unset");
+        assert_eq!(write_large_audience(&p, 0).unwrap(), 0, "0 = never ask, kept as 0");
+        assert_eq!(read_large_audience(&p), 0);
+        assert_eq!(read_send_delay(&p), 60, "the other mail setting survives");
+        assert_eq!(write_large_audience(&p, 99999).unwrap(), 1000);
+        write_send_delay(&p, 10).unwrap();
+        assert_eq!(read_large_audience(&p), 1000);
         let back: Settings = toml::from_str(&fs::read_to_string(&p).unwrap()).unwrap();
         assert!(!back.ui.sidebar_expanded, "other settings untouched");
         // a file from before this section existed still loads

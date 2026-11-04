@@ -416,20 +416,30 @@ pub struct MailSettings {
     /// out. 0 = send at once. Default 3, at most `MAX_SEND_DELAY_SECS`.
     #[serde(default = "MailSettings::default_send_delay")]
     pub send_delay_secs: i32,
+    /// Sending to more people than this (after distribution lists are counted) asks for a
+    /// confirmation first. A warning, never a block. 0 = never ask. Default 20.
+    #[serde(default = "MailSettings::default_large_audience")]
+    pub large_audience_confirm: i32,
 }
 
 impl MailSettings {
     pub const DEFAULT_SEND_DELAY_SECS: i32 = 3;
     pub const MAX_SEND_DELAY_SECS: i32 = 60;
+    pub const DEFAULT_LARGE_AUDIENCE: i32 = 20;
+    pub const MAX_LARGE_AUDIENCE: i32 = 1000;
     fn default_send_delay() -> i32 { Self::DEFAULT_SEND_DELAY_SECS }
+    fn default_large_audience() -> i32 { Self::DEFAULT_LARGE_AUDIENCE }
 
     pub fn sanitized(&self) -> Self {
-        Self { send_delay_secs: self.send_delay_secs.clamp(0, Self::MAX_SEND_DELAY_SECS) }
+        Self {
+            send_delay_secs: self.send_delay_secs.clamp(0, Self::MAX_SEND_DELAY_SECS),
+            large_audience_confirm: self.large_audience_confirm.clamp(0, Self::MAX_LARGE_AUDIENCE),
+        }
     }
 }
 
 impl Default for MailSettings {
-    fn default() -> Self { Self { send_delay_secs: Self::DEFAULT_SEND_DELAY_SECS } }
+    fn default() -> Self { Self { send_delay_secs: Self::DEFAULT_SEND_DELAY_SECS, large_audience_confirm: Self::DEFAULT_LARGE_AUDIENCE } }
 }
 
 /// How far recurring meetings are expanded into individual occurrences, in whole years

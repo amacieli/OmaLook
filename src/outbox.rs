@@ -199,7 +199,7 @@ mod tests {
         serde_json::to_string(&OutgoingMessage {
             kind: "new".into(),
             account_id: "a1".into(),
-            to: vec![Address { email: "p@example.com".into(), name: String::new() }],
+            to: vec![Address { email: "p@example.com".into(), name: String::new(), ..Default::default() }],
             subject: subject.into(),
             mode: "system".into(),
             body: Body { format: "text".into(), content: "hi".into() },

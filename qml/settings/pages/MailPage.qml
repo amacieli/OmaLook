@@ -15,7 +15,7 @@ SettingsPage {
   property int markReadDelay: 2
   property bool conversationView: true
 
-  editing: signature.activeFocus || syncDropdown.popupOpen || delay.field.activeFocus || renderingDropdown.popupOpen || sendDelay.field.activeFocus
+  editing: signature.activeFocus || syncDropdown.popupOpen || delay.field.activeFocus || renderingDropdown.popupOpen || sendDelay.field.activeFocus || audience.field.activeFocus
 
   title: "Mail"
   description: "Sync behaviour and reading preferences."
@@ -108,6 +108,32 @@ SettingsPage {
       text: sendDelay.value === 0
         ? "Messages are sent the moment you press Send."
         : "After Send, a message waits this long so you can take it back (Undo, or u) and keep drafting. Set to 0 to send at once."
+      dim: true
+      wrapMode: Text.WordWrap
+      font.pixelSize: Style.font.caption
+    }
+  }
+
+  PanelSeparator { width: parent.width }
+
+  Column {
+    width: parent.width
+    spacing: Style.space(6)
+
+    PanelSectionHeader { text: "DISTRIBUTION LISTS" }
+    NumberField {
+      id: audience
+      label: "Ask before sending to more than (people)"
+      value: page.app ? page.app.largeAudienceConfirm : 20
+      from: 0
+      to: 1000
+      onModified: function(v) { if (page.app) page.app.setLargeAudienceConfirm(v) }
+    }
+    UiText {
+      width: parent.width
+      text: audience.value === 0
+        ? "Send never asks about the size of the audience."
+        : "A message to more people than this (lists counted by their members) asks \u201cSend to about N people?\u201d first. It is a question, not a block. 0 turns it off."
       dim: true
       wrapMode: Text.WordWrap
       font.pixelSize: Style.font.caption

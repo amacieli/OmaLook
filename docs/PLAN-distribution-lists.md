@@ -224,3 +224,30 @@ Docs: `docs/KEYS.md`, `docs/TRACKER.md`, `docs/PLAN-compose.md` (recipient chips
 5. **Adopting Google labels:** manual adopt only (proposed), or an opt-in "adopt all"?
 6. **Contacts for non-contacts:** when a member has no contact on a linked Gmail account: ask (proposed), always create, or always skip?
 7. **Priority versus the attachments plan:** the contact-sync defects in phase 0 are worth fixing regardless; shall they be done first and independently?
+
+##10. Answers to section 9.
+1. Fine 
+2. i do not understand, so leave it alone for now 
+3. privacy is defined by whichever field i put the distribution list into.  for example, my civil air patrol emails will use one DL for the bcc line (young cadets) and another DL for the cc line (leadership), with me being the only address on the to: line.
+4. add as a setting in the mail settings, and fine to default to 20 - but that would only trigger a warning and confirmation, and not be a full blocker.
+5. 
+6. make it as setting and default to ask.
+7. contact sync defects done as part of this plan only - all the contacts work gets done together.
+
+## 11. Status 2026-11-03: what was built, and the sync proposal
+
+**Decision (Adam, 2026-11-03):** lists are managed in **Settings → Lists**, not in a People tab (this replaces §4.6's location; the People "Contact lists" rename is no longer needed). Privacy follows the field the list sits in (§10.3), so there is no per-list `placement` option.
+
+**Built (phases 1-3, in the working tree):**
+- `src/db/lists.rs` (`dl_lists`, `dl_members`; member keyed by lower-case address; names unique ignoring case), routes `GET /lists`, `POST /lists/create|rename|delete`, `POST /lists/members/add|remove`.
+- `src/addresses.rs` + `GET /addresses`: every address in From/To/Cc/Bcc of the cached mail; sent mail counts 3, received 1; own addresses, no-reply senders and Exchange legacy DNs excluded; unquoted `Last, First <a@b>` handled. 40,000 newest messages, cached 60 s, about 0.45 s cold on the 61k-message cache.
+- `Address.list` in the send payload; `OutgoingMessage::expand_lists` runs in `POST /compose/send` before validation: members replace the entry, one copy per address with To > Cc > Bcc priority, unknown or empty list is an error that names the list. The outbox stores the expanded addresses; the in-memory sent message keeps the chips, so Undo restores them.
+- `RecipientField`: lists first, `@` filters to lists, one chip `≡ Name (n)`, red when the list is empty or gone. Settings → Mail: `large_audience_confirm` (default 20, 0 = off) asks "Send to about N people?" once per compose.
+- Verified: unit tests (parser, harvest ranking, list CRUD, expansion, settings round trip); a second instance on port 27999 with a copy of the real cache (routes, harvest on 61k messages, send-path errors without sending anything); an offscreen render of the page and the field.
+
+**Left, in order of value:**
+1. **Google link (two-way, plan §4.4 phase 4):** a list ↔ a People `contactGroups` label. Local list stays the source of truth; each link keeps the last agreed membership and pushes only deltas (`members.modify`), so a stale copy can never wipe the label. Needs contact resource names for members: ask before creating contacts (setting, default ask, §10.6).
+2. **Microsoft Graph (phase 5, still undecided, §10.2):** Graph cannot write Outlook contact groups. Options, cheapest first: (a) none, Graph accounts use local lists; (b) category mirror (`OL: <list>` on contacts); (c) read-only directory groups as addressable entries (admin consent).
+3. **Import / export** (mutt alias, vCard `KIND:group`, CSV) works for every provider and needs no API: the practical "sync" for Outlook users.
+4. Contact-sync defects from phase 0, done together with the contacts work (§10.7).
+

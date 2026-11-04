@@ -24,6 +24,8 @@ FocusScope {
   property var initial: ({ kind: "new", accountId: "", to: "", cc: "", bcc: "", subject: "", quote: null })
   property var accounts: []
   property var contacts: []
+  property var lists: []
+  property int largeAudience: 20     // confirm above this many recipients (0 = never)
   property string defaultMode: "system"
   // Result line from the owner: "" | "sending…" | an error.
   property string status: ""
@@ -49,6 +51,8 @@ FocusScope {
   property string accountId: initial.accountId || ""
   // "" | "discard" | "nosubject" | "flatten"
   property string confirming: ""
+  property int audience: 0            // recipients counted at the last Send, lists included
+  property bool audienceOk: false     // the large-audience question was answered yes for this compose
   property bool linkOpen: false
 
   // For tests and the owner.
@@ -71,7 +75,7 @@ FocusScope {
     return "<p></p><p>On " + Fmt.escapeHtml(q.date || "") + ", " + Fmt.escapeHtml(q.from || "") + " wrote:</p><blockquote>" + lines + "</blockquote>"
   }
 
-  function _recipientsOf(f) { return f.recipients.map(function(r) { return { email: r.email, name: r.name } }) }
+  function _recipientsOf(f) { return f.recipients.map(function(r) { return r.list ? { email: "", name: r.name, list: r.list } : { email: r.email, name: r.name } }) }
 
   function _body() {
     // Plain text only when nothing was formatted (decision Q1); otherwise HTML.
@@ -193,8 +197,16 @@ FocusScope {
     header.to.commit(true); header.cc.commit(true); header.bcc.commit(true)
     var all = header.to.recipients.concat(header.cc.recipients, header.bcc.recipients)
     if (all.length === 0) { root.localStatus = "Add at least one recipient."; header.to.input.forceActiveFocus(); return }
-    var bad = all.filter(function(r) { return !r.valid })
-    if (bad.length > 0) { root.localStatus = "Not a valid address: " + bad[0].email; return }
+    var bad = null, audience = 0
+    ;[header.to, header.cc, header.bcc].forEach(function(f) {
+      f.recipients.forEach(function(r) {
+        if (!f.isValid(r)) { if (!bad) bad = r; return }
+        var l = r.list ? f.listInfo(r.list) : null
+        audience += l ? l.count : 1
+      })
+    })
+    if (bad) { root.localStatus = bad.list ? "The list \u201c" + bad.name + "\u201d is empty or no longer exists." : "Not a valid address: " + bad.email; return }
+    root.audience = audience
     if (root.originalsState === "loading") { root.localStatus = "Still reading the original's attachments\u2026"; return }
     var m = Att.meter(root.limits, root.rows)
     if (m.level === "over") {
@@ -203,6 +215,7 @@ FocusScope {
         + (big >= 0 ? ". Remove " + root.rows[big].name + " or change From." : ".")
       return
     }
+    if (root.largeAudience > 0 && audience > root.largeAudience && !root.audienceOk) { root.confirming = "audience"; return }
     if (header.subject.text.trim() === "") { root.confirming = "nosubject"; return }
     root.sendRequested(root.buildMessage())
   }
@@ -220,9 +233,10 @@ FocusScope {
   }
 
   Component.onCompleted: {
-    header.to.setFromText(initial.to || "")
-    header.cc.setFromText(initial.cc || "")
-    header.bcc.setFromText(initial.bcc || "")
+    // A send taken back brings its entries as they were (list chips included); anything else is text.
+    if (initial.toEntries) header.to.setRecipients(initial.toEntries); else header.to.setFromText(initial.to || "")
+    if (initial.ccEntries) header.cc.setRecipients(initial.ccEntries); else header.cc.setFromText(initial.cc || "")
+    if (initial.bccEntries) header.bcc.setRecipients(initial.bccEntries); else header.bcc.setFromText(initial.bcc || "")
     header.showCc = header.cc.recipients.length > 0
     header.showBcc = header.bcc.recipients.length > 0
     header.subject.text = initial.subject || ""
@@ -345,6 +359,7 @@ FocusScope {
       accountId: root.accountId
       nextFocus: editor
       contacts: root.contacts
+      lists: root.lists
       onAccountPicked: function(id) { root.accountId = id }
     }
 
@@ -533,15 +548,17 @@ FocusScope {
     opened: root.confirming !== ""
     message: root.confirming === "discard" ? "Discard this message?"
       : root.confirming === "nosubject" ? "Send without a subject?"
+      : root.confirming === "audience" ? "Send to about " + root.audience + " people?"
       : "Switching to system font removes fonts, sizes, colours and alignment. Continue?"
     cancelText: root.confirming === "discard" ? "Keep editing" : "Cancel"
-    confirmText: root.confirming === "discard" ? "Discard" : root.confirming === "nosubject" ? "Send" : "Switch"
+    confirmText: root.confirming === "discard" ? "Discard" : (root.confirming === "nosubject" || root.confirming === "audience") ? "Send" : "Switch"
     onCanceled: root.confirming = ""
     onConfirmed: {
       var what = root.confirming
       root.confirming = ""
       if (what === "discard") root.discardRequested()
       else if (what === "nosubject") root.sendRequested(root.buildMessage())
+      else if (what === "audience") { root.audienceOk = true; root.trySend() }
       else if (what === "flatten") { handler.flattenToSystem(); root.mode = Modes.SYSTEM }
     }
   }

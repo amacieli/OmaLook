@@ -12,6 +12,7 @@ ColumnLayout {
   property var accounts: []          // [{ id, provider, email, signed_in }]
   property string accountId: ""
   property var contacts: []
+  property var lists: []
   property bool showCc: false
   property bool showBcc: false
   // Where Tab goes from Subject (the body editor; wired by ComposeView).
@@ -54,6 +55,7 @@ ColumnLayout {
       Layout.fillWidth: true
       label: "To"
       contacts: root.contacts
+      lists: root.lists
       onChanged: root.edited()
       KeyNavigation.tab: root.showCc ? ccField.input : (root.showBcc ? bccField.input : subjectField)
     }
@@ -80,6 +82,7 @@ ColumnLayout {
     Layout.fillWidth: true
     label: "Cc"
     contacts: root.contacts
+    lists: root.lists
     onChanged: root.edited()
     KeyNavigation.tab: root.showBcc ? bccField.input : subjectField
   }
@@ -90,6 +93,7 @@ ColumnLayout {
     Layout.fillWidth: true
     label: "Bcc"
     contacts: root.contacts
+    lists: root.lists
     onChanged: root.edited()
     KeyNavigation.tab: subjectField
   }

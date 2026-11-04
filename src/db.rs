@@ -85,6 +85,7 @@ pub fn categories_from_json(s: Option<&str>) -> Vec<String> {
 }
 
 pub mod sms;
+pub mod lists;
 
 pub struct Database {
     conn: Connection,
@@ -352,6 +353,8 @@ impl Database {
             )",
             [],
         )?;
+
+        self.init_lists_schema()?;
 
         // Outgoing mail: queued when the user presses Send, sent by the account's outbox worker
         // once `send_at` (unix ms) passes. state: pending | sending | sent | failed | cancelled.

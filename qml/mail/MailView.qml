@@ -87,6 +87,8 @@ RowLayout {
     onLoaded: {
       item.accounts = Qt.binding(function() { return root.app.accounts })
       item.contacts = Qt.binding(function() { return root.app.composeContacts })
+      item.lists = Qt.binding(function() { return root.app.composeLists })
+      item.largeAudience = Qt.binding(function() { return root.app.largeAudienceConfirm })
       item.status = Qt.binding(function() { return root.app.composeStatus })
       item.listDir = function(path, hidden, cb) { root.app.listDir(path, hidden, cb) }
       item.browseDir = Qt.binding(function() { return root.app.attachBrowseDir })
