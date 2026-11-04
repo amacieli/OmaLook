@@ -1167,7 +1167,14 @@ fn lists_response(config_dir: &PathBuf, first_line: &str) -> String {
     let id: i64 = query_param(first_line, "id").and_then(|v| v.parse().ok()).unwrap_or(0);
     let name = query_param(first_line, "name").unwrap_or_default();
     let email = query_param(first_line, "email").unwrap_or_default();
-    let r: Result<String, omalook::errors::OmarchyError> = if first_line.contains("POST /lists/create") {
+    let r: Result<String, omalook::errors::OmarchyError> = if first_line.contains("POST /lists/targets/set") {
+        let account = query_param(first_line, "account").unwrap_or_default();
+        let on = query_param(first_line, "on").as_deref() == Some("true");
+        if account.is_empty() { Ok(serde_json::json!({ "ok": false }).to_string()) }
+        else { db.set_list_sync_target(&account, on).map(|_| serde_json::json!({ "ok": true }).to_string()) }
+    } else if first_line.contains("GET /lists/targets") {
+        db.list_sync_targets().map(|v| serde_json::json!(v).to_string())
+    } else if first_line.contains("POST /lists/create") {
         db.list_create(&name).map(|(op, id)| serde_json::json!({ "ok": op == ListOp::Done, "status": status(op), "id": id }).to_string())
     } else if first_line.contains("POST /lists/rename") {
         db.list_rename(id, &name).map(|op| serde_json::json!({ "ok": op == ListOp::Done, "status": status(op) }).to_string())
@@ -2067,6 +2074,8 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                 //   POST /lists/delete?id=I                      → {ok}
                 //   POST /lists/members/add?id=I&email=E[&name=N] → {ok, status: done|exists|invalid|missing}
                 //   POST /lists/members/remove?id=I&email=E      → {ok}
+                //   GET  /lists/targets                          → [account id, ...] mirrored to besides this computer
+                //   POST /lists/targets/set?account=A&on=true|false
                 //   GET  /addresses                              → [{email, name, score}] seen in mail, best first
                 if first_line.starts_with("GET /lists") || first_line.starts_with("POST /lists/") || first_line.starts_with("GET /addresses") {
                     let body = if first_line.starts_with("GET /addresses") { addresses_json(config_dir) } else { lists_response(config_dir, first_line) };

@@ -39,6 +39,7 @@ SettingsPage {
     if (!page.app) return
     page.app.listNotice = ""
     page.app.loadLists(function() { page.ensureSelection() })
+    page.app.loadListTargets()
     if (page.app.composeContacts.length === 0) page.app.loadComposeContacts()
   }
 
@@ -135,6 +136,69 @@ SettingsPage {
     app.createList(newField.text, function(r, st) {
       if (st === "done" && r && r.id) { page.selectedId = r.id; newField.text = "" }
     })
+  }
+
+  PanelSeparator { width: parent.width }
+
+  // ---- where the lists are kept
+  Column {
+    width: parent.width
+    spacing: Style.space(6)
+
+    PanelSectionHeader { text: "KEEP ALL LISTS ON" }
+
+    UiText {
+      width: parent.width
+      text: "Every account can always use every list, wherever they are kept. This only chooses which places also hold a copy."
+      dim: true
+      wrapMode: Text.WordWrap
+      font.pixelSize: Style.font.caption
+    }
+
+    RowLayout {
+      width: parent.width
+      spacing: Style.spacing.lg
+      UiText { Layout.fillWidth: true; text: "This computer" }
+      UiText { text: "always"; dim: true; font.pixelSize: Style.font.caption }
+    }
+
+    Repeater {
+      model: page.app ? page.app.accounts.filter(function(a) { return a.email }) : []
+      delegate: ColumnLayout {
+        id: acct
+        required property var modelData
+        readonly property bool canSync: modelData.provider === "gmail"
+        readonly property bool on: !!page.app && page.app.listSyncTargets.indexOf(modelData.id) >= 0
+        width: parent.width
+        spacing: 2
+
+        RowLayout {
+          Layout.fillWidth: true
+          spacing: Style.spacing.lg
+          UiText {
+            Layout.fillWidth: true
+            text: acct.modelData.email + "   (" + acct.modelData.provider + ")"
+            elide: Text.ElideRight
+          }
+          ToggleSwitch {
+            enabled: acct.canSync
+            opacity: acct.canSync ? 1 : 0.4
+            checked: acct.on
+            onToggled: page.app.setListTarget(acct.modelData.id, !acct.on)
+          }
+        }
+        UiText {
+          Layout.fillWidth: true
+          wrapMode: Text.WordWrap
+          dim: true
+          font.pixelSize: Style.font.caption
+          text: !acct.canSync
+            ? "Outlook cannot store distribution lists. They stay on this computer and still work when sending from this account."
+            : (acct.on ? "Chosen. Copying lists to this account is not built yet: for now they stay on this computer, and still work from this account."
+                       : "Off.")
+        }
+      }
+    }
   }
 
   PanelSeparator { width: parent.width; visible: !!page.current }

@@ -17,7 +17,7 @@ Item {
   }
   property bool backendOnline: false
   onBackendOnlineChanged: {
-    if (backendOnline) { perfMark("backend first answered"); loadCalendarSettings(); loadUiSettings(); loadSenders(); loadLists(); loadMailSettings(); loadBackgroundSettings(); loadMcp(); loadSearchHistory(); loadViewState() }
+    if (backendOnline) { perfMark("backend first answered"); loadCalendarSettings(); loadUiSettings(); loadSenders(); loadLists(); loadListTargets(); loadMailSettings(); loadBackgroundSettings(); loadMcp(); loadSearchHistory(); loadViewState() }
   }
 
   // ---- launch timing (see src/perf.rs): marks are queued until the backend answers, then
@@ -879,6 +879,22 @@ Item {
     })
   }
   property string _listsJson: ""
+
+  // Accounts the lists are mirrored to besides this computer (ids). Every account can use every list
+  // whatever is chosen; this only says where a copy is kept upstream.
+  property var listSyncTargets: []
+  function loadListTargets() {
+    request("GET", "/lists/targets", function(xhr) {
+      if (xhr.status !== 200) return
+      try { var v = JSON.parse(xhr.responseText); if (Array.isArray(v)) root.listSyncTargets = v } catch (e) {}
+    })
+  }
+  function setListTarget(accountId, on) {
+    var cur = listSyncTargets.filter(function(a) { return a !== accountId })
+    if (on) cur.push(accountId)
+    listSyncTargets = cur       // optimistic; reloaded from the backend below
+    request("POST", "/lists/targets/set?account=" + encodeURIComponent(accountId) + "&on=" + (on ? "true" : "false"), function(xhr) { loadListTargets() })
+  }
 
   function _listCall(path, done, okStatuses, messages) {
     request("POST", path, function(xhr) {

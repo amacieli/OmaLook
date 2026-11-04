@@ -63,6 +63,35 @@ impl Database {
             )",
             [],
         )?;
+        // Where lists are mirrored besides this computer (Settings -> Lists). One row per chosen
+        // account. The local copy is always kept, and every account can use every list whatever is
+        // chosen here: this only says which accounts also get a copy upstream.
+        self.conn.execute(
+            "CREATE TABLE IF NOT EXISTS dl_sync_targets (
+                account_id TEXT PRIMARY KEY,
+                created_at INTEGER NOT NULL
+            )",
+            [],
+        )?;
+        Ok(())
+    }
+
+    /// Account ids chosen as sync targets.
+    pub fn list_sync_targets(&self) -> Result<Vec<String>> {
+        let mut st = self.conn.prepare("SELECT account_id FROM dl_sync_targets ORDER BY account_id")?;
+        let rows = st.query_map([], |r| r.get::<_, String>(0))?.collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    pub fn set_list_sync_target(&self, account_id: &str, on: bool) -> Result<()> {
+        if on {
+            self.conn.execute(
+                "INSERT OR IGNORE INTO dl_sync_targets (account_id, created_at) VALUES (?1, ?2)",
+                params![account_id, Self::now_ms()],
+            )?;
+        } else {
+            self.conn.execute("DELETE FROM dl_sync_targets WHERE account_id = ?1", params![account_id])?;
+        }
         Ok(())
     }
 
@@ -192,6 +221,20 @@ mod tests {
         assert_eq!(d.lists_all().unwrap().iter().map(|l| l.name.as_str()).collect::<Vec<_>>(), vec!["Cadets", "Staff"]);
         assert!(d.list_delete(id).unwrap());
         assert!(!d.list_delete(id).unwrap());
+    }
+
+    #[test]
+    fn sync_targets_toggle_and_survive_list_changes() {
+        let d = db();
+        assert!(d.list_sync_targets().unwrap().is_empty(), "local only by default");
+        d.set_list_sync_target("gmail-aaaaaa", true).unwrap();
+        d.set_list_sync_target("gmail-aaaaaa", true).unwrap();
+        d.set_list_sync_target("gmail-bbbbbb", true).unwrap();
+        assert_eq!(d.list_sync_targets().unwrap(), vec!["gmail-aaaaaa", "gmail-bbbbbb"]);
+        let id = d.list_create("A").unwrap().1.unwrap();
+        d.list_delete(id).unwrap();
+        d.set_list_sync_target("gmail-aaaaaa", false).unwrap();
+        assert_eq!(d.list_sync_targets().unwrap(), vec!["gmail-bbbbbb"]);
     }
 
     #[test]
