@@ -262,7 +262,7 @@ IDs are stable (never reused). Status: `open` | `investigating` | `planned` | `i
 
 | Plan | File | Status |
 |---|---|---|
-| Tags and tagging rules: tags page, Exchange rules managed in OmaLook, Gmail filters, local engine, calendar tags (OL-040, OL-025) | `docs/PLAN-tags-and-rules.md` | planned (plan written 2026-11-04; Q1-Q3, Q5, Q6 decided; Q4, Q7 open; phase 0 spikes first) |
+| Tags and tagging rules: tags page, Exchange rules managed in OmaLook, Gmail filters, local engine, calendar tags (OL-040, OL-025) | `docs/PLAN-tags-and-rules.md` | planned (plan written 2026-11-04; Q1-Q3, Q5, Q6 decided; Q4 open; phase 0 Exchange half done 2026-11-04, Google half pending) |
 | New calendar entries: personal + meetings, attendees, free-time finder, Teams/Zoom/other (OL-021) | `docs/PLAN-calendar-events.md` | planned (plan written 2026-10-25, decisions recorded; user to choose next phases) |
 | Compose: system-font / HTML modes, drafts, send | `docs/PLAN-compose.md` | planned; Phase D spike passed 2026-10-07; UI first draft + Phase A (send, outbox, undo delay) built 2026-10-08 |
 | Per-element colours: theme colour + intensity per interface element, preview, vim chords (OL-011) | `docs/PLAN-colours.md` | planned (plan written 2026-10-17; decisions settled) |

@@ -125,16 +125,19 @@ Needs a backup step (copy `messages.db`, as done for mail fields) before the fir
 - Server rule writes: fetch, diff, write, re-fetch, compare. Any mismatch is reported, never silently retried.
 - Bulk tag rewrites (merge/rename) take the DB backup first and are resumable and undoable (keep the old-tag list per message until the job completes).
 
-## 6. Phase-0 results (fill in)
+## 6. Phase-0 results (Exchange half run 2026-11-04 with `tools/spike/tags_spike.py`, account adam@macielinski.net; Google half pending)
 | Check | Result |
 |---|---|
-| Exchange rules: count, read-only count, conditions/actions in use | — |
-| `assignCategories` with unlisted name | — |
-| Master category rename | — |
-| Graph event categories round trip | — |
-| Google event extendedProperties round trip | — |
-| Gmail filters round trip + consent wording | — |
-| Sender→tag inference quality | — |
+| Exchange rules: count, read-only, conditions/actions in use | **35 rules** (31 enabled, 4 disabled), **2 read-only** (`CP1`, `CP2`: empty conditions and actions, sequence 1-2, probably client-side/system placeholders, must be preserved untouched), 0 with errors. Conditions: `senderContains` 18, `fromAddresses` 13, `subjectContains` 3, `bodyContains` 2, `bodyOrSubjectContains` 1; no exceptions anywhere. Actions: `assignCategories` 28, `stopProcessingRules` 30, `forwardTo` 2, `markImportance` 2, `delete` 1. |
+| Q7 answered | **Yes, not only tags**: 2 forward rules (TradeSmith and Income Intelligence mail forwarded to Erika), 1 delete rule (an Instagram sender, body match), 2 importance rules (LifeLock, a test rule). So phase 2/3 must **display and preserve** forward/delete/importance rules from day one; editing them stays behind the confirm gate of phase 7. |
+| Shape of the tag rules | 28 tag rules, **one rule per sender or domain**, each with one condition value (most rules carry a single value; max 3 values). 10 rules feed SaintLucia, 3 CARMEL, 3 Civil Air Patrol, 2 each Family/HVAC/Ukraine. 30 of 35 rules stop processing, so **order matters** (first matching tag rule wins and stops the others). Several tags have rules that are disabled (IGOR, 4 rules). **Consequence for the UI: group rules by tag** (one tag, its list of senders) instead of showing 28 separate rules; a rule editor that adds a sender to a tag is the main action. Rule names are Outlook's auto-names ("For all messages from X"). |
+| `assignCategories` with a name not in the master list | Rule **accepted and stored** (name returned as written). What a delivered message then shows was not tested. Today every category used by a rule is in the master list. |
+| Master category rename | **`PATCH displayName` returns 200 but silently changes nothing** (re-read shows the old name). Colour PATCH works. So rename = create + rewrite + delete, as planned, and a "200" must never be trusted without a re-read. (Rename is out of scope per the user, kept for the record.) |
+| Server behaviours seen on rule writes | `sequence` is **assigned by the server** (asked 9999, got 36: appended at the end); condition text is **upper-cased/normalised** on store (`OMALOOK-SPIKE-NOBODY@…`), so compare case-insensitively. **No etag or changeKey on rules**, confirming fetch-before-write plus a stored copy for change detection. Create, get, patch (replace a condition list), delete all work; scratch rule and category deleted, rule and category lists identical before and after (35 and 28). |
+| Graph event `categories` round trip | **Works**: create with two names (one unlisted), patch, get, delete all fine; `$filter=categories/any(c:c eq 'Family')` accepted (200) on events. Scratch event removed. |
+| Sender→tag coverage in the cache | Enabled sender-only tag rules match 2,839 cached Exchange messages; **2,105 (74%) carry the rule's tag**. By tag: HVAC, Ukraine, AcquisitionAce 100%; Civil Air Patrol 97%; SaintLucia 74%; Family 69%; CARMEL 61%. The gap (734) is mail that predates a rule or arrived elsewhere than the Inbox, so **retroactive apply (phase 4) would tag several hundred existing messages**. Rules explain only 2,105 of the 7,899 tagged messages; the rest was tagged by hand or by rules since deleted, so history-based suggestions (phase 7) have real input but cannot recover a rule list. |
+| Google event `extendedProperties.private` round trip | **Pending**: needs a Google sign-in for the spike (use `gmail-2a8d9f`, the scratch account). |
+| Gmail filters round trip + consent wording | **Pending**: same sign-in, adds scope `gmail.settings.basic`. |
 
 ## 7. Decisions and open questions
 Decided (user, 2026-11-04):
@@ -147,4 +150,4 @@ Decided (user, 2026-11-04):
 
 Still open:
 - Q4. Gmail tags: plain labels (`Family`, as `t` does today) or a namespace (`Tags/Family`) to keep Gmail's label list tidy? (Plain is the default until answered.)
-- Q7. Do any of your Outlook rules do something other than tag (move to folder, mark read, forward, delete)? Phase 0's read of the real rule list answers this; say so if you already know.
+- Q7. **Answered by phase 0** (see §6): forward x2, delete x1, importance x2 exist alongside 28 tag rules.
