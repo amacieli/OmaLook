@@ -5,6 +5,13 @@ IDs are stable (never reused). Status: `open` | `investigating` | `planned` | `i
 
 ## Issues
 
+### OL-040 — Tags and tagging rules: manage tags and the Exchange auto-tag rules in OmaLook, across all accounts and the calendar (planned 2026-11-04, not started; plan in docs/PLAN-tags-and-rules.md)
+- **Wanted (user, 2026-11-04):** tags on mail and calendar entries; the user has Exchange server rules that add tags automatically and wants to manage those in OmaLook's UI and make the same thing work on every account.
+- **Found (live cache, 2026-11-04):** Exchange 60,705 messages, 7,899 tagged, 30 tag names; Gmail accounts have none. Tags are mostly sender/domain-driven with long sender lists per tag; near-duplicate names (`SaintLucia` / `Saint Lucia` / `St Lucia`, `CivilAirPatrol` / `Civil Air Patrol`) need a merge. Message tagging (`t`) exists; tag management, search by tag and rules do not; the calendar has no tag field at all.
+- **Provider facts:** Graph `messageRules` is server-side, Inbox-only, not retroactive, needs `MailboxSettings.ReadWrite` (already in the top token tier); Graph cannot rename a category. Gmail `settings.filters` is server-side, create/delete only, not retroactive, needs the restricted scope `gmail.settings.basic` (re-sign-in). Google Calendar has no categories. Details and sources in the plan.
+- **Plan:** phase 0 read-only spikes (read the real Exchange rules, scratch round trips) → 1 Tags page (colour, rename/merge, delete, `tag:` search) → 2 rules read-only → 3 Exchange rule editor + `T` "make a rule from this message" → 4 local engine + dry-run retroactive apply → 5 Gmail filters → 6 calendar tags → 7 import/export, suggestions, MCP. OL-025 (mailbox rules) is folded into phases 2-5.
+- **Open:** questions Q1-Q7 at the end of the plan (source of truth, cross-account rules, merge vs alias, Gmail label namespace, Google Calendar tags, Gmail re-consent, non-tag rule actions).
+
 ### OL-039 — Meeting cancellations: `y` removes the meeting from the calendar and marks the mail read; answered requests are marked read (done 2026-11-03, commit 19b5b6f, tried live by user: works)
 - **Wanted (user, 2026-11-03):** when a cancellation arrives, offer `y` to remove it from the calendar, covering both a single-occurrence cancellation and a whole-series one. `y` also marks the cancellation read. Answering an ordinary meeting request (accept, tentative, decline) marks that request read too.
 - **Found (live Graph, read-only probe of 8 real cancellations):** the cancellation mail carries `eventMessage/type`: `seriesMaster` for a series cancellation, but `singleInstance` also for the cancellation of ONE occurrence of a series, so the event's own `type` (`exception`) and `seriesMasterId` decide "one meeting" versus "series" for display. The cancelled occurrence is a real event on the calendar (`isCancelled: true`), so `DELETE /me/events/{id}` on the `event` the mail points to is the "Remove from Calendar" action; on a series master the same call removes the whole series. Old cancellations often have no event any more (empty `event`, or a 404 on the lookup).
@@ -91,7 +98,7 @@ IDs are stable (never reused). Status: `open` | `investigating` | `planned` | `i
 - **Follow-up (2026-10-26):** `resolve_qml_dir()` no longer falls back to the build-time `CARGO_MANIFEST_DIR` (it now tries `QML_DIR`, `./qml`, `<prefix>/qml` beside the binary); docs and test fixtures no longer name the NFS project path; stale pre-rename files removed from /opt/omalook. `cargo test --lib`: 329 passed.
 - **Also open:** the compose pane has no Esc/discard fallback when the editor fails to load (the Loader error shows only as a status line).
 
-### OL-025 — Mailbox rules: automatic actions on incoming mail, e.g. tag by sender (open, not started)
+### OL-025 — Mailbox rules: automatic actions on incoming mail, e.g. tag by sender (open, not started; now designed under OL-040, phases 2-5)
 - **Wanted (user, 2026-10-25):** build mailbox rules like the ones Exchange offers through Microsoft Graph: conditions (sender, recipient, subject or body text, has attachment, and so on) that trigger actions (assign a category, move to a folder, mark read, delete, forward). Auto-tagging categories by sender is the first example. Also add whatever Google offers for Gmail, if it offers an equivalent.
 - **To do (research and design first, no code yet):** check the Graph `messageRules` API (per mail folder, conditions and actions, and whether rules run server-side) and the Gmail `users.settings.filters` API (criteria, actions such as label add/remove, and whether it applies to existing mail). Note where the two differ, for example rules that do not apply retroactively. Decide whether OmaLook manages the rules on the server (so they run on every client) or runs them locally in the daemon, and what the rule-editing UI looks like. Get the user's approval before building.
 
@@ -255,6 +262,7 @@ IDs are stable (never reused). Status: `open` | `investigating` | `planned` | `i
 
 | Plan | File | Status |
 |---|---|---|
+| Tags and tagging rules: tags page, Exchange rules managed in OmaLook, Gmail filters, local engine, calendar tags (OL-040, OL-025) | `docs/PLAN-tags-and-rules.md` | planned (plan written 2026-11-04; questions Q1-Q7 open; phase 0 spikes first) |
 | New calendar entries: personal + meetings, attendees, free-time finder, Teams/Zoom/other (OL-021) | `docs/PLAN-calendar-events.md` | planned (plan written 2026-10-25, decisions recorded; user to choose next phases) |
 | Compose: system-font / HTML modes, drafts, send | `docs/PLAN-compose.md` | planned; Phase D spike passed 2026-10-07; UI first draft + Phase A (send, outbox, undo delay) built 2026-10-08 |
 | Per-element colours: theme colour + intensity per interface element, preview, vim chords (OL-011) | `docs/PLAN-colours.md` | planned (plan written 2026-10-17; decisions settled) |

@@ -1,0 +1,146 @@
+# PLAN — Tags and tagging rules: one set of tags, managed in OmaLook, across Exchange, Gmail and the calendar
+
+Status: PLAN ONLY. No code written. Written 2026-11-04. Tracker: OL-040 (umbrella), OL-025 (rules; becomes phases 2-4 here).
+Scope: (1) manage tags themselves (list, colour, rename, merge, delete, counts); (2) manage the automatic rules that apply tags
+(today: Outlook rules on the Exchange server, edited in Outlook); (3) make the same tags and rules work on every account;
+(4) tags on calendar entries.
+Vocabulary: **tag** is OmaLook's word. Exchange calls it a *category*, Gmail a *label*; the picker already says so per account
+(`docs/PLAN-mail-fields.md`, key `t`, `:tag`).
+
+## 1. What exists today (read from code and the live cache, 2026-11-04)
+
+- Tagging a message works: `t` picker, push queue (`cat_pending`), Exchange `categories` + master list with colours, Gmail user labels
+  (`PLAN-mail-fields.md`). **Not built there:** rename / recolour / delete, a tags page, search by tag.
+- Rules: nothing. OL-025 is a research stub.
+- Calendar: **no category field anywhere** (`calendar_events` table, `calendar_write.rs`, `google_calendar.rs` never mention it).
+- Scopes: Graph already has `MailboxSettings.ReadWrite` in the top tier (`src/auth.rs`), which is exactly the permission `messageRules` needs.
+  Google has `gmail.modify` but **not** `gmail.settings.basic`, which the filters API needs.
+
+### Real data (read-only query of `~/.config/omalook/messages.db`)
+| Account | Messages | Tagged |
+|---|---|---|
+| exchange-primary | 60,705 | 7,899 (13%) |
+| gmail-45ed5f | 873 | 0 |
+| gmail-2a8d9f | 5 | 0 |
+
+Top Exchange tags: Family 3,750 · SaintLucia 1,179 · Saint Lucia 1,069 · CARMEL 618 · Civil Air Patrol 368 · Ukraine 347 · IGOR 305 · SASPRO 169
+· St Lucia 143 · Receipts 140 · Panama 110 … 30 distinct names.
+
+What the data says about the rules in use (inferred from sender patterns; the real rule list is a phase-0 read):
+1. **Mostly sender-based**, sometimes domain-based: `*@carmelbaptist.org` + `notifications@onrealmmail.org` → CARMEL; `*@ncwgcap.org`, `*@capnhq.gov` → Civil Air Patrol;
+   `*@3n1hvac.com`, `*@housecallpro.com` → HVAC; `balboabanktrust.com` + `corporacionbct.com` → Panama; `venmo@venmo.com` → BBQ2022.
+   So one tag has **several senders/domains**, and a sender can need **two tags** (Family + SaintLucia).
+2. **Many senders per tag, long tails** (SaintLucia: gmail.com, jamiefinch.net, viceroyhotelsandresorts.com, floissaclawyers.com …). A rule editor that makes
+   you type 40 addresses is not acceptable; it needs "add this sender to rule X" from a message (like `t`, but for rules).
+3. **Tags are also applied by hand** (Family from `adam@macielinski.net`, `erika@…`: these are mostly self/family mail; likely manual or a to/from rule).
+   Rules and manual tags will coexist; rules must never remove a tag a person added.
+4. **Near-duplicate names**: `SaintLucia` / `Saint Lucia` / `St Lucia`, `CARMEL`, `CivilAirPatrol` / `Civil Air Patrol`, `Blue Category`, `$has cal`
+   (a system artefact with an Exchange DN as sender, ignore), `Adam Job` / `Job hunting`. A **merge** operation is a real need, not a nicety.
+5. Gmail accounts have no tags yet, so for Gmail this is greenfield: tags first, rules second.
+
+## 2. Provider facts that shape the design
+
+### Exchange / Graph (`/me/mailFolders/inbox/messageRules`, permission `MailboxSettings.ReadWrite`; docs: learn.microsoft.com messageRule, "Create rule")
+- Rules are **server-side**: they run on delivery for every client, even with OmaLook closed. This is the behaviour the user has today and wants to keep.
+- Rules are created on the **Inbox** and run on mail arriving there; they are **not retroactive** (Outlook's "Run rules now" has no Graph equivalent).
+- Conditions (`messageRulePredicates`) include `fromAddresses`, `senderContains`, `subjectContains`, `bodyContains`, `bodyOrSubjectContains`, `headerContains`,
+  `recipientContains`, `sentToAddresses`, `sentToMe`, `hasAttachments`, `importance`, `categories`, plus exceptions. Actions: `assignCategories`, `moveToFolder`, `markAsRead`,
+  `markImportance`, `delete`, `forwardTo`, `stopProcessingRules`.
+- Fields `sequence` (order), `isEnabled`, `hasError`, `isReadOnly`. Rules created in Outlook desktop with **client-only** actions are not visible or are read-only: expect some of the
+  user's rules to be read-only in OmaLook. Phase 0 finds out how many.
+- A category name used by a rule that is not in the master list still works as a string, but shows without a colour. `displayName` of a master category **cannot be changed**
+  through Graph (only colour), so **rename = create new + rewrite every message + rewrite rules + delete old**. Verify in phase 0.
+- Calendar events carry `categories` too, from the **same master list** (so one tag set serves mail and calendar on Exchange). There are **no rules for events** on any provider.
+
+### Gmail (`users.settings.filters`, scope `gmail.settings.basic`)
+- Filters are **server-side**, run on delivery, add or remove labels. Criteria: `from`, `to`, `subject`, `query` (full Gmail search), `negatedQuery`, `hasAttachment`, `size`.
+- **Not retroactive** via API; **create and delete only, no edit** (an "edit" is delete + create); limit of 1000 filters.
+- `gmail.settings.basic` is **restricted**, the same class as `gmail.modify` that OmaLook already requests, so no new review tier, but every existing account must **sign in again** to grant it,
+  and the unverified-app warning (OL-038) appears again. Plan a graceful "tags work, server rules need a sign-in" state, the way the Graph tier fallback already works.
+- Labels double as folders in Gmail's own UI. A Gmail tag is a user label (already how `t` works).
+
+### Google Calendar
+- **No categories or tags.** Only `colorId` (11 fixed colours) and `extendedProperties.private` (key/value, invisible in Google's UI, syncs to every OmaLook install on the account).
+  See decisions Q5.
+
+## 3. Design
+
+### 3.1 Three layers, same shape as distribution lists (local object as source of truth, accounts as mirrors)
+1. **Tag** (account-independent): name, colour, optional note. A per-account **mapping** (`tag_map`: tag ↔ Exchange category name / Gmail label id), by exact name, case-insensitive,
+   with manual aliases (`St Lucia` → `Saint Lucia`). Unmapped provider tags are listed as "only on this account", one click to adopt or create on the other accounts.
+2. **Rule** (account-independent definition, per-account **engine**): conditions + actions + `applies_to` (accounts, default: all) + order + enabled.
+   Engine per account is chosen automatically and shown on the rule:
+   - **Server** when the provider can express it (Exchange `messageRule`, Gmail `filter`). Runs with OmaLook closed.
+   - **Local** when it cannot (conditions Gmail filters lack, anything for calendar, retroactive apply). The daemon evaluates on ingest and on demand.
+   The UI shows per rule per account: `server ✓` / `local` / `server (read-only, made in Outlook)` / `needs sign-in`.
+3. **Apply** (retroactive): run any rule over existing mail, **dry run first** (match count and a sample of subjects), then queue through the existing `cat_pending` push path.
+   Neither provider offers this, so it is a local feature on all accounts.
+
+### 3.2 Rule model (v1)
+- Conditions (AND within a rule; OR via several values in one field): from address / domain / contains; to or cc contains; subject contains; body contains (server on Exchange,
+  Gmail `query`); has attachment; importance; header contains (e.g. `List-Id`, Gmail `list:`). Exceptions: same fields, for "except when".
+- Actions v1: **add tag(s)**, mark read, move to folder/label-archive, stop processing. Delete and forward are **phase 7, off by default, behind a confirm** (see §5 safety).
+- A rule never removes a tag it did not add (manual tags survive). Re-running a rule is idempotent.
+- Do not double-apply: when a server rule is live on an account, the local engine skips it on ingest (it still does retroactive apply). Adopted Exchange rules are tracked by their server id.
+
+### 3.3 UI
+- **Settings → Tags**: one table, rows = tags, columns = colour, per-account presence (✓/–/alias), count of messages, count of rules using it. Keys: rename, recolour, merge into…, delete,
+  adopt. Bulk jobs show progress in the bottom bar like "filling in message details".
+- **Settings → Rules** (and `:rules`): ordered list with engine badges; editor in the same vim-style form pattern as lists; `Ctrl+Enter` saves; test button = dry run on the cache.
+- **From a message**: `T` (capital) = "make a rule from this message": prefilled sender/domain → tag chosen with the `t` picker; shows how many cached messages it would match.
+  This is what the real rule list (long sender tails) needs most.
+- **Search**: `tag:Family` operator (the "not built" gap in PLAN-mail-fields), `tag:none`.
+- **Calendar**: tag chips on events and a tag picker in the event editor; `t` in the calendar view, same picker component.
+
+## 4. Phases (each ends with a build, tests, and a live check by the user; none touches the primary mailbox with move/delete actions)
+
+**Phase 0 — spikes, read-only first (no UI)**
+1. `GET messageRules` on the live Exchange account: count, `isReadOnly`, `hasError`, which conditions/actions are in use, `sequence`. Record in the plan (§6 table).
+2. Disabled scratch rule `omalook-spike-*` on the Exchange account: create, read, patch, delete round trip; confirm `assignCategories` with a name absent from the master list.
+3. Verify `masterCategories` rename behaviour (PATCH displayName rejected?) on a scratch category.
+4. Graph event `categories` round trip on a scratch event. Google event `extendedProperties.private` round trip on a scratch event on `gmail-2a8d9f` (the 5-message account).
+5. Gmail `settings.filters` create/list/delete on `gmail-2a8d9f` after a re-sign-in with `gmail.settings.basic`; confirm the consent screen and whether the unverified-app warning returns.
+6. Measure: how many of the user's rule-assigned tags the cache attributes to a sender rule (precision/recall of "sender → tag" inferred from the 7,899 tagged messages). Tells us how much a **suggest rules from history** feature would find.
+
+**Phase 1 — Tags page** (no rules): list across accounts, counts, recolour, delete, rename and **merge** (Exchange: create + rewrite + delete, batched with progress and a resumable queue), adopt-to-other-accounts, `tag:` search.
+Needs a backup step (copy `messages.db`, as done for mail fields) before the first bulk rewrite.
+
+**Phase 2 — Rules, read-only**: Exchange `messageRules` and Gmail filters listed in Settings → Rules, with engine badges and a plain-language summary; read-only rules marked. No writes yet.
+
+**Phase 3 — Rule editor, Exchange server engine**: create/edit/reorder/enable/delete Exchange rules (tag, mark read, move, stop). Fetch-before-write because Graph rules have no ETag; detect a rule edited elsewhere (compare to last seen copy) and ask.
+`T` from a message. Unsupported conditions disabled with the reason.
+
+**Phase 4 — Local engine + retroactive apply**: SQLite rule tables, evaluation on ingest in the sync daemons, dry-run and apply, per-rule "applied N" stats. This is what makes Gmail and any non-server rule work.
+
+**Phase 5 — Gmail server engine**: scope step-up (`gmail.settings.basic`), filters create/delete (edit = replace), label creation with allowed colours, mapping criteria to Gmail `query`.
+
+**Phase 6 — Calendar tags**: Exchange via `categories` (shared master list); Google per decision Q5; tag chips, picker, `tag:` filter in calendar, local rules for events (Graph and Google both have none).
+
+**Phase 7 — Extras**: import/export (JSON; Outlook rules cannot be exported by Graph so JSON is OmaLook's own), "suggest rules from history" (phase-0 item 6), delete/forward actions behind confirm, MCP: read tools for tags/rules first, write tools gated by the existing policy classes (`src/mcp/policy.rs`).
+
+## 5. Safety rules (earned the hard way: the OL-035 test that deleted 10 DMARC reports)
+- Spikes and tests use scratch names `omalook-spike-*`, created **disabled**, and are deleted at the end of the test; list the server's rules before and after to prove nothing else changed.
+- No rule with move/delete/forward against the primary mailbox in tests. Tag-only rules there, on a scratch tag.
+- Retroactive apply always shows the dry-run count first and refuses when the count is over a threshold (setting, default 1,000) without an explicit confirm.
+- Server rule writes: fetch, diff, write, re-fetch, compare. Any mismatch is reported, never silently retried.
+- Bulk tag rewrites (merge/rename) take the DB backup first and are resumable and undoable (keep the old-tag list per message until the job completes).
+
+## 6. Phase-0 results (fill in)
+| Check | Result |
+|---|---|
+| Exchange rules: count, read-only count, conditions/actions in use | — |
+| `assignCategories` with unlisted name | — |
+| Master category rename | — |
+| Graph event categories round trip | — |
+| Google event extendedProperties round trip | — |
+| Gmail filters round trip + consent wording | — |
+| Sender→tag inference quality | — |
+
+## 7. Open questions (answers recorded below as they come in)
+- Q1. Source of truth for rules once OmaLook manages them: the server (Outlook keeps working as before, OmaLook edits the same rules) or OmaLook (server rules are a compiled mirror)? Proposed: **server rules are authoritative on Exchange**, OmaLook's local rule store holds only what servers cannot (local engine, other accounts).
+- Q2. Should one rule definition apply to several accounts (e.g. "venmo → Receipts" on Exchange and both Gmails), or are rules per account?
+- Q3. Merge near-duplicate tags in phase 1 (rewrites messages), or only alias them in OmaLook and leave the server names alone?
+- Q4. Gmail tags: plain labels (`Family`) or a namespace (`Tags/Family`) so they do not clutter Gmail's label list?
+- Q5. Calendar on Google: local-only tags, `extendedProperties` (syncs between OmaLook installs, invisible in Google), or colour mapping?
+- Q6. Appetite for the Gmail sign-in step-up (restricted scope, re-consent on both Gmail accounts)?
+- Q7. Are there rules that do things other than tag (move, mark read, forward, delete)? Needed to size phase 3.
