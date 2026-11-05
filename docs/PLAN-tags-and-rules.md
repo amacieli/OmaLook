@@ -136,11 +136,15 @@ Needs a backup step (copy `messages.db`, as done for mail fields) before the fir
 | Gmail filters round trip + consent wording | — |
 | Sender→tag inference quality | — |
 
-## 7. Open questions (answers recorded below as they come in)
-- Q1. Source of truth for rules once OmaLook manages them: the server (Outlook keeps working as before, OmaLook edits the same rules) or OmaLook (server rules are a compiled mirror)? Proposed: **server rules are authoritative on Exchange**, OmaLook's local rule store holds only what servers cannot (local engine, other accounts).
-- Q2. Should one rule definition apply to several accounts (e.g. "venmo → Receipts" on Exchange and both Gmails), or are rules per account?
-- Q3. Merge near-duplicate tags in phase 1 (rewrites messages), or only alias them in OmaLook and leave the server names alone?
-- Q4. Gmail tags: plain labels (`Family`) or a namespace (`Tags/Family`) so they do not clutter Gmail's label list?
-- Q5. Calendar on Google: local-only tags, `extendedProperties` (syncs between OmaLook installs, invisible in Google), or colour mapping?
-- Q6. Appetite for the Gmail sign-in step-up (restricted scope, re-consent on both Gmail accounts)?
-- Q7. Are there rules that do things other than tag (move, mark read, forward, delete)? Needed to size phase 3.
+## 7. Decisions and open questions
+Decided (user, 2026-11-04):
+- **Q1 server is authoritative on Exchange.** OmaLook edits the same Outlook rules; Outlook keeps working. OmaLook's own rule store holds only what servers cannot run (local engine, other accounts).
+- **Q2 one rule definition across accounts**, `applies_to` picks accounts, default all.
+- **Q3 no merge, no rename.** The near-duplicate names are the user's own slips from Outlook's poor UI and will be cleaned up by hand later. **Phase 1 drops merge/rename and the bulk-rewrite job**; it keeps list, recolour, delete (with a count and confirm), adopt-to-other-accounts and `tag:` search. The bulk-rewrite safety items in §5 apply only if a merge is ever added.
+  OmaLook's tag picker should still warn when a new name is a near-match of an existing tag (case/space/abbreviation), which prevents new duplicates at the source.
+- **Q5 Google Calendar tags live in `extendedProperties.private`** (syncs between OmaLook installs, invisible in Google's UI).
+- **Q6 Gmail server rules (restricted scope, re-sign-in) only in phase 5**; the local engine covers Gmail until then.
+
+Still open:
+- Q4. Gmail tags: plain labels (`Family`, as `t` does today) or a namespace (`Tags/Family`) to keep Gmail's label list tidy? (Plain is the default until answered.)
+- Q7. Do any of your Outlook rules do something other than tag (move to folder, mark read, forward, delete)? Phase 0's read of the real rule list answers this; say so if you already know.
