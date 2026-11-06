@@ -1154,9 +1154,55 @@ fn sender_prefs_response(config_dir: &PathBuf, first_line: &str) -> String {
 }
 
 /// JSON body for `GET /rules`: every account's cached mailbox rules, summarised and grouped.
-fn rules_response(config_dir: &PathBuf) -> String {
+fn rules_response(config_dir: &PathBuf, first_line: &str) -> String {
+    use omalook::db::rules::RuleChange;
+    use omalook::rules::{Match, NewRule};
     let err = |m: &str| serde_json::json!({ "ok": false, "error": m }).to_string();
     let path = config_dir.join("messages.db");
+    if first_line.starts_with("POST /rules/") || first_line.starts_with("GET /rules/preview") {
+        let Some(account) = query_param(first_line, "account").filter(|a| !a.is_empty()) else { return err("need account=<id>") };
+        let db = match Database::open_for_account(path.to_str().unwrap_or("messages.db"), &account) {
+            Ok(d) => d,
+            Err(e) => return err(&format!("database: {}", e)),
+        };
+        if !db.accounts_basic().unwrap_or_default().iter().any(|(id, _, _)| *id == account) { return err("no such account") }
+        let id = query_param(first_line, "id").unwrap_or_default();
+        let new_rule = || -> Result<NewRule, String> {
+            let matcher = match (query_param(first_line, "address"), query_param(first_line, "domain")) {
+                (Some(a), None) => Match::Address(a),
+                (None, Some(d)) => Match::Domain(d),
+                _ => return Err("need exactly one of address=<email> or domain=<domain>".into()),
+            };
+            Ok(NewRule {
+                tag: query_param(first_line, "tag").unwrap_or_default().trim().to_string(), matcher,
+                enabled: query_param(first_line, "enabled").as_deref() != Some("false"),
+                stop: query_param(first_line, "stop").as_deref() != Some("false"),
+            })
+        };
+        let queued = |r: Result<i64, String>| match r {
+            Ok(op) => { omalook::sync_state::request_read_push(); serde_json::json!({ "ok": true, "op": op }).to_string() }
+            Err(m) => err(&m),
+        };
+        return if first_line.starts_with("GET /rules/preview") {
+            match new_rule().and_then(|n| db.rule_preview(&n)) {
+                Ok(p) => serde_json::json!({ "ok": true, "preview": p }).to_string(),
+                Err(m) => err(&m),
+            }
+        } else if first_line.starts_with("POST /rules/add") {
+            match new_rule() { Ok(n) => queued(db.queue_rule_change(&RuleChange::Add(n))), Err(m) => err(&m) }
+        } else if first_line.starts_with("POST /rules/enable") {
+            queued(db.queue_rule_change(&RuleChange::Enable { id, on: query_param(first_line, "on").as_deref() == Some("true") }))
+        } else if first_line.starts_with("POST /rules/delete") {
+            if query_param(first_line, "confirm").as_deref() != Some("yes") { err("confirm=yes is required") }
+            else { queued(db.queue_rule_change(&RuleChange::Delete { id })) }
+        } else if first_line.starts_with("POST /rules/move") {
+            match query_param(first_line, "dir").as_deref() {
+                Some("up") => queued(db.queue_rule_change(&RuleChange::Move { id, up: true })),
+                Some("down") => queued(db.queue_rule_change(&RuleChange::Move { id, up: false })),
+                _ => err("dir must be up or down"),
+            }
+        } else { err("no such route") };
+    }
     let db = match Database::open(path.to_str().unwrap_or("messages.db")) {
         Ok(d) => d,
         Err(e) => return err(&format!("database: {}", e)),
@@ -1170,7 +1216,13 @@ fn rules_response(config_dir: &PathBuf) -> String {
     let mut accounts: Vec<serde_json::Value> = Vec::new();
     for (id, provider, email) in db.accounts_basic().unwrap_or_default() {
         let state = db.rules_state(&id).ok().flatten();
-        let summaries: Vec<omalook::rules::RuleSummary> = db.rules_raw(&id).unwrap_or_default().iter().map(omalook::rules::summarize).collect();
+        let raw = db.rules_raw(&id).unwrap_or_default();
+        let mut order: Vec<(i64, String, bool)> = raw.iter().map(|r| (r["sequence"].as_i64().unwrap_or(0), r["id"].as_str().unwrap_or_default().to_string(),
+            omalook::rules::writable(r).is_err())).collect();
+        order.sort();
+        let order: Vec<serde_json::Value> = order.into_iter().map(|(_, rid, locked)| serde_json::json!({ "id": rid, "locked": locked })).collect();
+        let ops = db.recent_rule_ops(&id, 86_400).unwrap_or_default();
+        let summaries: Vec<omalook::rules::RuleSummary> = raw.iter().map(omalook::rules::summarize).collect();
         let total = summaries.len();
         let org = omalook::rules::organise(summaries);
         let groups: Vec<serde_json::Value> = org.groups.iter().map(|g| {
@@ -1185,6 +1237,8 @@ fn rules_response(config_dir: &PathBuf) -> String {
             "error": state.as_ref().map(|s| s.error.clone()).unwrap_or_default(),
             "fetched_at": state.as_ref().map(|s| s.fetched_at).unwrap_or(0),
             "groups": groups, "other": org.other, "system": org.system,
+            "can_write": provider == "exchange" && state.as_ref().map(|s| s.state == "ok").unwrap_or(false),
+            "order": order, "ops": ops,
         }));
     }
     serde_json::json!({ "accounts": accounts }).to_string()
@@ -2196,8 +2250,15 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                 // ── Mailbox rules (Settings -> Rules; OL-040 phase 2, read-only) ─────────────
                 //   GET /rules → {accounts:[{account_id,provider,email,state:ok|none|needs_signin|unsupported|error,error,fetched_at,total,
                 //                            groups:[{tag,color,rules:[RuleSummary]}], other:[RuleSummary], system:[RuleSummary]}]}
-                if first_line.starts_with("GET /rules") {
-                    let body = rules_response(config_dir);
+                //   GET  /rules/preview?account=A&tag=T&address=E|domain=D  → {ok, preview:{matches,already_tagged,shadowed_by:[..],exists}}
+                //   POST /rules/add?account=A&tag=T&address=E|domain=D[&enabled=false][&stop=false]   queue a new tag rule (appended last)
+                //   POST /rules/enable?account=A&id=R&on=true|false
+                //   POST /rules/delete?account=A&id=R&confirm=yes
+                //   POST /rules/move?account=A&id=R&dir=up|down       swap with the neighbour in the list
+                //   The write routes only queue ({ok, op}); the mail daemon does the checked write and the result shows in GET /rules `ops`
+                //   ({id,kind,state:pending|done|failed|conflict|exists,message}). Plain tag rules only.
+                if first_line.starts_with("GET /rules") || first_line.starts_with("POST /rules/") {
+                    let body = rules_response(config_dir, first_line);
                     let response = format!(
                         "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                         body.len(), body

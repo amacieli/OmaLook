@@ -982,19 +982,117 @@ Item {
       function(r) { return r.created ? "Added \u201c" + name + "\u201d to that account." : "That account already has it." }, done)
   }
 
-  // ---- Rules page (OL-040 phase 2, read-only) --------------------------------------------------
-  // { accounts: [{ account_id, provider, email, state, error, fetched_at, total,
-  //                groups: [{ tag, color, rules: [...] }], other: [...], system: [...] }] }
+  // ---- Rules page (OL-040 phases 2-3) ----------------------------------------------------------
+  // { accounts: [{ account_id, provider, email, state, error, fetched_at, total, can_write,
+  //                groups: [{ tag, color, rules: [...] }], other: [...], system: [...],
+  //                order: [{ id, locked }],            every rule by position; locked = not ours to move
+  //                ops: [{ id, kind, state, message, created_at, payload }] }] }   changes asked for, newest first
   property var rulesData: ({ accounts: [] })
   property string _rulesJson: ""
+  property string ruleNotice: ""
   function loadRules(done) {
     request("GET", "/rules", function(xhr) {
       if (xhr.status !== 200) return
       try {
         var d = JSON.parse(xhr.responseText)
         if (d.accounts && xhr.responseText !== root._rulesJson) { root._rulesJson = xhr.responseText; root.rulesData = d }
+        root._checkWatchedRuleOps(d.accounts || [])
       } catch (e) { console.log("[Rules] parse error:", e) }
       if (done) done()
+    })
+  }
+
+  function ruleAccount(id) {
+    var a = rulesData.accounts || []
+    for (var i = 0; i < a.length; i++) if (a[i].account_id === id) return a[i]
+    return null
+  }
+
+  // Changes are queued here and carried out (with checks) by the mail daemon: say when each one finishes.
+  property var _watchedRuleOps: ({})      // op id -> { account, text }
+  function _watchRuleOp(account, op, text) {
+    var w = _watchedRuleOps; w[op] = { account: account, text: text }; _watchedRuleOps = w
+    ruleWatchTimer.restart()
+  }
+  function _checkWatchedRuleOps(accounts) {
+    var w = _watchedRuleOps, any = false
+    for (var op in w) {
+      var acct = null
+      for (var i = 0; i < accounts.length; i++) if (accounts[i].account_id === w[op].account) acct = accounts[i]
+      var found = null
+      if (acct) for (var j = 0; j < acct.ops.length; j++) if (String(acct.ops[j].id) === op) found = acct.ops[j]
+      if (found && found.state !== "pending") {
+        notify(found.state === "done" ? w[op].text + " \u2014 done on the server"
+               : "Rule change not made: " + found.message)
+        delete w[op]
+      } else any = true
+    }
+    _watchedRuleOps = w
+    if (!any) ruleWatchTimer.stop()
+  }
+  Timer { id: ruleWatchTimer; interval: 2000; repeat: true; onTriggered: root.loadRules() }
+
+  function _ruleCall(method, path, text, done) {
+    request(method, path, function(xhr) {
+      var r = null
+      try { r = JSON.parse(xhr.responseText) } catch (e) { r = null }
+      if (xhr.status !== 200 || !r || r.ok !== true) {
+        ruleNotice = "Could not do that: " + ((r && r.error) ? r.error : "the backend did not answer")
+      } else {
+        ruleNotice = text + " Waiting for the server\u2026"
+        var acct = decodeURIComponent((path.match(/account=([^&]*)/) || [0, ""])[1])
+        _watchRuleOp(acct, r.op, text)
+      }
+      loadRules()
+      if (done) done(r)
+    })
+  }
+  function _ruleQuery(account, tag, kind, value) {
+    return "account=" + encodeURIComponent(account) + "&tag=" + encodeURIComponent(tag) + "&" + kind + "=" + encodeURIComponent(value)
+  }
+  function ruleCheck(account, tag, kind, value, done) {
+    request("GET", "/rules/preview?" + _ruleQuery(account, tag, kind, value), function(xhr) {
+      var r = null
+      try { r = JSON.parse(xhr.responseText) } catch (e) { r = null }
+      done(xhr.status === 200 && r ? r : { ok: false, error: "the backend did not answer" })
+    })
+  }
+  function ruleAdd(account, tag, kind, value, done) {
+    _ruleCall("POST", "/rules/add?" + _ruleQuery(account, tag, kind, value),
+      "Rule: mail from " + (kind === "domain" ? "@" + String(value).replace(/^@/, "") : value) + " \u2192 tag \u201c" + tag + "\u201d.", done)
+  }
+  function ruleEnable(account, id, on, done) {
+    _ruleCall("POST", "/rules/enable?account=" + encodeURIComponent(account) + "&id=" + encodeURIComponent(id) + "&on=" + (on ? "true" : "false"),
+      on ? "Rule turned on." : "Rule turned off.", done)
+  }
+  function ruleDelete(account, id, done) {
+    _ruleCall("POST", "/rules/delete?account=" + encodeURIComponent(account) + "&id=" + encodeURIComponent(id) + "&confirm=yes", "Rule deleted.", done)
+  }
+  function ruleMove(account, id, up, done) {
+    _ruleCall("POST", "/rules/move?account=" + encodeURIComponent(account) + "&id=" + encodeURIComponent(id) + "&dir=" + (up ? "up" : "down"),
+      up ? "Rule moved up." : "Rule moved down.", done)
+  }
+
+  // `T`: make a rule from the message under the cursor (palette: who -> which tag -> confirm).
+  property var ruleDraft: ({ account: "", address: "", domain: "", kind: "", tag: "", preview: null })
+  function beginRuleDraft() {
+    var m = currentMessage
+    var addr = m && m.from_email ? String(m.from_email).trim().toLowerCase() : ""
+    var acct = targetAccountId()
+    ruleDraft = { account: acct, address: addr, domain: addr.indexOf("@") > 0 ? addr.split("@")[1] : "", kind: "", tag: "", preview: null }
+  }
+  function checkRuleDraft(done) {
+    var d = ruleDraft
+    ruleCheck(d.account, d.tag, d.kind, d.kind === "domain" ? d.domain : d.address, function(r) {
+      var n = ruleDraft; n.preview = r; ruleDraft = n
+      if (done) done(r)
+    })
+  }
+  function createRuleFromDraft() {
+    var d = ruleDraft
+    ruleAdd(d.account, d.tag, d.kind, d.kind === "domain" ? d.domain : d.address, function(r) {
+      if (!r || r.ok !== true) notify(ruleNotice)
+      else notify("Rule queued: mail from " + (d.kind === "domain" ? "@" + d.domain : d.address) + " \u2192 \u201c" + d.tag + "\u201d (applies to new mail only)")
     })
   }
 

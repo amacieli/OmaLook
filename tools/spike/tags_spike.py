@@ -106,5 +106,65 @@ def scratch():
         sys.exit("STATE DIFFERS FROM BEFORE: inspect by hand")
 
 
+ORD = "omalook-spike-ord-"
+
+
+def order():
+    """Phase 3 spike: rule ordering semantics, using three DISABLED scratch rules at the END of the list only,
+    so no real rule can be moved. Proves: what `sequence` does on create / PATCH / delete, whether a PATCH of
+    isEnabled leaves the rest alone, and that every real rule is byte-identical afterwards."""
+    g, _ = graph()
+    st, before = rules(g); assert st == 200
+    assert not any(r["displayName"].startswith(ORD) for r in before), "leftover spike rules: remove them first"
+    real = {r["id"]: r for r in before}
+    print(f"before: {len(before)} rules, sequences {sorted(r['sequence'] for r in before)[-3:]} (last three)")
+    base = "/me/mailFolders/inbox/messageRules"
+    made = {}
+
+    def show(label):
+        st, now = rules(g); assert st == 200
+        mine = sorted((r["sequence"], r["displayName"][len(ORD):]) for r in now if r["displayName"].startswith(ORD))
+        others_same = all(r["id"] in real and r == real[r["id"]] for r in now if not r["displayName"].startswith(ORD))
+        print(f"{label:34} scratch (seq, name): {mine}   real rules untouched: {others_same} ({len(now)} total)")
+        return now
+
+    try:
+        for name in "ABC":
+            body = {"displayName": ORD + name, "sequence": 9999, "isEnabled": False,
+                    "conditions": {"fromAddresses": [{"emailAddress": {"address": f"omalook-spike-nobody-{name.lower()}@example.invalid"}}]},
+                    "actions": {"assignCategories": ["omalook-spike-tag"], "stopProcessingRules": True}}
+            st, r = g.call("create " + name, "POST", base, body)
+            assert st in (200, 201), (st, r); made[name] = r["id"]
+        now = show("created A, B, C (no sequence)")
+        seq = {r["displayName"][len(ORD):]: r["sequence"] for r in now if r["displayName"].startswith(ORD)}
+        # move C to A's slot
+        st, r = g.call("C->A seq", "PATCH", f"{base}/{made['C']}", {"sequence": seq["A"]}); print("PATCH C sequence =", seq["A"], "->", st)
+        show("after C takes A's sequence")
+        # move A past the end
+        st, r = g.call("A->end", "PATCH", f"{base}/{made['A']}", {"sequence": seq["C"] + 5}); print("PATCH A sequence = last+5 ->", st)
+        show("after A to last+5")
+        # one place DOWN: C (first) takes its neighbour's sequence
+        now = rules(g)[1]; sq = {r["displayName"][len(ORD):]: r["sequence"] for r in now if r["displayName"].startswith(ORD)}
+        first = min(sq, key=sq.get); second = sorted(sq, key=sq.get)[1]
+        st, r = g.call("one down", "PATCH", f"{base}/{made[first]}", {"sequence": sq[second]}); print(f"PATCH {first} sequence = {sq[second]} (its neighbour's) ->", st)
+        show("after one place down")
+        # enable toggle on B only
+        st, r = g.call("B on", "PATCH", f"{base}/{made['B']}", {"isEnabled": True}); print("PATCH B isEnabled=true ->", st)
+        show("after B enabled")
+        st, r = g.call("B off", "PATCH", f"{base}/{made['B']}", {"isEnabled": False}); print("PATCH B isEnabled=false ->", st)
+        # delete the middle one
+        mid = sorted((r["sequence"], k) for k, r in ((k, next(x for x in rules(g)[1] if x["id"] == v)) for k, v in made.items()))[1][1]
+        print("delete the middle scratch rule:", mid, g.call("del", "DELETE", f"{base}/{made[mid]}")[0]); made.pop(mid)
+        show("after deleting the middle one")
+    finally:
+        for k, v in made.items():
+            print("cleanup delete", k, g.call("del", "DELETE", f"{base}/{v}")[0])
+    st, after = rules(g)
+    same = len(after) == len(before) and all(r == real.get(r["id"]) for r in after)
+    print("after:", len(after), "rules; every real rule byte-identical to before:", same)
+    if not same:
+        sys.exit("STATE DIFFERS FROM BEFORE: inspect by hand")
+
+
 if __name__ == "__main__":
-    {"rules": read_only, "scratch": scratch}[sys.argv[1]]()
+    {"rules": read_only, "scratch": scratch, "order": order}[sys.argv[1]]()

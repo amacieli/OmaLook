@@ -188,6 +188,69 @@ Item {
     return out
   }
 
+  // ---- make a rule from a message (T): who -> which tag -> confirm ---------------------------------
+  readonly property var _freeMail: ["gmail.com", "googlemail.com", "outlook.com", "hotmail.com", "live.com", "yahoo.com", "icloud.com", "me.com", "aol.com", "msn.com", "protonmail.com", "proton.me"]
+  function openRulePicker() {
+    var acct = app.targetAccountId()
+    if (acct === "") return
+    if (app.accountProvider(acct) !== "exchange") { say("rules from messages work for Exchange accounts only (Gmail filters come later)"); return }
+    app.loadRules(function() {
+      var a = app.ruleAccount(acct)
+      if (!a || !a.can_write) { say("this account's rules have not been read yet; try again after the next sync"); return }
+      app.beginRuleDraft()
+      if (app.ruleDraft.address === "") { say("this message has no sender address"); return }
+      root.paletteRequested("rule ")
+    })
+  }
+  function pickRuleWho(q) {
+    var d = app.ruleDraft, out = []
+    if (d.address === "") return out
+    out.push({ id: "rule.addr", title: "Mail from " + d.address, keys: [], run: function() { var n = app.ruleDraft; n.kind = "address"; app.ruleDraft = n; app.focusPaletteRequested("rulestag ") } })
+    if (d.domain !== "" && _freeMail.indexOf(d.domain) < 0)
+      out.push({ id: "rule.dom", title: "Everything from @" + d.domain, keys: [], run: function() { var n = app.ruleDraft; n.kind = "domain"; app.ruleDraft = n; app.focusPaletteRequested("rulestag ") } })
+    else if (d.domain !== "")
+      out.push({ id: "rule.free", title: "(@" + d.domain + " is a public mail service: a rule for the whole domain would catch everyone)", keys: [], run: function() {} })
+    return out
+  }
+  function pickRuleTags(q) {
+    var d = app.ruleDraft
+    if (d.account === "") return []
+    if (app.catAccountId !== d.account) {
+      app.loadCategories(d.account)
+      return [{ id: "rtag.loading", title: "loading\u2026", keys: [], run: function() {} }]
+    }
+    var out = [], query = q.trim(), exact = false
+    var pick = function(name) { return function() {
+      var n = app.ruleDraft; n.tag = name; app.ruleDraft = n
+      app.checkRuleDraft(function(r) { if (r.ok !== true) say("could not check the rule: " + r.error); else app.focusPaletteRequested("ruleok ") })
+    } }
+    app.catDefs.forEach(function(c) {
+      if (String(c.name).toLowerCase() === query.toLowerCase()) exact = true
+      if (query !== "" && !_fz(query, c.name)) return
+      out.push({ id: "rtag." + c.name, title: c.name, swatch: c.color, keys: [], run: pick(c.name) })
+    })
+    if (query !== "" && !exact) {
+      TagNames.similar(query, app.catDefs.map(function(c) { return c.name })).forEach(function(n) {
+        out.unshift({ id: "rtag.like." + n, title: "\u2248 looks like \u201c" + n + "\u201d: use it", swatch: app._catColor(n), keys: [], run: pick(n) })
+      })
+      out.push({ id: "rtag.new", title: "+ Use new name \u201c" + query + "\u201d", keys: [], run: pick(query) })
+    }
+    if (out.length === 0) out.push({ id: "rtag.none", title: "no tags yet \u2014 type a name", keys: [], run: function() {} })
+    return out
+  }
+  function pickRuleConfirm(q) {
+    var d = app.ruleDraft, p = d.preview && d.preview.preview ? d.preview.preview : null
+    if (!p) return [{ id: "rok.wait", title: "checking\u2026", keys: [], run: function() {} }]
+    var who = d.kind === "domain" ? "@" + d.domain : d.address
+    var out = []
+    if (!p.exists)
+      out.push({ id: "rok.go", title: "\u2713 Create the rule: mail from " + who + " \u2192 tag \u201c" + d.tag + "\u201d", keys: [], run: function() { app.createRuleFromDraft() } })
+    else out.push({ id: "rok.exists", title: "\u26a0 an identical rule is already on the server", keys: [], run: function() {} })
+    out.push({ id: "rok.count", title: "   " + p.matches + " cached message" + (p.matches === 1 ? "" : "s") + " from there (" + p.already_tagged + " already tagged). Only new mail gets tagged; old mail is not changed.", keys: [], run: function() {} })
+    p.shadowed_by.forEach(function(w, i) { out.push({ id: "rok.shadow" + i, title: "\u26a0 " + w + ", so the new rule (last in the list) would never run. Move the new rule up on the Rules page.", keys: [], run: function() {} }) })
+    return out
+  }
+
   function openTagPicker() {
     var acct = app.targetAccountId()
     if (acct === "") return
@@ -410,6 +473,9 @@ Item {
     { id: "compose.detachall",   title: "Remove all attachments",                scope: "mail", keys: [], ex: ["detach-all"],  when: function() { return app.composing }, run: function() { app.composeAction("detach-all") } },
     { id: "mail.attachments.saveall", title: "Save all attachments", scope: "mail", keys: ["S"], ex: ["saveattachments", "saveatt"], when: function() { return onMessages && app.realAttachments().length > 0 }, run: function() { app.saveAttachments("") } },
     { id: "mail.tag",      title: "Set category / tag\u2026", scope: "mail", keys: ["t"], ex: ["tag", "category", "cat"], pick: pickTags, when: function() { return onMessages }, run: function() { openTagPicker() } },
+    { id: "mail.rule",     title: "Make a rule from this message\u2026", scope: "mail", keys: ["T"], ex: ["rule"], pick: pickRuleWho, when: function() { return onMessages && app.currentMessageId !== "" }, run: function() { openRulePicker() } },
+    { id: "mail.rulestag", title: "Tag for the new rule\u2026", scope: "mail", keys: [], hidden: true, ex: ["rulestag"], pick: pickRuleTags, run: function() {} },
+    { id: "mail.ruleok",   title: "Confirm the new rule\u2026", scope: "mail", keys: [], hidden: true, ex: ["ruleok"], pick: pickRuleConfirm, run: function() {} },
     { id: "mail.tagcolor", title: "Colour for the new category\u2026", scope: "mail", keys: [], hidden: true, ex: ["tagcolor"], pick: pickColors, run: function() {} },
     { id: "mail.render",   title: "Cycle how this message is shown (HTML / system; message / sender / default)", scope: "mail", keys: ["H"], ex: ["render", "html"], when: function() { return app.currentMessageId !== "" }, run: function() { app.toggleHtml() } },
     { id: "mail.images",   title: "Cycle remote images (blocked / this message / this sender)", scope: "mail", keys: ["I"], ex: ["images"], when: function() { return app.currentMessageId !== "" && app.currentHtmlMode }, run: function() { app.toggleImages() } },

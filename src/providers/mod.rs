@@ -85,6 +85,20 @@ pub trait EmailProvider: Send + Sync {
         Err(crate::errors::OmarchyError::HttpError("fetch_message_rules not supported".into()))
     }
 
+    /// Create a mailbox rule (`body` is a Graph `messageRule`); returns what the server stored.
+    async fn create_message_rule(&self, _body: &serde_json::Value) -> Result<serde_json::Value> {
+        Err(crate::errors::OmarchyError::HttpError("create_message_rule not supported".into()))
+    }
+
+    /// PATCH one mailbox rule (`sequence`, `isEnabled`, ...); returns what the server stored.
+    async fn update_message_rule(&self, _id: &str, _patch: &serde_json::Value) -> Result<serde_json::Value> {
+        Err(crate::errors::OmarchyError::HttpError("update_message_rule not supported".into()))
+    }
+
+    async fn delete_message_rule(&self, _id: &str) -> Result<()> {
+        Err(crate::errors::OmarchyError::HttpError("delete_message_rule not supported".into()))
+    }
+
     /// Change a category / label's colour on the provider. Implementations re-read it afterwards and
     /// fail (not transiently) when the provider silently kept the old colour.
     async fn update_category_color(&self, _name: &str, _color: &crate::models::PaletteColor) -> Result<crate::models::CategoryDef> {

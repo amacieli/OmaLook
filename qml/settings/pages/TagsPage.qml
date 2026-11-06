@@ -52,7 +52,17 @@ SettingsPage {
 
   function n(v) { return String(v).replace(/\B(?=(\d{3})+(?!\d))/g, ",") }
 
-  Component.onCompleted: { if (app) { app.tagNotice = ""; app.loadTags() } }
+  // server rules that assign this tag (deleting the tag does not touch them: they would keep tagging new mail)
+  function ruleCount(name) {
+    var n = 0, k = String(name).toLowerCase().replace(/\s+/g, "")
+    var accts = page.app ? (page.app.rulesData.accounts || []) : []
+    accts.forEach(function(a) { (a.groups || []).forEach(function(g) {
+      if (String(g.tag).toLowerCase().replace(/\s+/g, "") === k) n += g.rules.length
+    }) })
+    return n
+  }
+
+  Component.onCompleted: { if (app) { app.tagNotice = ""; app.loadTags(); app.loadRules() } }
 
   // Pending changes land on the server in the background: keep the page current while it is open.
   Timer {
@@ -168,7 +178,7 @@ SettingsPage {
       width: parent.width
       wrapMode: Text.WordWrap
       foreground: Commons.Color.urgent
-      text: page.current ? ("This takes \u201c" + page.current.name + "\u201d off " + page.n(page.current.total) + (page.current.total === 1 ? " message" : " messages") + " and removes it from every account that has it. Mail is not deleted. Rules that use the tag are not touched yet.") : ""
+      text: page.current ? ("This takes \u201c" + page.current.name + "\u201d off " + page.n(page.current.total) + (page.current.total === 1 ? " message" : " messages") + " and removes it from every account that has it. Mail is not deleted." + (page.ruleCount(page.current.name) > 0 ? " " + page.ruleCount(page.current.name) + (page.ruleCount(page.current.name) === 1 ? " rule" : " rules") + " on the server assign it and will keep tagging new mail: delete them on the Rules page first." : "")) : ""
     }
     RowLayout {
       width: parent.width

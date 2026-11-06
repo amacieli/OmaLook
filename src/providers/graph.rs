@@ -687,6 +687,38 @@ impl super::EmailProvider for GraphEmailProvider {
         Err(crate::errors::OmarchyError::HttpError("message rules: more than 20 pages".into()))
     }
 
+    async fn create_message_rule(&self, body: &serde_json::Value) -> Result<serde_json::Value> {
+        let token = self.get_token().await?;
+        let response = reqwest::Client::new()
+            .post("https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messageRules")
+            .header("Authorization", format!("Bearer {}", token))
+            .json(body).send().await
+            .map_err(|e| crate::errors::OmarchyError::HttpError(e.to_string()))?;
+        let text = Self::check_response(response).await?;
+        serde_json::from_str(&text).map_err(|e| crate::errors::OmarchyError::HttpError(e.to_string()))
+    }
+
+    async fn update_message_rule(&self, id: &str, patch: &serde_json::Value) -> Result<serde_json::Value> {
+        let token = self.get_token().await?;
+        let response = reqwest::Client::new()
+            .patch(format!("https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messageRules/{}", urlencoding::encode(id)))
+            .header("Authorization", format!("Bearer {}", token))
+            .json(patch).send().await
+            .map_err(|e| crate::errors::OmarchyError::HttpError(e.to_string()))?;
+        let text = Self::check_response(response).await?;
+        serde_json::from_str(&text).map_err(|e| crate::errors::OmarchyError::HttpError(e.to_string()))
+    }
+
+    async fn delete_message_rule(&self, id: &str) -> Result<()> {
+        let token = self.get_token().await?;
+        let response = reqwest::Client::new()
+            .delete(format!("https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messageRules/{}", urlencoding::encode(id)))
+            .header("Authorization", format!("Bearer {}", token))
+            .send().await
+            .map_err(|e| crate::errors::OmarchyError::HttpError(e.to_string()))?;
+        Self::check_response(response).await.map(|_| ())
+    }
+
     async fn update_category_color(&self, name: &str, color: &crate::models::PaletteColor) -> Result<crate::models::CategoryDef> {
         let id = self.master_category_id(name).await?
             .ok_or_else(|| crate::errors::OmarchyError::HttpError(format!("category '{}' is not in the master list", name)))?;

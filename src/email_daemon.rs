@@ -451,6 +451,7 @@ impl EmailDaemon {
         self.push_pending_reads().await;
         self.push_due_actions().await;
         self.push_pending_categories().await;
+        self.push_rule_ops().await;
     }
 
     /// One-time repopulate of the message details (sender name, To/Cc/Bcc, categories, …) for
@@ -547,6 +548,7 @@ impl EmailDaemon {
     /// Read the account's server-side mailbox rules into the cache (read-only; Settings -> Rules).
     /// A failure keeps the cached rules and records why (permission missing, no such feature, error).
     async fn sync_rules(&self) {
+        self.push_rule_ops().await;
         match self.provider.fetch_message_rules().await {
             Ok(rules) => {
                 if let Err(e) = self.db.replace_rules(&rules) { warn!("Could not store mailbox rules: {}", e); }
@@ -559,6 +561,94 @@ impl EmailDaemon {
                     else { "error" };
                 if state == "error" { warn!("Could not read mailbox rules: {}", m); } else { debug!("Mailbox rules not available: {}", m); }
                 let _ = self.db.set_rules_state(state, if state == "error" { &m } else { "" });
+            }
+        }
+    }
+
+    /// Carry out the rule changes the user queued (Settings -> Rules, `T`). Each one: read the server's rules,
+    /// check the rule is still as the user saw it (Graph rules have no etag), write, read them again, and check
+    /// the server did exactly that and nothing else. A write is never repeated: if the answer is unclear the
+    /// change is reported as failed and the cache is refreshed from the server so the page shows the truth.
+    async fn push_rule_ops(&self) {
+        use crate::rules as r;
+        let ops = match self.db.pending_rule_ops() { Ok(o) => o, Err(e) => { warn!("Could not read queued rule changes: {}", e); return } };
+        for op in ops {
+            let before = match self.provider.fetch_message_rules().await {
+                Ok(b) => b,
+                Err(e) => {
+                    // nothing was written yet, so trying again later is safe
+                    let n = self.db.bump_rule_op_attempts(op.id).unwrap_or(99);
+                    if n >= 5 || e.to_string().contains("not supported") {
+                        let _ = self.db.finish_rule_op(op.id, "failed", &format!("could not read the server's rules: {}", e));
+                    }
+                    continue;
+                }
+            };
+            let id = op.payload["id"].as_str().unwrap_or_default().to_string();
+            let expect = op.payload["expect"].as_str().unwrap_or_default().to_string();
+            // checks before writing; Err((state, message)) ends the change without a write
+            let plan: std::result::Result<(), (&str, String)> = (|| {
+                match op.kind.as_str() {
+                    "add" => {
+                        let body = op.payload.get("body").cloned().unwrap_or_default();
+                        if before.iter().any(|a| r::same_effect(a, &body)) { return Err(("exists", "an identical rule is already on the server".into())) }
+                        Ok(())
+                    }
+                    "enable" | "delete" | "move" => {
+                        let Some(rule) = before.iter().find(|x| x["id"].as_str() == Some(id.as_str())) else {
+                            return Err(("conflict", "that rule no longer exists on the server".into()))
+                        };
+                        if r::fingerprint(rule) != expect { return Err(("conflict", "that rule was changed somewhere else since you looked; the page now shows the current version".into())) }
+                        r::writable(rule).map_err(|m| ("failed", m))?;
+                        if op.kind == "move" {
+                            let nid = op.payload["neighbour_id"].as_str().unwrap_or_default();
+                            let want = (op.payload["from"].as_i64(), op.payload["to"].as_i64());
+                            let seqs = (rule["sequence"].as_i64(), before.iter().find(|x| x["id"].as_str() == Some(nid)).and_then(|x| x["sequence"].as_i64()));
+                            if seqs != want { return Err(("conflict", "the rules were reordered somewhere else since you looked".into())) }
+                            let n = before.iter().find(|x| x["id"].as_str() == Some(nid)).unwrap();
+                            if n["isReadOnly"].as_bool() == Some(true) { return Err(("failed", "read-only rules cannot be moved past".into())) }
+                        }
+                        Ok(())
+                    }
+                    other => Err(("failed", format!("unknown rule change '{}'", other))),
+                }
+            })();
+            if let Err((state, msg)) = plan {
+                let _ = self.db.finish_rule_op(op.id, state, &msg);
+                let _ = self.db.replace_rules(&before);
+                continue;
+            }
+            let body = op.payload.get("body").cloned().unwrap_or_default();
+            let written = match op.kind.as_str() {
+                "add" => self.provider.create_message_rule(&body).await.map(|_| ()),
+                "enable" => self.provider.update_message_rule(&id, &serde_json::json!({ "isEnabled": op.payload["on"].as_bool().unwrap_or(false) })).await.map(|_| ()),
+                "move" => self.provider.update_message_rule(&id, &serde_json::json!({ "sequence": op.payload["to"].as_i64().unwrap_or(0) })).await.map(|_| ()),
+                "delete" => self.provider.delete_message_rule(&id).await,
+                _ => Ok(()),
+            };
+            // Whatever the write said, read the server again: it is the only proof.
+            let after = match self.provider.fetch_message_rules().await {
+                Ok(a) => a,
+                Err(e) => {
+                    let _ = self.db.finish_rule_op(op.id, "failed", &format!("the change was sent but the result could not be read back ({}); check Settings -> Rules after the next sync", e));
+                    continue;
+                }
+            };
+            let verdict = match op.kind.as_str() {
+                "add" => r::verify_create(&before, &after, &body).map(|_| ()),
+                "enable" => r::verify_enable(&before, &after, &id, op.payload["on"].as_bool().unwrap_or(false)),
+                "move" => r::verify_move(&before, &after, &id, op.payload["to"].as_i64().unwrap_or(0)),
+                "delete" => r::verify_delete(&before, &after, &id),
+                _ => Ok(()),
+            };
+            let _ = self.db.replace_rules(&after);
+            match (written, verdict) {
+                (_, Ok(())) => { let _ = self.db.finish_rule_op(op.id, "done", ""); info!("mail[{}] rule change {} ({}) done", self.db.account_id(), op.id, op.kind); }
+                (Err(e), Err(_)) => { let _ = self.db.finish_rule_op(op.id, "failed", &format!("the server refused it: {}", e)); }
+                (Ok(()), Err(why)) => {
+                    warn!("mail[{}] rule change {} ({}) did not check out: {}", self.db.account_id(), op.id, op.kind, why);
+                    let _ = self.db.finish_rule_op(op.id, "failed", &format!("the server answered but the result is not what was asked: {}. Check Settings -> Rules", why));
+                }
             }
         }
     }
