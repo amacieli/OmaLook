@@ -1153,6 +1153,43 @@ fn sender_prefs_response(config_dir: &PathBuf, first_line: &str) -> String {
     result.unwrap_or_else(|e| err(&e.to_string()))
 }
 
+/// JSON body for `GET /rules`: every account's cached mailbox rules, summarised and grouped.
+fn rules_response(config_dir: &PathBuf) -> String {
+    let err = |m: &str| serde_json::json!({ "ok": false, "error": m }).to_string();
+    let path = config_dir.join("messages.db");
+    let db = match Database::open(path.to_str().unwrap_or("messages.db")) {
+        Ok(d) => d,
+        Err(e) => return err(&format!("database: {}", e)),
+    };
+    let colors: std::collections::HashMap<(String, String), String> = rusqlite::Connection::open(&path).ok()
+        .and_then(|c| c.prepare("SELECT account_id, name, color FROM category_defs WHERE delete_pending = 0").ok().map(|mut st| {
+            st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)))
+                .map(|it| it.flatten().map(|(a, n, c)| ((a, n.to_lowercase()), c)).collect()).unwrap_or_default()
+        })).unwrap_or_default();
+    let tags = db.tags_overview().unwrap_or_default();
+    let mut accounts: Vec<serde_json::Value> = Vec::new();
+    for (id, provider, email) in db.accounts_basic().unwrap_or_default() {
+        let state = db.rules_state(&id).ok().flatten();
+        let summaries: Vec<omalook::rules::RuleSummary> = db.rules_raw(&id).unwrap_or_default().iter().map(omalook::rules::summarize).collect();
+        let total = summaries.len();
+        let org = omalook::rules::organise(summaries);
+        let groups: Vec<serde_json::Value> = org.groups.iter().map(|g| {
+            let color = colors.get(&(id.clone(), g.tag.to_lowercase())).cloned()
+                .or_else(|| tags.iter().find(|t| omalook::db::tags::tag_key(&t.name) == omalook::db::tags::tag_key(&g.tag)).map(|t| t.color.clone()))
+                .unwrap_or_else(|| omalook::models::fallback_category_color(&g.tag).to_string());
+            serde_json::json!({ "tag": g.tag, "color": color, "rules": g.rules })
+        }).collect();
+        accounts.push(serde_json::json!({
+            "account_id": id, "provider": provider, "email": email, "total": total,
+            "state": state.as_ref().map(|s| s.state.clone()).unwrap_or_else(|| "none".into()),
+            "error": state.as_ref().map(|s| s.error.clone()).unwrap_or_default(),
+            "fetched_at": state.as_ref().map(|s| s.fetched_at).unwrap_or(0),
+            "groups": groups, "other": org.other, "system": org.system,
+        }));
+    }
+    serde_json::json!({ "accounts": accounts }).to_string()
+}
+
 /// JSON body for the Tags page endpoints (see the route comment).
 fn tags_response(config_dir: &PathBuf, first_line: &str) -> String {
     let err = |m: &str| serde_json::json!({ "ok": false, "error": m }).to_string();
@@ -2148,6 +2185,19 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                 //   GET  /addresses                              → [{email, name, score}] seen in mail, best first
                 if first_line.starts_with("GET /lists") || first_line.starts_with("POST /lists/") || first_line.starts_with("GET /addresses") {
                     let body = if first_line.starts_with("GET /addresses") { addresses_json(config_dir) } else { lists_response(config_dir, first_line) };
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                        body.len(), body
+                    );
+                    let _ = stream.write_all(response.as_bytes());
+                    continue;
+                }
+
+                // ── Mailbox rules (Settings -> Rules; OL-040 phase 2, read-only) ─────────────
+                //   GET /rules → {accounts:[{account_id,provider,email,state:ok|none|needs_signin|unsupported|error,error,fetched_at,total,
+                //                            groups:[{tag,color,rules:[RuleSummary]}], other:[RuleSummary], system:[RuleSummary]}]}
+                if first_line.starts_with("GET /rules") {
+                    let body = rules_response(config_dir);
                     let response = format!(
                         "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                         body.len(), body

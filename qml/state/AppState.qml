@@ -64,6 +64,7 @@ Item {
     { id: "mail",          icon: "\uf0e0", label: "Mail"          },
     { id: "senders",       icon: "\uf2bd", label: "Senders"       },
     { id: "tags",          icon: "\uf02b", label: "Tags"          },
+    { id: "rules",         icon: "\uf0b0", label: "Rules"         },
     { id: "lists",         icon: "\uf0c0", label: "Lists"         },
     { id: "calendar",      icon: "\uf073", label: "Calendar"      },
     { id: "sms",           icon: "\uf27a", label: "SMS"           },
@@ -979,6 +980,22 @@ Item {
   function adoptTag(name, accountId, done) {
     _tagCall("/tags/adopt?name=" + encodeURIComponent(name) + "&to=" + encodeURIComponent(accountId),
       function(r) { return r.created ? "Added \u201c" + name + "\u201d to that account." : "That account already has it." }, done)
+  }
+
+  // ---- Rules page (OL-040 phase 2, read-only) --------------------------------------------------
+  // { accounts: [{ account_id, provider, email, state, error, fetched_at, total,
+  //                groups: [{ tag, color, rules: [...] }], other: [...], system: [...] }] }
+  property var rulesData: ({ accounts: [] })
+  property string _rulesJson: ""
+  function loadRules(done) {
+    request("GET", "/rules", function(xhr) {
+      if (xhr.status !== 200) return
+      try {
+        var d = JSON.parse(xhr.responseText)
+        if (d.accounts && xhr.responseText !== root._rulesJson) { root._rulesJson = xhr.responseText; root.rulesData = d }
+      } catch (e) { console.log("[Rules] parse error:", e) }
+      if (done) done()
+    })
   }
 
   function setLargeAudienceConfirm(n) {

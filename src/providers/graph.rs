@@ -668,6 +668,25 @@ impl super::EmailProvider for GraphEmailProvider {
         Ok(crate::models::CategoryDef { name: name.to_string(), color: color.hex.to_string(), provider_color: Some(color.graph_preset.to_string()) })
     }
 
+    async fn fetch_message_rules(&self) -> Result<Vec<serde_json::Value>> {
+        let token = self.get_token().await?;
+        let client = reqwest::Client::new();
+        let mut url = "https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messageRules".to_string();
+        let mut out: Vec<serde_json::Value> = Vec::new();
+        for _ in 0..20 {
+            let response = client.get(&url)
+                .header("Authorization", format!("Bearer {}", token))
+                .send().await
+                .map_err(|e| crate::errors::OmarchyError::HttpError(e.to_string()))?;
+            let body = Self::check_response(response).await?;
+            let json: serde_json::Value = serde_json::from_str(&body)
+                .map_err(|e| crate::errors::OmarchyError::HttpError(e.to_string()))?;
+            out.extend(json["value"].as_array().cloned().unwrap_or_default());
+            match json["@odata.nextLink"].as_str() { Some(n) => url = n.to_string(), None => return Ok(out) }
+        }
+        Err(crate::errors::OmarchyError::HttpError("message rules: more than 20 pages".into()))
+    }
+
     async fn update_category_color(&self, name: &str, color: &crate::models::PaletteColor) -> Result<crate::models::CategoryDef> {
         let id = self.master_category_id(name).await?
             .ok_or_else(|| crate::errors::OmarchyError::HttpError(format!("category '{}' is not in the master list", name)))?;

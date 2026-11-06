@@ -88,6 +88,7 @@ RowLayout {
           case "mail":          return mailPage
           case "senders":       return sendersPage
           case "tags":          return tagsPage
+          case "rules":         return rulesPage
           case "lists":         return listsPage
           case "calendar":      return calendarPage
           case "sms":           return smsPage
@@ -118,6 +119,7 @@ RowLayout {
   Component { id: mailPage;          MailPage { app: root.app } }
   Component { id: sendersPage;       SendersPage { app: root.app } }
   Component { id: tagsPage;          TagsPage { app: root.app } }
+  Component { id: rulesPage;         RulesPage { app: root.app } }
   Component { id: listsPage;         ListsPage { app: root.app } }
   Component { id: calendarPage;      CalendarPage { app: root.app } }
   Component { id: smsPage;           SmsPage {} }

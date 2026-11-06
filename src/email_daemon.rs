@@ -147,6 +147,7 @@ impl EmailDaemon {
                             Ok(count) => {
                                 info!("Synced {} folders", count);
                                 self.sync_categories().await;
+                                self.sync_rules().await;
                                 last_folder_sync = Some(Instant::now());
                                 sync_state::bump_mail("folder counts updated");
                             }
@@ -539,6 +540,25 @@ impl EmailDaemon {
                 } else {
                     warn!("Could not read categories: {}", m);
                 }
+            }
+        }
+    }
+
+    /// Read the account's server-side mailbox rules into the cache (read-only; Settings -> Rules).
+    /// A failure keeps the cached rules and records why (permission missing, no such feature, error).
+    async fn sync_rules(&self) {
+        match self.provider.fetch_message_rules().await {
+            Ok(rules) => {
+                if let Err(e) = self.db.replace_rules(&rules) { warn!("Could not store mailbox rules: {}", e); }
+                else { debug!("mail[{}] mailbox rules: {}", self.db.account_id(), rules.len()); }
+            }
+            Err(e) => {
+                let m = e.to_string();
+                let state = if m.contains("not supported") { "unsupported" }
+                    else if m.contains("403") || m.contains("401") || m.to_lowercase().contains("access") { "needs_signin" }
+                    else { "error" };
+                if state == "error" { warn!("Could not read mailbox rules: {}", m); } else { debug!("Mailbox rules not available: {}", m); }
+                let _ = self.db.set_rules_state(state, if state == "error" { &m } else { "" });
             }
         }
     }

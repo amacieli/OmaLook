@@ -71,7 +71,8 @@ impl Database {
                 .query_row("SELECT COUNT(*) FROM pragma_table_info('category_defs') WHERE name = ?1", [col], |r| r.get::<_, i32>(0))
                 .unwrap_or(0) > 0;
             if !has {
-                self.conn.execute(&format!("ALTER TABLE category_defs ADD COLUMN {col} {decl}"), [])?;
+                // Several account daemons open the database at once: a racing thread may add it first.
+                self.add_column(&format!("ALTER TABLE category_defs ADD COLUMN {col} {decl}"))?;
             }
         }
         Ok(())

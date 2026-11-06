@@ -79,6 +79,12 @@ pub trait EmailProvider: Send + Sync {
         Err(crate::errors::OmarchyError::HttpError("create_category not supported".into()))
     }
 
+    /// The account's server-side mailbox rules as the provider's raw JSON objects (Graph `messageRule`).
+    /// Read-only in OL-040 phase 2. Err("... not supported") for providers without server rules here.
+    async fn fetch_message_rules(&self) -> Result<Vec<serde_json::Value>> {
+        Err(crate::errors::OmarchyError::HttpError("fetch_message_rules not supported".into()))
+    }
+
     /// Change a category / label's colour on the provider. Implementations re-read it afterwards and
     /// fail (not transiently) when the provider silently kept the old colour.
     async fn update_category_color(&self, _name: &str, _color: &crate::models::PaletteColor) -> Result<crate::models::CategoryDef> {

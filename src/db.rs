@@ -87,6 +87,7 @@ pub fn categories_from_json(s: Option<&str>) -> Vec<String> {
 pub mod sms;
 pub mod lists;
 pub mod tags;
+pub mod rules;
 
 pub struct Database {
     conn: Connection,
@@ -357,6 +358,7 @@ impl Database {
 
         self.init_lists_schema()?;
         self.init_tags_schema()?;
+        self.init_rules_schema()?;
 
         // Outgoing mail: queued when the user presses Send, sent by the account's outbox worker
         // once `send_at` (unix ms) passes. state: pending | sending | sent | failed | cancelled.
@@ -975,7 +977,7 @@ impl Database {
     /// column is missing, then one wins and the rest hit "duplicate column name". That is success
     /// (the column is there), not an error: treating it as one made `Database::open_for_account` fail
     /// and the account's mail / calendar / outbox workers quit without a trace.
-    fn add_column(&self, sql: &str) -> Result<()> {
+    pub(crate) fn add_column(&self, sql: &str) -> Result<()> {
         match self.conn.execute(sql, []) {
             Ok(_) => Ok(()),
             Err(rusqlite::Error::SqliteFailure(_, Some(msg))) if msg.contains("duplicate column name") => Ok(()),

@@ -105,7 +105,7 @@ What the data says about the rules in use (inferred from sender patterns; the re
 **Phase 1 — Tags page** (no rules): list across accounts, counts, recolour, delete, adopt-to-other-accounts, `tag:` search. (Rename and merge dropped by decision Q3.) **Built 2026-11-06**, see OL-040 in the tracker for what was checked; delete = strip from messages via `cat_pending`, then delete on the provider once nothing is pending.
 Needs a backup step (copy `messages.db`, as done for mail fields) before the first bulk rewrite.
 
-**Phase 2 — Rules, read-only**: Exchange `messageRules` and Gmail filters listed in Settings → Rules, with engine badges and a plain-language summary; read-only rules marked. No writes yet.
+**Phase 2 — Rules, read-only**: Exchange `messageRules` listed in Settings → Rules, grouped by tag, with a plain-language summary; read-only rules marked. No writes yet. **Built 2026-11-06 (Exchange only):** Gmail filters need `gmail.settings.basic`, which is not requested until the phase-5 scope step-up; engine badges arrive with phase 4. See OL-040.
 
 **Phase 3 — Rule editor, Exchange server engine**: create/edit/reorder/enable/delete Exchange rules (tag, mark read, move, stop). Fetch-before-write because Graph rules have no ETag; detect a rule edited elsewhere (compare to last seen copy) and ask.
 `T` from a message. Unsupported conditions disabled with the reason.
