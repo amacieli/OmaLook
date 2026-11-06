@@ -17,4 +17,6 @@ eq(S.quote('bob@x.com'),'bob@x.com','no quote');
 eq(S.quote('say "hi" now'),'"say hi now"','strip quotes');
 eq(S.stripReplyPrefix('Re: RE: Fwd: Lunch'),'Lunch','strip prefixes');
 eq(S.stripReplyPrefix('Report: Q3'),'Report: Q3','keeps non-prefix');
+eq(S.tokens('tag:="Saint Lucia" -tag:=Family x'),['tag:="Saint Lucia"','-tag:=Family','x'],'tokens exact tag');
+eq(S.toggle('tag:="Saint Lucia"','tag:="Saint Lucia"'),'','toggle exact tag off');
 console.log('ok search');

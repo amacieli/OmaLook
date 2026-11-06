@@ -248,7 +248,7 @@ Item {
       h("from:", "sender name or address"), h("to:", "recipient (also cc: bcc:)"), h("subject:", "words in the subject"),
       h("body:", "words in the cached preview"), h("fullbody:", "whole message text, asked of the mail server (takes a few seconds)"),
       h("is:unread", "also is:read, is:important"), h("has:attachment", "files attached"),
-      h("after:7d", "also before:, date:2026-10-01, today, 2w, 3m"), h("tag:", "tags containing this text (tag:lucia); tag:none = untagged"),
+      h("after:7d", "also before:, date:2026-10-01, today, 2w, 3m"), h("tag:", "tags containing this text (tag:lucia); tag:=Family = exactly that tag; tag:none = untagged"),
       { id: "search.h.tip", title: "   plain words match subject, sender and preview; \"quotes\" for phrases, -word to exclude", keys: [], run: function() {} }
     ])
   }
@@ -282,7 +282,7 @@ Item {
       if (subj !== "") add("same subject  \u201c" + subj + "\u201d", "subject:" + Srch.quote(subj))
       var cats = []
       try { cats = JSON.parse(m.cats || "[]") } catch (e) {}
-      cats.forEach(function(c) { add("tag " + c[0], "tag:" + Srch.quote(c[0])) })
+      cats.forEach(function(c) { add("tag " + c[0], "tag:=" + Srch.quote(c[0])) })
     }
     add("unread only", "is:unread")
     add("has attachment", "has:attachment")

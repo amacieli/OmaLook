@@ -10,7 +10,7 @@
 //! | `from:` `to:` `cc:` `bcc:` `subject:` | case-insensitive substring of that field |
 //! | `body:` | the locally cached body *preview* (FTS5) |
 //! | `fullbody:` | the full body, searched at the provider (not local; see `Query::fullbody`) |
-//! | `tag:` (also `cat:`, `category:`) | tags whose name contains the text, ignoring case, spaces and `*`: `tag:lucia` finds "Saint Lucia", "SaintLucia" and "St Lucia"; `tag:none` = no tag at all (`tag:"none"` in quotes = a tag really called none) |
+//! | `tag:` (also `cat:`, `category:`) | tags whose name contains the text, ignoring case, spaces and `*`: `tag:lucia` finds "Saint Lucia", "SaintLucia" and "St Lucia"; `tag:none` = no tag at all; `tag:=Family` or `tag:="Saint Lucia"` = exactly that tag (ignoring case), so `tag:=none` is a tag really called none |
 //! | `is:unread` `is:read` `is:important` | read state / importance |
 //! | `has:attachment` | has a real (non-inline) attachment |
 //! | `after:` `before:` `date:` | received date: `2026-10-01`, `today`, `yesterday`, or relative `7d` `2w` `3m` `1y` (`date:` takes a day only) |
@@ -34,6 +34,8 @@ enum Kind {
     Cat(String),
     /// No tag on the message.
     NoTag,
+    /// Exactly this tag name (`tag:=Family`), ignoring case.
+    TagExact(String),
     Unread,
     Read,
     Important,
@@ -116,6 +118,10 @@ impl Query {
                     let n = bind(format!("%{}%", escape_like(&squeezed)));
                     format!("replace(lower(COALESCE(m.categories,'')), ' ', '') LIKE ?{n} ESCAPE '\\'")
                 }
+                Kind::TagExact(t) => {
+                    let n = bind(t.trim().to_lowercase());
+                    format!("EXISTS (SELECT 1 FROM json_each(CASE WHEN json_valid(m.categories) THEN m.categories ELSE '[]' END) j WHERE lower(trim(j.value)) = ?{n})")
+                }
                 Kind::NoTag => "(m.categories IS NULL OR m.categories IN ('', '[]'))".to_string(),
                 Kind::Unread => "COALESCE(m.is_read,0) = 0".to_string(),
                 Kind::Read => "COALESCE(m.is_read,0) = 1".to_string(),
@@ -176,6 +182,13 @@ pub fn parse_at(input: &str, now: DateTime<Utc>) -> Result<Query, String> {
             }
             field = Some(name);
         }
+        // `tag:=Family` / `tag:="Saint Lucia"`: the whole name, not part of it
+        let mut exact = false;
+        if field.as_deref() == Some("tag") && i < chars.len() && chars[i] == '=' {
+            exact = true;
+            i += 1;
+            while i < chars.len() && chars[i].is_whitespace() { i += 1; }
+        }
         // value: "quoted" or a run up to whitespace
         let (value, quoted) = if i < chars.len() && chars[i] == '"' {
             let start = i + 1;
@@ -214,7 +227,9 @@ pub fn parse_at(input: &str, now: DateTime<Utc>) -> Result<Query, String> {
             Some("fullbody") => q.fullbody.push((neg, value)),
             Some("cat") | Some("category") => q.clauses.push(Clause { neg, kind: Kind::Cat(value) }),
             Some("tag") => {
-                let kind = if !quoted && value.eq_ignore_ascii_case("none") { Kind::NoTag } else { Kind::Cat(value) };
+                let kind = if exact { Kind::TagExact(value) }
+                    else if !quoted && value.eq_ignore_ascii_case("none") { Kind::NoTag }
+                    else { Kind::Cat(value) };
                 q.clauses.push(Clause { neg, kind });
             }
             Some("is") => {
@@ -609,6 +624,17 @@ mod tests {
         assert_eq!(run(&c, "-tag:none"), ["1", "2", "3"]);
         assert_eq!(run(&c, "-tag:lucia"), ["1", "3", "4"]);
         assert_eq!(run(&c, "tag:\"none\""), Vec::<String>::new(), "quoted none is a tag called none");
+        // tag:= is the whole name
+        assert_eq!(run(&c, "tag:=billing"), ["1"]);
+        assert_eq!(run(&c, "tag:=BILLING"), ["1"]);
+        assert_eq!(run(&c, "tag:=bill"), Vec::<String>::new());
+        assert_eq!(run(&c, "tag:=lucia"), Vec::<String>::new());
+        assert_eq!(run(&c, "tag:=\"saint lucia\""), ["2"]);
+        assert_eq!(run(&c, "tag:=\"saintlucia\""), Vec::<String>::new(), "spaces count in an exact name");
+        assert_eq!(run(&c, "-tag:=billing"), ["2", "3", "4"]);
+        assert_eq!(run(&c, "tag:=none"), Vec::<String>::new(), "= makes none an ordinary tag name");
+        assert_eq!(run(&c, "tag:= billing"), ["1"], "space after the equals sign is read like after the colon");
+        assert_eq!(run(&c, "tag:=billing -is:unread"), Vec::<String>::new());
         assert_eq!(run(&c, "tag:billing -is:unread"), Vec::<String>::new());
         assert_eq!(run(&c, "tag:'; DROP TABLE messages; --"), Vec::<String>::new());
         // flags
