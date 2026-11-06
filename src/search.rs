@@ -10,8 +10,7 @@
 //! | `from:` `to:` `cc:` `bcc:` `subject:` | case-insensitive substring of that field |
 //! | `body:` | the locally cached body *preview* (FTS5) |
 //! | `fullbody:` | the full body, searched at the provider (not local; see `Query::fullbody`) |
-//! | `cat:` / `category:` | substring of a category name, ignoring case and spaces (`cat:lucia` finds "Saint Lucia") |
-//! | `tag:` | exactly this tag (category / label), ignoring case: `tag:Family`, `tag:"Saint Lucia"`; `tag:none` = no tag at all (quote it, `tag:"none"`, for a tag really called none) |
+//! | `tag:` (also `cat:`, `category:`) | tags whose name contains the text, ignoring case, spaces and `*`: `tag:lucia` finds "Saint Lucia", "SaintLucia" and "St Lucia"; `tag:none` = no tag at all (`tag:"none"` in quotes = a tag really called none) |
 //! | `is:unread` `is:read` `is:important` | read state / importance |
 //! | `has:attachment` | has a real (non-inline) attachment |
 //! | `after:` `before:` `date:` | received date: `2026-10-01`, `today`, `yesterday`, or relative `7d` `2w` `3m` `1y` (`date:` takes a day only) |
@@ -33,8 +32,6 @@ enum Kind {
     Cc(String),
     Bcc(String),
     Cat(String),
-    /// Exactly this tag, ignoring case.
-    Tag(String),
     /// No tag on the message.
     NoTag,
     Unread,
@@ -115,13 +112,9 @@ impl Query {
                 Kind::Cat(t) => {
                     // categories is a JSON array of names: ["Saint Lucia","Family"]. Substring,
                     // ignoring case and spaces, so `cat:lucia` and `cat:saintlucia` both find "Saint Lucia".
-                    let squeezed: String = t.to_lowercase().chars().filter(|c| !c.is_whitespace()).collect();
+                    let squeezed: String = t.to_lowercase().chars().filter(|c| !c.is_whitespace() && *c != '*').collect();
                     let n = bind(format!("%{}%", escape_like(&squeezed)));
                     format!("replace(lower(COALESCE(m.categories,'')), ' ', '') LIKE ?{n} ESCAPE '\\'")
-                }
-                Kind::Tag(t) => {
-                    let n = bind(t.trim().to_lowercase());
-                    format!("EXISTS (SELECT 1 FROM json_each(CASE WHEN json_valid(m.categories) THEN m.categories ELSE '[]' END) j WHERE lower(trim(j.value)) = ?{n})")
                 }
                 Kind::NoTag => "(m.categories IS NULL OR m.categories IN ('', '[]'))".to_string(),
                 Kind::Unread => "COALESCE(m.is_read,0) = 0".to_string(),
@@ -221,7 +214,7 @@ pub fn parse_at(input: &str, now: DateTime<Utc>) -> Result<Query, String> {
             Some("fullbody") => q.fullbody.push((neg, value)),
             Some("cat") | Some("category") => q.clauses.push(Clause { neg, kind: Kind::Cat(value) }),
             Some("tag") => {
-                let kind = if !quoted && value.eq_ignore_ascii_case("none") { Kind::NoTag } else { Kind::Tag(value) };
+                let kind = if !quoted && value.eq_ignore_ascii_case("none") { Kind::NoTag } else { Kind::Cat(value) };
                 q.clauses.push(Clause { neg, kind });
             }
             Some("is") => {
@@ -604,14 +597,17 @@ mod tests {
         assert_eq!(run(&c, "cat:saintlucia"), ["2"]); // spaces in the name don't matter
         assert_eq!(run(&c, "cat:\"saint lucia\""), ["2"]);
         assert_eq!(run(&c, "cat: BILL"), ["1"]); // space after the colon, any case
-        // tag: exact name (not a substring), any case; tag:none = untagged
+        // tag: = tags whose name contains the text (same as cat:), tag:none = untagged
         assert_eq!(run(&c, "tag:billing"), ["1"]);
-        assert_eq!(run(&c, "tag:BILLING"), ["1"]);
-        assert_eq!(run(&c, "tag:bill"), Vec::<String>::new());
+        assert_eq!(run(&c, "tag:BILL"), ["1"]);
+        assert_eq!(run(&c, "tag:lucia"), ["2"]);
+        assert_eq!(run(&c, "tag:*lucia*"), ["2"], "stars are accepted and ignored");
+        assert_eq!(run(&c, "tag:saintlucia"), ["2"]);
         assert_eq!(run(&c, "tag:\"saint lucia\""), ["2"]);
-        assert_eq!(run(&c, "tag:lucia"), Vec::<String>::new());
+        assert_eq!(run(&c, "tag:nothing"), Vec::<String>::new());
         assert_eq!(run(&c, "tag:none"), ["4"]);
         assert_eq!(run(&c, "-tag:none"), ["1", "2", "3"]);
+        assert_eq!(run(&c, "-tag:lucia"), ["1", "3", "4"]);
         assert_eq!(run(&c, "tag:\"none\""), Vec::<String>::new(), "quoted none is a tag called none");
         assert_eq!(run(&c, "tag:billing -is:unread"), Vec::<String>::new());
         assert_eq!(run(&c, "tag:'; DROP TABLE messages; --"), Vec::<String>::new());

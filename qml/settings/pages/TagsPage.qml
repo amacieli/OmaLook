@@ -21,7 +21,7 @@ SettingsPage {
   editing: filterField.activeFocus
 
   title: "Tags"
-  description: "Categories (Exchange) and labels (Gmail) of all your accounts, merged by name. In the mail list, `tag:Family` finds one exactly and `tag:none` finds untagged mail."
+  description: "Categories (Exchange) and labels (Gmail) of all your accounts, merged by name. In the mail list, `tag:lucia` finds every tag containing \u201clucia\u201d and `tag:none` finds untagged mail."
 
   readonly property var rows: app ? app.tagRows : []
   readonly property var shown: {
