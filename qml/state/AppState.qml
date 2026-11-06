@@ -63,6 +63,7 @@ Item {
     { id: "appearance",    icon: "\uf1fc", label: "Appearance"    },
     { id: "mail",          icon: "\uf0e0", label: "Mail"          },
     { id: "senders",       icon: "\uf2bd", label: "Senders"       },
+    { id: "tags",          icon: "\uf02b", label: "Tags"          },
     { id: "lists",         icon: "\uf0c0", label: "Lists"         },
     { id: "calendar",      icon: "\uf073", label: "Calendar"      },
     { id: "sms",           icon: "\uf27a", label: "SMS"           },
@@ -926,6 +927,59 @@ Item {
       { exists: e.toLowerCase() + " is already in the list.", invalid: "That doesn't look like an email address.", missing: "That list no longer exists.", error: "Could not add the address." })
   }
   function removeListMember(id, email, done) { _listCall("/lists/members/remove?id=" + id + "&email=" + encodeURIComponent(email), done, null, { error: "Could not remove the address." }) }
+
+  // ---- Tags page (OL-040 phase 1) --------------------------------------------------------------
+  // Every account's categories / labels merged by name: [{ name, color, total, accounts: [{ account_id,
+  // email, provider, defined, pending, color_pending, color, messages }] }].
+  property var tagRows: []
+  property var tagPalette: []
+  property string tagNotice: ""
+  property string _tagsJson: ""
+
+  function loadTags(done) {
+    request("GET", "/tags", function(xhr) {
+      if (xhr.status !== 200) return
+      try {
+        var d = JSON.parse(xhr.responseText)
+        if (d.tags && xhr.responseText !== root._tagsJson) { root._tagsJson = xhr.responseText; root.tagRows = d.tags; root.tagPalette = d.palette || [] }
+      } catch (e) { console.log("[Tags] parse error:", e) }
+      if (done) done()
+    })
+  }
+
+  // Pickers and the message list carry tag colours / names: make them read the new state.
+  function _tagsChanged() {
+    catAccountId = ""
+    loadMessages()
+    loadTags()
+  }
+
+  function _tagCall(path, okText, done) {
+    request("POST", path, function(xhr) {
+      var r = null
+      try { r = JSON.parse(xhr.responseText) } catch (e) { r = null }
+      if (xhr.status !== 200 || !r || r.ok !== true) {
+        tagNotice = "Could not do that: " + ((r && r.error) ? r.error : "the backend did not answer")
+      } else {
+        tagNotice = okText(r)
+      }
+      _tagsChanged()
+      if (done) done(r)
+    })
+  }
+
+  function recolourTag(name, colorKey, done) {
+    _tagCall("/tags/color?name=" + encodeURIComponent(name) + "&color=" + encodeURIComponent(colorKey),
+      function(r) { return "Colour changed here; the mail server is updated in a moment." }, done)
+  }
+  function deleteTag(name, done) {
+    _tagCall("/tags/delete?name=" + encodeURIComponent(name) + "&confirm=yes",
+      function(r) { return "Deleting \u201c" + name + "\u201d: taken off " + r.messages + (r.messages === 1 ? " message" : " messages") + ", then removed from the server." }, done)
+  }
+  function adoptTag(name, accountId, done) {
+    _tagCall("/tags/adopt?name=" + encodeURIComponent(name) + "&to=" + encodeURIComponent(accountId),
+      function(r) { return r.created ? "Added \u201c" + name + "\u201d to that account." : "That account already has it." }, done)
+  }
 
   function setLargeAudienceConfirm(n) {
     largeAudienceConfirm = n

@@ -74,6 +74,23 @@ impl GraphEmailProvider {
     }
 
     /// Internal: handle non-2xx responses with full body logging
+    /// Id of a master category by name (ignoring case), or None when the master list lacks it.
+    async fn master_category_id(&self, name: &str) -> Result<Option<String>> {
+        let token = self.get_token().await?;
+        let client = reqwest::Client::new();
+        let response = client
+            .get("https://graph.microsoft.com/v1.0/me/outlook/masterCategories")
+            .header("Authorization", format!("Bearer {}", token))
+            .send().await
+            .map_err(|e| crate::errors::OmarchyError::HttpError(e.to_string()))?;
+        let body = Self::check_response(response).await?;
+        let json: serde_json::Value = serde_json::from_str(&body)
+            .map_err(|e| crate::errors::OmarchyError::HttpError(e.to_string()))?;
+        Ok(json["value"].as_array().into_iter().flatten()
+            .find(|c| c["displayName"].as_str().map(|n| n.trim().eq_ignore_ascii_case(name.trim())).unwrap_or(false))
+            .and_then(|c| c["id"].as_str().map(String::from)))
+    }
+
     async fn check_response(response: reqwest::Response) -> Result<String> {
         if !response.status().is_success() {
             let status = response.status();
@@ -649,6 +666,44 @@ impl super::EmailProvider for GraphEmailProvider {
             .map_err(|e| crate::errors::OmarchyError::HttpError(e.to_string()))?;
         Self::check_response(response).await?;
         Ok(crate::models::CategoryDef { name: name.to_string(), color: color.hex.to_string(), provider_color: Some(color.graph_preset.to_string()) })
+    }
+
+    async fn update_category_color(&self, name: &str, color: &crate::models::PaletteColor) -> Result<crate::models::CategoryDef> {
+        let id = self.master_category_id(name).await?
+            .ok_or_else(|| crate::errors::OmarchyError::HttpError(format!("category '{}' is not in the master list", name)))?;
+        let token = self.get_token().await?;
+        let client = reqwest::Client::new();
+        let url = format!("https://graph.microsoft.com/v1.0/me/outlook/masterCategories/{}", id);
+        let response = client.patch(&url)
+            .header("Authorization", format!("Bearer {}", token))
+            .json(&serde_json::json!({ "color": color.graph_preset }))
+            .send().await
+            .map_err(|e| crate::errors::OmarchyError::HttpError(e.to_string()))?;
+        Self::check_response(response).await?;
+        // A 200 is not proof (a displayName PATCH answers 200 and changes nothing): read it back.
+        let now = self.fetch_categories().await?;
+        match now.iter().find(|c| c.name.eq_ignore_ascii_case(name)) {
+            Some(c) if c.provider_color.as_deref() == Some(color.graph_preset) => Ok(c.clone()),
+            Some(c) => Err(crate::errors::OmarchyError::HttpError(format!(
+                "category '{}' kept colour {:?} after the change", name, c.provider_color))),
+            None => Err(crate::errors::OmarchyError::HttpError(format!("category '{}' vanished after the colour change", name))),
+        }
+    }
+
+    async fn delete_category(&self, name: &str) -> Result<()> {
+        let Some(id) = self.master_category_id(name).await? else { return Ok(()) };
+        let token = self.get_token().await?;
+        let client = reqwest::Client::new();
+        let response = client
+            .delete(format!("https://graph.microsoft.com/v1.0/me/outlook/masterCategories/{}", id))
+            .header("Authorization", format!("Bearer {}", token))
+            .send().await
+            .map_err(|e| crate::errors::OmarchyError::HttpError(e.to_string()))?;
+        if response.status().as_u16() != 404 { Self::check_response(response).await?; }
+        if self.master_category_id(name).await?.is_some() {
+            return Err(crate::errors::OmarchyError::HttpError(format!("category '{}' is still in the master list after the delete", name)));
+        }
+        Ok(())
     }
 
     async fn set_message_categories(&self, id: &str, wanted: &[String], _had: &[String]) -> Result<()> {

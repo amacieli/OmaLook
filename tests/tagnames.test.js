@@ -1,0 +1,14 @@
+const fs=require('fs');
+const src=fs.readFileSync('qml/keys/TagNames.js','utf8').replace('.pragma library','');
+const T=new Function(src+';return {key,squash,nearMatch,similar}')();
+const eq=(a,b,m)=>{ const x=JSON.stringify(a), y=JSON.stringify(b); if(x!==y){console.error('FAIL',m,x,y);process.exit(1)} };
+eq(T.nearMatch('Saint Lucia','SaintLucia'),true,'saint lucia');
+eq(T.nearMatch('St Lucia','Saint Lucia'),true,'st/saint');
+eq(T.nearMatch('CivilAirPatrol','Civil Air Patrol'),true,'civil air patrol');
+eq(T.nearMatch('Panama','Panama 2026'),true,'contains');
+eq(T.nearMatch('Family','family'),false,'same tag');
+eq(T.nearMatch('Adam Job','Job hunting'),false,'different');
+eq(T.nearMatch('BBQ','BBQ2022'),false,'short not substring-matched');
+eq(T.nearMatch('','x'),false,'empty');
+eq(T.similar('SaintLucia',['Family','Saint Lucia','St Lucia','saintlucia']),['Saint Lucia','St Lucia'],'similar list');
+console.log('ok tagnames');

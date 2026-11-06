@@ -10,7 +10,8 @@
 //! | `from:` `to:` `cc:` `bcc:` `subject:` | case-insensitive substring of that field |
 //! | `body:` | the locally cached body *preview* (FTS5) |
 //! | `fullbody:` | the full body, searched at the provider (not local; see `Query::fullbody`) |
-//! | `cat:` / `category:` | exact category name |
+//! | `cat:` / `category:` | substring of a category name, ignoring case and spaces (`cat:lucia` finds "Saint Lucia") |
+//! | `tag:` | exactly this tag (category / label), ignoring case: `tag:Family`, `tag:"Saint Lucia"`; `tag:none` = no tag at all (quote it, `tag:"none"`, for a tag really called none) |
 //! | `is:unread` `is:read` `is:important` | read state / importance |
 //! | `has:attachment` | has a real (non-inline) attachment |
 //! | `after:` `before:` `date:` | received date: `2026-10-01`, `today`, `yesterday`, or relative `7d` `2w` `3m` `1y` (`date:` takes a day only) |
@@ -19,7 +20,7 @@ use chrono::{DateTime, Duration, Local, NaiveDate, SecondsFormat, TimeZone, Utc}
 use rusqlite::types::Value;
 
 const FIELDS: &str =
-    "from, to, cc, bcc, subject, body, fullbody, cat, category, is, has, after, before, date";
+    "from, to, cc, bcc, subject, body, fullbody, cat, category, tag, is, has, after, before, date";
 
 #[derive(Debug, Clone, PartialEq)]
 enum Kind {
@@ -32,6 +33,10 @@ enum Kind {
     Cc(String),
     Bcc(String),
     Cat(String),
+    /// Exactly this tag, ignoring case.
+    Tag(String),
+    /// No tag on the message.
+    NoTag,
     Unread,
     Read,
     Important,
@@ -114,6 +119,11 @@ impl Query {
                     let n = bind(format!("%{}%", escape_like(&squeezed)));
                     format!("replace(lower(COALESCE(m.categories,'')), ' ', '') LIKE ?{n} ESCAPE '\\'")
                 }
+                Kind::Tag(t) => {
+                    let n = bind(t.trim().to_lowercase());
+                    format!("EXISTS (SELECT 1 FROM json_each(CASE WHEN json_valid(m.categories) THEN m.categories ELSE '[]' END) j WHERE lower(trim(j.value)) = ?{n})")
+                }
+                Kind::NoTag => "(m.categories IS NULL OR m.categories IN ('', '[]'))".to_string(),
                 Kind::Unread => "COALESCE(m.is_read,0) = 0".to_string(),
                 Kind::Read => "COALESCE(m.is_read,0) = 1".to_string(),
                 Kind::Important => "m.importance = 'high'".to_string(),
@@ -210,6 +220,10 @@ pub fn parse_at(input: &str, now: DateTime<Utc>) -> Result<Query, String> {
             Some("body") => q.clauses.push(Clause { neg, kind: Kind::Body(value) }),
             Some("fullbody") => q.fullbody.push((neg, value)),
             Some("cat") | Some("category") => q.clauses.push(Clause { neg, kind: Kind::Cat(value) }),
+            Some("tag") => {
+                let kind = if !quoted && value.eq_ignore_ascii_case("none") { Kind::NoTag } else { Kind::Tag(value) };
+                q.clauses.push(Clause { neg, kind });
+            }
             Some("is") => {
                 let kind = match value.to_lowercase().as_str() {
                     "unread" => Kind::Unread,
@@ -590,6 +604,17 @@ mod tests {
         assert_eq!(run(&c, "cat:saintlucia"), ["2"]); // spaces in the name don't matter
         assert_eq!(run(&c, "cat:\"saint lucia\""), ["2"]);
         assert_eq!(run(&c, "cat: BILL"), ["1"]); // space after the colon, any case
+        // tag: exact name (not a substring), any case; tag:none = untagged
+        assert_eq!(run(&c, "tag:billing"), ["1"]);
+        assert_eq!(run(&c, "tag:BILLING"), ["1"]);
+        assert_eq!(run(&c, "tag:bill"), Vec::<String>::new());
+        assert_eq!(run(&c, "tag:\"saint lucia\""), ["2"]);
+        assert_eq!(run(&c, "tag:lucia"), Vec::<String>::new());
+        assert_eq!(run(&c, "tag:none"), ["4"]);
+        assert_eq!(run(&c, "-tag:none"), ["1", "2", "3"]);
+        assert_eq!(run(&c, "tag:\"none\""), Vec::<String>::new(), "quoted none is a tag called none");
+        assert_eq!(run(&c, "tag:billing -is:unread"), Vec::<String>::new());
+        assert_eq!(run(&c, "tag:'; DROP TABLE messages; --"), Vec::<String>::new());
         // flags
         assert_eq!(run(&c, "is:unread"), ["1", "3"]);
         assert_eq!(run(&c, "is:read"), ["2", "4"]);

@@ -657,6 +657,32 @@ impl super::EmailProvider for GmailProvider {
         Ok(crate::models::CategoryDef { name: name.to_string(), color: color.gmail_bg.to_string(), provider_color: Some(color.gmail_bg.to_string()) })
     }
 
+    async fn update_category_color(&self, name: &str, color: &crate::models::PaletteColor) -> Result<crate::models::CategoryDef> {
+        self.ensure_labels().await;
+        let id = self.label_id_for(name)
+            .ok_or_else(|| crate::errors::OmarchyError::HttpError(format!("label '{}' not found", name)))?;
+        let url = format!("{}/labels/{}", BASE, urlencoding::encode(&id));
+        self.api.patch(&url, &serde_json::json!({ "color": { "backgroundColor": color.gmail_bg, "textColor": color.gmail_fg } })).await?;
+        let now = self.api.get(&url).await?;
+        match now["color"]["backgroundColor"].as_str() {
+            Some(bg) if bg.eq_ignore_ascii_case(color.gmail_bg) => Ok(crate::models::CategoryDef {
+                name: name.to_string(), color: color.gmail_bg.to_string(), provider_color: Some(bg.to_string()) }),
+            other => Err(crate::errors::OmarchyError::HttpError(format!("label '{}' kept colour {:?} after the change", name, other))),
+        }
+    }
+
+    async fn delete_category(&self, name: &str) -> Result<()> {
+        self.ensure_labels().await;
+        let Some(id) = self.label_id_for(name) else { return Ok(()) };
+        match self.api.delete(&format!("{}/labels/{}", BASE, urlencoding::encode(&id))).await {
+            Ok(_) => {}
+            Err(e) if e.to_string().contains(" 404") => {}
+            Err(e) => return Err(e),
+        }
+        self.labels.lock().unwrap_or_else(|p| p.into_inner()).remove(&id);
+        Ok(())
+    }
+
     async fn set_message_categories(&self, id: &str, wanted: &[String], had: &[String]) -> Result<()> {
         self.ensure_labels().await;
         let lookup = |names: &[String], skip: &[String]| -> Vec<String> {

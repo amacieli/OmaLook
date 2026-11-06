@@ -102,7 +102,7 @@ What the data says about the rules in use (inferred from sender patterns; the re
 5. Gmail `settings.filters` create/list/delete on `gmail-2a8d9f` after a re-sign-in with `gmail.settings.basic`; confirm the consent screen and whether the unverified-app warning returns.
 6. Measure: how many of the user's rule-assigned tags the cache attributes to a sender rule (precision/recall of "sender → tag" inferred from the 7,899 tagged messages). Tells us how much a **suggest rules from history** feature would find.
 
-**Phase 1 — Tags page** (no rules): list across accounts, counts, recolour, delete, rename and **merge** (Exchange: create + rewrite + delete, batched with progress and a resumable queue), adopt-to-other-accounts, `tag:` search.
+**Phase 1 — Tags page** (no rules): list across accounts, counts, recolour, delete, adopt-to-other-accounts, `tag:` search. (Rename and merge dropped by decision Q3.) **Built 2026-11-06**, see OL-040 in the tracker for what was checked; delete = strip from messages via `cat_pending`, then delete on the provider once nothing is pending.
 Needs a backup step (copy `messages.db`, as done for mail fields) before the first bulk rewrite.
 
 **Phase 2 — Rules, read-only**: Exchange `messageRules` and Gmail filters listed in Settings → Rules, with engine badges and a plain-language summary; read-only rules marked. No writes yet.
@@ -125,7 +125,7 @@ Needs a backup step (copy `messages.db`, as done for mail fields) before the fir
 - Server rule writes: fetch, diff, write, re-fetch, compare. Any mismatch is reported, never silently retried.
 - Bulk tag rewrites (merge/rename) take the DB backup first and are resumable and undoable (keep the old-tag list per message until the job completes).
 
-## 6. Phase-0 results (Exchange half run 2026-11-04 with `tools/spike/tags_spike.py`, account adam@macielinski.net; Google half pending)
+## 6. Phase-0 results (Exchange half run 2026-11-04 with `tools/spike/tags_spike.py`, account adam@macielinski.net; Google half done 2026-11-06)
 | Check | Result |
 |---|---|
 | Exchange rules: count, read-only, conditions/actions in use | **35 rules** (31 enabled, 4 disabled), **2 read-only** (`CP1`, `CP2`: empty conditions and actions, sequence 1-2, probably client-side/system placeholders, must be preserved untouched), 0 with errors. Conditions: `senderContains` 18, `fromAddresses` 13, `subjectContains` 3, `bodyContains` 2, `bodyOrSubjectContains` 1; no exceptions anywhere. Actions: `assignCategories` 28, `stopProcessingRules` 30, `forwardTo` 2, `markImportance` 2, `delete` 1. |
@@ -136,8 +136,8 @@ Needs a backup step (copy `messages.db`, as done for mail fields) before the fir
 | Server behaviours seen on rule writes | `sequence` is **assigned by the server** (asked 9999, got 36: appended at the end); condition text is **upper-cased/normalised** on store (`OMALOOK-SPIKE-NOBODY@…`), so compare case-insensitively. **No etag or changeKey on rules**, confirming fetch-before-write plus a stored copy for change detection. Create, get, patch (replace a condition list), delete all work; scratch rule and category deleted, rule and category lists identical before and after (35 and 28). |
 | Graph event `categories` round trip | **Works**: create with two names (one unlisted), patch, get, delete all fine; `$filter=categories/any(c:c eq 'Family')` accepted (200) on events. Scratch event removed. |
 | Sender→tag coverage in the cache | Enabled sender-only tag rules match 2,839 cached Exchange messages; **2,105 (74%) carry the rule's tag**. By tag: HVAC, Ukraine, AcquisitionAce 100%; Civil Air Patrol 97%; SaintLucia 74%; Family 69%; CARMEL 61%. The gap (734) is mail that predates a rule or arrived elsewhere than the Inbox, so **retroactive apply (phase 4) would tag several hundred existing messages**. Rules explain only 2,105 of the 7,899 tagged messages; the rest was tagged by hand or by rules since deleted, so history-based suggestions (phase 7) have real input but cannot recover a rule list. |
-| Google event `extendedProperties.private` round trip | **Pending**: needs a Google sign-in for the spike (use `gmail-2a8d9f`, the scratch account). |
-| Gmail filters round trip + consent wording | **Pending**: same sign-in, adds scope `gmail.settings.basic`. |
+| Google event `extendedProperties.private` round trip (run 2026-11-06, `tools/spike/google_spike.py`, scratch account teamcisconc300@gmail.com) | **Works**: create with `extendedProperties.private.omalook_tags`, read back identical, PATCH changes it, `events.list?privateExtendedProperty=omalook_tags=Family` finds the event (server-side filter works), delete 204. Scratch event removed. |
+| Gmail filters round trip + consent wording (same run) | Scope `gmail.settings.basic` **granted** (with `gmail.labels`, `calendar.events`). Filters list on an empty account returns **204 with no body** (handle as empty). Create label + filter (`criteria.from`, `action.addLabelIds`) 200, get returns the same, **edit is impossible: PUT and PATCH both 404**, so edit = delete + create as planned. Delete filter and label 204; filter list identical before and after (0). **The unverified-app warning does appear** (user, 2026-11-06), the same Advanced → Go to omalook click-through as at first sign-in. Not tested: that a delivered message actually gets the label (filters apply on delivery only). |
 
 ## 7. Decisions and open questions
 Decided (user, 2026-11-04):

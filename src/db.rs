@@ -86,6 +86,7 @@ pub fn categories_from_json(s: Option<&str>) -> Vec<String> {
 
 pub mod sms;
 pub mod lists;
+pub mod tags;
 
 pub struct Database {
     conn: Connection,
@@ -355,6 +356,7 @@ impl Database {
         )?;
 
         self.init_lists_schema()?;
+        self.init_tags_schema()?;
 
         // Outgoing mail: queued when the user presses Send, sent by the account's outbox worker
         // once `send_at` (unix ms) passes. state: pending | sending | sent | failed | cancelled.
@@ -1490,11 +1492,14 @@ impl Database {
     pub fn replace_category_defs(&self, defs: &[crate::models::CategoryDef]) -> Result<()> {
         self.conn.execute_batch("BEGIN")?;
         let r = (|| -> Result<()> {
-            self.conn.execute("DELETE FROM category_defs WHERE account_id = ?1 AND pending = 0", params![self.account_id])?;
+            // Rows being deleted here stay until the provider delete is done; a colour chosen here and
+            // not pushed yet is not overwritten by what the provider still says.
+            self.conn.execute("DELETE FROM category_defs WHERE account_id = ?1 AND pending = 0 AND delete_pending = 0 AND color_push = 0", params![self.account_id])?;
             for d in defs {
                 self.conn.execute(
                     "INSERT INTO category_defs (account_id, name, color, provider_color, pending) VALUES (?1, ?2, ?3, ?4, 0)
-                     ON CONFLICT(account_id, name) DO UPDATE SET color = ?3, provider_color = ?4, pending = 0",
+                     ON CONFLICT(account_id, name) DO UPDATE SET
+                        color = CASE WHEN color_push = 1 THEN color ELSE ?3 END, provider_color = ?4, pending = 0",
                     params![self.account_id, d.name, d.color, d.provider_color],
                 )?;
             }

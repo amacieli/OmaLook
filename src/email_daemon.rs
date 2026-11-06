@@ -560,6 +560,7 @@ impl EmailDaemon {
                 }
             }
         }
+        self.push_tag_edits().await;
         let pushes = match self.db.pending_category_pushes() {
             Ok(p) => p,
             Err(e) => { error!("Could not list pending category changes: {}", e); return; }
@@ -572,6 +573,42 @@ impl EmailDaemon {
                     warn!("Provider refused the category change for {}: {}", id, e);
                     let _ = self.db.revert_category_push(&id);
                     sync_state::bump_mail("category change refused");
+                }
+            }
+        }
+    }
+
+    /// Tags page edits (OL-040 phase 1): colour changes, then deletes whose messages are already
+    /// stripped. A refusal drops the local intent and re-reads the provider's list, so the page shows
+    /// what the provider really has; a transient failure is retried next cycle.
+    async fn push_tag_edits(&self) {
+        if let Ok(colors) = self.db.pending_color_pushes() {
+            for (name, hex) in colors {
+                let color = crate::models::CATEGORY_PALETTE.iter().find(|c| c.hex == hex || c.gmail_bg == hex)
+                    .unwrap_or(&crate::models::CATEGORY_PALETTE[6]);
+                match self.provider.update_category_color(&name, color).await {
+                    Ok(def) => { let _ = self.db.finish_color_push(&name, &hex, def.provider_color.as_deref()); }
+                    Err(e) if crate::compose::is_transient(&e) => warn!("Colour of '{}' will be pushed later: {}", name, e),
+                    Err(e) => {
+                        warn!("Provider refused the colour of '{}': {}", name, e);
+                        let _ = self.db.drop_color_push(&name);
+                        self.sync_categories().await;
+                        sync_state::bump_mail("tag colour refused");
+                    }
+                }
+            }
+        }
+        if let Ok(names) = self.db.deletable_tags() {
+            for name in names {
+                match self.provider.delete_category(&name).await {
+                    Ok(()) => { let _ = self.db.finish_tag_delete(&name); sync_state::bump_mail("tag deleted"); }
+                    Err(e) if crate::compose::is_transient(&e) => warn!("Tag '{}' will be deleted later: {}", name, e),
+                    Err(e) => {
+                        warn!("Provider refused to delete tag '{}': {}", name, e);
+                        let _ = self.db.cancel_tag_delete(&name);
+                        self.sync_categories().await;
+                        sync_state::bump_mail("tag delete refused");
+                    }
                 }
             }
         }

@@ -79,6 +79,18 @@ pub trait EmailProvider: Send + Sync {
         Err(crate::errors::OmarchyError::HttpError("create_category not supported".into()))
     }
 
+    /// Change a category / label's colour on the provider. Implementations re-read it afterwards and
+    /// fail (not transiently) when the provider silently kept the old colour.
+    async fn update_category_color(&self, _name: &str, _color: &crate::models::PaletteColor) -> Result<crate::models::CategoryDef> {
+        Err(crate::errors::OmarchyError::HttpError("update_category_color not supported".into()))
+    }
+
+    /// Delete a category / label from the provider's list. Already gone counts as done. The caller has
+    /// stripped it from the account's messages first.
+    async fn delete_category(&self, _name: &str) -> Result<()> {
+        Err(crate::errors::OmarchyError::HttpError("delete_category not supported".into()))
+    }
+
     /// Make a message's categories `wanted` (`had` is what the provider last reported; Gmail
     /// adds and removes the difference, Exchange just sets the list).
     async fn set_message_categories(&self, _id: &str, _wanted: &[String], _had: &[String]) -> Result<()> {

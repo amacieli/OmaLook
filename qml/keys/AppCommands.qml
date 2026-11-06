@@ -2,6 +2,7 @@ import QtQuick
 import "Commands.js" as Cmd
 import "../mail/format.js" as Fmt
 import "Search.js" as Srch
+import "TagNames.js" as TagNames
 
 // The command registry: every key binding in the app, in one place. The router,
 // the palette and the status-bar hints all read `list`, so they cannot drift from
@@ -163,8 +164,16 @@ Item {
       out.push({ id: "tag." + d.name, title: (st === "all" ? "\u2713 " : st === "some" ? "\u2013 " : "   ") + d.name,
                  swatch: d.color, keys: [], run: (function(n) { return function() { app.toggleTag(n) } })(d.name) })
     })
-    if (query !== "" && !exact)
-      out.push({ id: "tag.new", title: "+ New " + noun + " \u201c" + query + "\u201d\u2026", keys: [], run: function() { app.beginNewCategory(query) } })
+    if (query !== "" && !exact) {
+      // A name that looks like one that exists (Saint Lucia / SaintLucia / St Lucia) is how duplicates
+      // start: say so, and offer the existing tag first.
+      var like = TagNames.similar(query, app.catDefs.map(function(d) { return d.name }))
+      like.forEach(function(n) {
+        out.unshift({ id: "tag.like." + n, title: "\u2248 looks like \u201c" + n + "\u201d: use it", swatch: app._catColor(n), keys: [],
+                      run: (function(x) { return function() { app.toggleTag(x) } })(n) })
+      })
+      out.push({ id: "tag.new", title: "+ New " + noun + " \u201c" + query + "\u201d" + (like.length > 0 ? " anyway" : "") + "\u2026", keys: [], run: function() { app.beginNewCategory(query) } })
+    }
     if (out.length === 0) out.push({ id: "tag.none", title: "no " + noun + "s yet \u2014 type a name to create one", keys: [], run: function() {} })
     return out
   }
@@ -239,7 +248,7 @@ Item {
       h("from:", "sender name or address"), h("to:", "recipient (also cc: bcc:)"), h("subject:", "words in the subject"),
       h("body:", "words in the cached preview"), h("fullbody:", "whole message text, asked of the mail server (takes a few seconds)"),
       h("is:unread", "also is:read, is:important"), h("has:attachment", "files attached"),
-      h("after:7d", "also before:, date:2026-10-01, today, 2w, 3m"), h("cat:", "category name"),
+      h("after:7d", "also before:, date:2026-10-01, today, 2w, 3m"), h("tag:", "exactly this tag (tag:none = untagged); cat: matches part of a name"),
       { id: "search.h.tip", title: "   plain words match subject, sender and preview; \"quotes\" for phrases, -word to exclude", keys: [], run: function() {} }
     ])
   }
@@ -273,7 +282,7 @@ Item {
       if (subj !== "") add("same subject  \u201c" + subj + "\u201d", "subject:" + Srch.quote(subj))
       var cats = []
       try { cats = JSON.parse(m.cats || "[]") } catch (e) {}
-      cats.forEach(function(c) { add("category " + c[0], "cat:" + Srch.quote(c[0])) })
+      cats.forEach(function(c) { add("tag " + c[0], "tag:" + Srch.quote(c[0])) })
     }
     add("unread only", "is:unread")
     add("has attachment", "has:attachment")

@@ -1153,6 +1153,75 @@ fn sender_prefs_response(config_dir: &PathBuf, first_line: &str) -> String {
     result.unwrap_or_else(|e| err(&e.to_string()))
 }
 
+/// JSON body for the Tags page endpoints (see the route comment).
+fn tags_response(config_dir: &PathBuf, first_line: &str) -> String {
+    let err = |m: &str| serde_json::json!({ "ok": false, "error": m }).to_string();
+    let path = config_dir.join("messages.db");
+    let path = path.to_str().unwrap_or("messages.db");
+    let overview = match Database::open(path).and_then(|d| d.tags_overview()) {
+        Ok(v) => v,
+        Err(e) => return err(&format!("database: {}", e)),
+    };
+    let name = query_param(first_line, "name").unwrap_or_default().trim().to_string();
+    let key = omalook::db::tags::tag_key(&name);
+    let only_account = query_param(first_line, "account");
+    let row = overview.iter().find(|t| omalook::db::tags::tag_key(&t.name) == key);
+    let for_account = |id: &str| only_account.as_deref().map(|a| a == id).unwrap_or(true);
+
+    if first_line.starts_with("POST /tags/color") {
+        let Some(c) = query_param(first_line, "color").and_then(|k| omalook::models::palette_color(&k)) else { return err("color must be a palette key") };
+        let Some(row) = row else { return err("no such tag") };
+        let mut changed: Vec<String> = Vec::new();
+        for a in row.accounts.iter().filter(|a| a.defined && for_account(&a.account_id)) {
+            match Database::open_for_account(path, &a.account_id).and_then(|d| d.tag_set_color(&name, c.hex)) {
+                Ok(true) => changed.push(a.account_id.clone()),
+                Ok(false) => {}
+                Err(e) => return err(&format!("database: {}", e)),
+            }
+        }
+        if changed.is_empty() { return err("no account has this tag in its list (add it to one first)") }
+        omalook::sync_state::request_read_push();
+        serde_json::json!({ "ok": true, "accounts": changed }).to_string()
+    } else if first_line.starts_with("POST /tags/delete") {
+        let Some(row) = row else { return err("no such tag") };
+        let counts: Vec<serde_json::Value> = row.accounts.iter().filter(|a| (a.defined || a.messages > 0) && for_account(&a.account_id))
+            .map(|a| serde_json::json!({ "account": a.account_id, "messages": a.messages })).collect();
+        if query_param(first_line, "confirm").as_deref() != Some("yes") {
+            return serde_json::json!({ "ok": false, "error": "confirm=yes is required", "accounts": counts }).to_string();
+        }
+        let mut stripped = 0usize;
+        for a in row.accounts.iter().filter(|a| (a.defined || a.messages > 0) && for_account(&a.account_id)) {
+            match Database::open_for_account(path, &a.account_id).and_then(|d| d.tag_delete(&name)) {
+                Ok((n, _)) => stripped += n,
+                Err(e) => return err(&format!("database: {}", e)),
+            }
+        }
+        omalook::sync_state::request_read_push();
+        serde_json::json!({ "ok": true, "messages": stripped, "accounts": counts }).to_string()
+    } else if first_line.starts_with("POST /tags/adopt") {
+        let Some(to) = query_param(first_line, "to") else { return err("need to=<account id>") };
+        let Some(row) = row else { return err("no such tag") };
+        if name.chars().count() > 64 || name.chars().any(|ch| ch.is_control() || ch == ';' || ch == ',') { return err("not a usable tag name") }
+        let Some(target) = row.accounts.iter().find(|a| a.account_id == to) else { return err("no such account") };
+        if target.defined { return serde_json::json!({ "ok": true, "created": false }).to_string(); }
+        let hex = omalook::models::CATEGORY_PALETTE.iter().find(|c| c.hex == row.color || c.gmail_bg == row.color)
+            .map(|c| c.hex).unwrap_or_else(|| omalook::models::fallback_category_color(&name));
+        match Database::open_for_account(path, &to).and_then(|d| d.add_pending_category(&row.name, hex)) {
+            Ok(created) => { omalook::sync_state::request_read_push(); serde_json::json!({ "ok": true, "created": created }).to_string() }
+            Err(e) => err(&format!("database: {}", e)),
+        }
+    } else if first_line.starts_with("GET /tags/similar") {
+        match Database::open(path).and_then(|d| d.tags_similar(&name)) {
+            Ok(v) => serde_json::json!({ "similar": v }).to_string(),
+            Err(e) => err(&format!("database: {}", e)),
+        }
+    } else {
+        let palette: Vec<serde_json::Value> = omalook::models::CATEGORY_PALETTE.iter()
+            .map(|c| serde_json::json!({ "key": c.key, "label": c.label, "hex": c.hex })).collect();
+        serde_json::json!({ "tags": overview, "palette": palette }).to_string()
+    }
+}
+
 /// JSON body for the distribution-list endpoints (see the route comment).
 fn lists_response(config_dir: &PathBuf, first_line: &str) -> String {
     use omalook::db::lists::ListOp;
@@ -1699,7 +1768,7 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                     let body = match rusqlite::Connection::open(&db_path) {
                         Ok(conn) => {
                             let cats: Vec<serde_json::Value> = conn
-                                .prepare("SELECT name, color, pending FROM category_defs WHERE account_id = ?1 ORDER BY lower(name)")
+                                .prepare("SELECT name, color, pending FROM category_defs WHERE account_id = ?1 AND delete_pending = 0 ORDER BY lower(name)")
                                 .and_then(|mut st| {
                                     st.query_map(rusqlite::params![account], |r| Ok(serde_json::json!({
                                         "name": r.get::<_, String>(0)?, "color": r.get::<_, String>(1)?, "pending": r.get::<_, i64>(2)? != 0,
@@ -2079,6 +2148,22 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                 //   GET  /addresses                              → [{email, name, score}] seen in mail, best first
                 if first_line.starts_with("GET /lists") || first_line.starts_with("POST /lists/") || first_line.starts_with("GET /addresses") {
                     let body = if first_line.starts_with("GET /addresses") { addresses_json(config_dir) } else { lists_response(config_dir, first_line) };
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                        body.len(), body
+                    );
+                    let _ = stream.write_all(response.as_bytes());
+                    continue;
+                }
+
+                // ── Tags page (Settings → Tags; OL-040 phase 1) ──────────────────────────
+                //   GET  /tags                                → {tags:[{name,color,total,accounts:[{account_id,email,provider,defined,pending,color_pending,color,messages}]}], palette}
+                //   POST /tags/color?name=N&color=KEY[&account=A]   recolour on every account that has it (or A); pushed by the daemon
+                //   POST /tags/delete?name=N&confirm=yes[&account=A] strip from messages, then delete on the provider
+                //   POST /tags/adopt?name=N&to=A              make the tag on another account (same colour)
+                //   GET  /tags/similar?name=N                 → {similar:[names that look like N]}
+                if first_line.starts_with("GET /tags") || first_line.starts_with("POST /tags/") {
+                    let body = tags_response(config_dir, first_line);
                     let response = format!(
                         "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                         body.len(), body
