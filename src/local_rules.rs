@@ -81,6 +81,12 @@ fn has(hay: &str, needle: &str) -> bool {
 
 fn yes() -> bool { true }
 
+/// Whether mail of this provider is tagged by the local engine as it arrives. Exchange has a server rule
+/// engine that already runs on delivery, so it is left to the server; anything else (Gmail) is ours.
+pub fn has_local_engine(provider: &str) -> bool {
+    !provider.eq_ignore_ascii_case("exchange")
+}
+
 /// Same tag for the engine's purposes: letters and digits only, case-insensitive, so `Saint Lucia` and
 /// `SaintLucia` count as present for each other. The user keeps near-duplicate spellings (plan Q3) and a
 /// retroactive run must not stack a second spelling on a message that already has the first.

@@ -181,6 +181,7 @@ impl EmailDaemon {
 
                     // Message details for providers without a change feed, a slice per cycle.
                     self.backfill_meta_per_message(Duration::from_secs(60)).await;
+                    self.run_local_rules().await;
                     if self.provider.supports_delta() {
                         let still = self.db.delta_walk_incomplete().unwrap_or(0) > 0;
                         sync_state::set_meta_active(&acct, still && self.db.meta_remaining().unwrap_or(0) > 0);
@@ -768,6 +769,20 @@ impl EmailDaemon {
 
     /// Quick Inbox-only pass between full sync cycles: new mail, read flags and deletions made
     /// elsewhere show up within INBOX_POLL_SECS. Skipped until the Inbox's first walk is done.
+    /// Local tag rules (OL-040 phase 4) on mail that arrived since the last look: only for accounts with no
+    /// server rule engine, new mail only, tags added never removed. The tags go out with the normal category push.
+    async fn run_local_rules(&self) {
+        match self.db.apply_local_rules_to_new() {
+            Ok(0) => {}
+            Ok(n) => {
+                info!("Local rules tagged {} new messages for {}", n, self.db.account_id());
+                self.push_pending_categories().await;
+                sync_state::bump_mail(&format!("local rules tagged {} new messages", n));
+            }
+            Err(e) => warn!("Local rules failed for {}: {}", self.db.account_id(), e),
+        }
+    }
+
     async fn poll_inbox(&self) {
         let folders = match self.db.get_folders() { Ok(f) => f, Err(_) => return };
         let Some(inbox) = folders.iter().find(|f| f.well_known_name.as_deref() == Some("inbox")
@@ -786,6 +801,7 @@ impl EmailDaemon {
                 }
                 Err(e) => warn!("Inbox quick poll failed: {}", e),
             }
+            self.run_local_rules().await;
         }
     }
 

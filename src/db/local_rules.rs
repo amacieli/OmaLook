@@ -40,6 +40,12 @@ impl Database {
                 applied INTEGER NOT NULL DEFAULT 0,
                 last_applied_at INTEGER NOT NULL DEFAULT 0
             )", [])?;
+        self.conn.execute(
+            "CREATE TABLE IF NOT EXISTS local_rules_state (
+                account_id TEXT PRIMARY KEY,
+                since TEXT NOT NULL
+            )", [])?;
+        self.conn.execute("CREATE TABLE IF NOT EXISTS local_rule_seen (message_id TEXT PRIMARY KEY)", [])?;
         Ok(())
     }
 
@@ -68,21 +74,23 @@ impl Database {
         Ok(out)
     }
 
-    /// Every cached Inbox message `rules` would add tags to: `(message id, [(rule id, tag)])`, plus how many
-    /// messages were looked at. Read-only. Messages with a pending move or delete are skipped, as are rows
-    /// whose details were never fetched (`meta_ok = 0`): matching on missing recipients or categories would
-    /// be guessing. Rules are for incoming mail, so only the Inbox is considered.
-    pub fn plan_local_rules(&self, rules: &[LocalRule]) -> Result<(usize, Vec<(String, Vec<(String, String)>)>)> {
-        let mut scanned = 0;
-        let mut plan = Vec::new();
-        let mut st = self.conn.prepare(
+    /// Evaluate `rules` over cached Inbox messages (`extra_where` narrows further, with `args` bound to its
+    /// `?` marks). Returns the ids looked at and, for those that would gain tags, `(id, [(rule id, tag)])`.
+    /// Read-only. Messages with a pending move or delete are skipped, as are rows whose details were never
+    /// fetched (`meta_ok = 0`): matching on missing recipients or categories would be guessing. Rules are for
+    /// incoming mail, so only the Inbox is considered.
+    fn scan_inbox(&self, rules: &[LocalRule], extra_where: &str, args: &[&dyn rusqlite::ToSql])
+        -> Result<(Vec<String>, Vec<(String, Vec<(String, String)>)>)> {
+        let (mut looked, mut plan) = (Vec::new(), Vec::new());
+        let sql = format!(
             "SELECT m.id, m.account_id, m.from_email, COALESCE(m.from_name,''), COALESCE(m.to_text,''),
                     COALESCE(m.cc_text,''), m.subject, m.body, COALESCE(m.importance,''),
                     COALESCE(m.has_attachments,0), m.categories
              FROM messages m JOIN folders f ON f.id = m.folder_id
              WHERE lower(COALESCE(f.well_known_name,'')) = 'inbox'
-               AND m.action_pending IS NULL AND m.meta_ok = 1")?;
-        let rows = st.query_map([], |r| {
+               AND m.action_pending IS NULL AND m.meta_ok = 1 {extra_where}");
+        let mut st = self.conn.prepare(&sql)?;
+        let rows = st.query_map(args, |r| {
             Ok((r.get::<_, String>(0)?, Msg {
                 account_id: r.get(1)?, from_email: r.get(2)?, from_name: r.get(3)?, to_text: r.get(4)?,
                 cc_text: r.get(5)?, subject: r.get(6)?, body: r.get(7)?, importance: r.get(8)?,
@@ -92,11 +100,17 @@ impl Database {
         })?;
         for row in rows {
             let (id, m) = row?;
-            scanned += 1;
             let add = additions(rules, &m);
+            looked.push(id.clone());
             if !add.is_empty() { plan.push((id, add)); }
         }
-        Ok((scanned, plan))
+        Ok((looked, plan))
+    }
+
+    /// Every cached Inbox message (all accounts) `rules` would add tags to, plus how many were looked at.
+    pub fn plan_local_rules(&self, rules: &[LocalRule]) -> Result<(usize, Vec<(String, Vec<(String, String)>)>)> {
+        let (looked, plan) = self.scan_inbox(rules, "", &[])?;
+        Ok((looked.len(), plan))
     }
 
     /// Counts for the preview: what `plan_local_rules` would do. Read-only.
@@ -118,21 +132,13 @@ impl Database {
         Ok(out)
     }
 
-    /// Apply the plan for real: add each tag through `change_message_categories` (local edit, `cat_pending`
-    /// = 1, pushed to the provider by the normal category push), and count it per rule.
-    ///
-    /// The plan is recomputed here, not taken from an earlier preview, so it reflects the cache now. If more
-    /// than `max_messages` would change and `confirmed` is false nothing is written and `Refused` is returned
-    /// with the count (plan section 5: show the count, refuse over the threshold without an explicit confirm).
-    pub fn apply_local_rules(&self, rules: &[LocalRule], max_messages: usize, confirmed: bool) -> Result<ApplyOutcome> {
-        let (_, plan) = self.plan_local_rules(rules)?;
-        if plan.len() > max_messages && !confirmed {
-            return Ok(ApplyOutcome::Refused { would_change: plan.len(), limit: max_messages });
-        }
+    /// Write a plan: add each tag through `change_message_categories` (local edit, `cat_pending` = 1, pushed to
+    /// the provider by the normal category push) and count it per rule in `local_rule_stats`.
+    fn apply_plan(&self, plan: &[(String, Vec<(String, String)>)]) -> Result<(usize, BTreeMap<String, usize>)> {
         let now = Self::now_secs();
         let mut messages = 0;
         let mut per_rule: BTreeMap<String, usize> = BTreeMap::new();
-        for (id, add) in &plan {
+        for (id, add) in plan {
             let mut touched = false;
             let mut rules_seen: Vec<&str> = Vec::new();
             for (rid, tag) in add {
@@ -152,14 +158,67 @@ impl Database {
                  ON CONFLICT(rule_id) DO UPDATE SET applied = applied + ?2, last_applied_at = ?3",
                 params![rid, *n as i64, now])?;
         }
+        Ok((messages, per_rule))
+    }
+
+    /// Retroactive apply. The plan is recomputed here, not taken from an earlier preview, so it reflects the
+    /// cache now. If more than `max_messages` would change and `confirmed` is false nothing is written and
+    /// `Refused` is returned with the count (plan section 5: show the count, refuse over the threshold
+    /// without an explicit confirm).
+    pub fn apply_local_rules(&self, rules: &[LocalRule], max_messages: usize, confirmed: bool) -> Result<ApplyOutcome> {
+        let (_, plan) = self.plan_local_rules(rules)?;
+        if plan.len() > max_messages && !confirmed {
+            return Ok(ApplyOutcome::Refused { would_change: plan.len(), limit: max_messages });
+        }
+        let (messages, per_rule) = self.apply_plan(&plan)?;
         Ok(ApplyOutcome::Applied { messages, per_rule })
     }
 
-    /// Messages each rule has tagged so far (retroactive runs), by rule id.
+    /// Messages each rule has tagged so far (retroactive runs and arrivals), by rule id.
     pub fn local_rule_stats(&self) -> Result<BTreeMap<String, i64>> {
         let mut st = self.conn.prepare("SELECT rule_id, applied FROM local_rule_stats")?;
         let rows = st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?;
         Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
+    /// Run the local rules on mail that ARRIVED since this account's rules were first evaluated (called by the
+    /// mail daemon after each sync). Returns how many messages gained a tag.
+    ///
+    /// - Only accounts whose provider has no server rule engine: Exchange rules already run on delivery, so
+    ///   evaluating them again here would double up (plan section 2, engine per account).
+    /// - New mail only: the first call records "now" and later calls look at Inbox messages received since
+    ///   a day before that mark (clock skew) that were not evaluated before. With no enabled rule for the
+    ///   account the mark simply moves to now, so a rule written later never reaches back (retroactive apply
+    ///   is the explicit, confirmed way to do that).
+    /// - Each message is evaluated once (`local_rule_seen`), after its details are in (`meta_ok`), so a later
+    ///   edit of a rule does not re-tag old mail behind the user's back.
+    /// - It only adds tags; it never removes or changes one a person set.
+    pub fn apply_local_rules_to_new(&self) -> Result<usize> {
+        let acct = self.account_id().to_string();
+        if !crate::local_rules::has_local_engine(crate::accounts::provider_of(&acct)) { return Ok(0); }
+        let now = chrono::Utc::now();
+        let iso = |t: chrono::DateTime<chrono::Utc>| t.format("%Y-%m-%dT%H:%M:%SZ").to_string();
+        let since: Option<String> = self.conn.query_row(
+            "SELECT since FROM local_rules_state WHERE account_id = ?1", params![acct], |r| r.get(0)).ok();
+        let rules: Vec<LocalRule> = self.local_rules()?.into_iter().filter(|r| r.enabled && r.applies(&acct)).collect();
+        let set_mark = |t: String| -> Result<()> {
+            self.conn.execute(
+                "INSERT INTO local_rules_state (account_id, since) VALUES (?1, ?2)
+                 ON CONFLICT(account_id) DO UPDATE SET since = ?2", params![acct, t])?;
+            Ok(())
+        };
+        let Some(since) = since else { set_mark(iso(now))?; return Ok(0) };
+        if rules.is_empty() { set_mark(iso(now))?; return Ok(0); }
+        let floor = chrono::DateTime::parse_from_rfc3339(&since).map(|t| iso(t.with_timezone(&chrono::Utc) - chrono::Duration::days(1)))
+            .unwrap_or(since);
+        let (looked, plan) = self.scan_inbox(&rules,
+            "AND m.account_id = ?1 AND m.received_at >= ?2 AND m.id NOT IN (SELECT message_id FROM local_rule_seen)",
+            &[&acct, &floor])?;
+        let (messages, _) = self.apply_plan(&plan)?;
+        for id in &looked {
+            self.conn.execute("INSERT OR IGNORE INTO local_rule_seen (message_id) VALUES (?1)", params![id])?;
+        }
+        Ok(messages)
     }
 }
 
@@ -183,13 +242,73 @@ mod tests {
             actions: Actions { tags: vec![tag.into()], stop } }
     }
 
-    fn db() -> Database {
-        let d = Database::open_for_account(":memory:", "ex").unwrap();
-        d.conn.execute("INSERT INTO accounts (id, provider, email) VALUES ('ex','exchange','me@x.org')", []).unwrap();
-        d.conn.execute("INSERT INTO folders (id, display_name, well_known_name, account_id) VALUES ('inb','Inbox','inbox','ex')", []).ok();
-        d.conn.execute("INSERT INTO folders (id, display_name, well_known_name, account_id) VALUES ('oth','Other',NULL,'ex')", []).ok();
+    fn db() -> Database { db_for("ex") }
+
+    fn db_for(acct: &str) -> Database {
+        let d = Database::open_for_account(":memory:", acct).unwrap();
+        d.conn.execute("INSERT INTO accounts (id, provider, email) VALUES (?1,'x','me@x.org')", params![acct]).unwrap();
+        d.conn.execute("INSERT INTO folders (id, display_name, well_known_name, account_id) VALUES ('inb','Inbox','inbox',?1)", params![acct]).ok();
+        d.conn.execute("INSERT INTO folders (id, display_name, well_known_name, account_id) VALUES ('oth','Other',NULL,?1)", params![acct]).ok();
         d
     }
+
+    fn put_at(d: &Database, id: &str, from: &str, received: &str, meta: bool) {
+        d.insert_email(&EmailMessage { id: id.into(), from: from.into(), subject: "s".into(), received: received.into(),
+            body: "b".into(), folder_id: Some("inb".into()), is_read: true, meta,
+            categories: Some(vec![]), ..Default::default() }).unwrap();
+    }
+
+    fn cats(d: &Database, id: &str) -> Vec<String> {
+        categories_from_json(d.conn.query_row("SELECT categories FROM messages WHERE id = ?1", params![id], |r| r.get::<_, Option<String>>(0)).unwrap().as_deref())
+    }
+
+    fn iso_ago(days: i64) -> String { (chrono::Utc::now() - chrono::Duration::days(days)).format("%Y-%m-%dT%H:%M:%SZ").to_string() }
+
+    #[test]
+    fn arrivals_are_tagged_once_only_after_the_mark_and_only_when_details_are_in() {
+        let d = db_for("gmail-t");
+        d.save_local_rule(&rule("r1", 1, "bob@", "Work", false)).unwrap();
+        put_at(&d, "old", "bob@x.com", &iso_ago(10), true);
+        assert_eq!(d.apply_local_rules_to_new().unwrap(), 0, "first call only sets the mark");
+        assert!(cats(&d, "old").is_empty());
+        put_at(&d, "old2", "bob@x.com", &iso_ago(10), true);   // crawled later but received long ago
+        put_at(&d, "new", "bob@x.com", &iso_ago(0), true);
+        put_at(&d, "nometa", "bob@x.com", &iso_ago(0), false);
+        put_at(&d, "other", "amy@x.com", &iso_ago(0), true);
+        assert_eq!(d.apply_local_rules_to_new().unwrap(), 1);
+        assert_eq!(cats(&d, "new"), vec!["Work"]);
+        assert!(cats(&d, "old").is_empty() && cats(&d, "old2").is_empty() && cats(&d, "other").is_empty() && cats(&d, "nometa").is_empty());
+        assert_eq!(d.apply_local_rules_to_new().unwrap(), 0, "evaluated messages are not looked at again");
+        d.conn.execute("UPDATE messages SET meta_ok = 1 WHERE id = 'nometa'", []).unwrap();
+        assert_eq!(d.apply_local_rules_to_new().unwrap(), 1, "tagged once its details arrive");
+        assert_eq!(cats(&d, "nometa"), vec!["Work"]);
+        assert_eq!(d.local_rule_stats().unwrap().get("r1"), Some(&2));
+        // a rule edited later does not re-tag what was already evaluated
+        d.save_local_rule(&rule("r2", 2, "amy@", "Friends", false)).unwrap();
+        assert_eq!(d.apply_local_rules_to_new().unwrap(), 0);
+        assert!(cats(&d, "other").is_empty());
+    }
+
+    #[test]
+    fn a_rule_written_later_never_reaches_back_and_exchange_is_left_to_the_server() {
+        let d = db_for("gmail-t");
+        assert_eq!(d.apply_local_rules_to_new().unwrap(), 0, "mark set, no rules yet");
+        put_at(&d, "m0", "bob@x.com", &iso_ago(3), true);   // received before the rule exists, outside the skew window
+        assert_eq!(d.apply_local_rules_to_new().unwrap(), 0, "no rules: the mark moves to now");
+        d.save_local_rule(&rule("r1", 1, "bob@", "Work", false)).unwrap();
+        d.apply_local_rules_to_new().unwrap();
+        assert!(cats(&d, "m0").is_empty(), "a rule written later does not reach back");
+
+        let ex = db_for("exchange-primary");
+        ex.save_local_rule(&rule("r1", 1, "bob@", "Work", false)).unwrap();
+        assert_eq!(ex.apply_local_rules_to_new().unwrap(), 0);
+        put_at(&ex, "e1", "bob@x.com", &iso_ago(0), true);
+        assert_eq!(ex.apply_local_rules_to_new().unwrap(), 0);
+        assert!(cats(&ex, "e1").is_empty(), "Exchange arrivals are tagged by the server rules, not here");
+        let marks: i64 = ex.conn.query_row("SELECT COUNT(*) FROM local_rules_state", [], |r| r.get(0)).unwrap();
+        assert_eq!(marks, 0);
+    }
+
 
     fn put(d: &Database, id: &str, from: &str, folder: &str, cats: &[&str], meta: bool) {
         d.insert_email(&EmailMessage { id: id.into(), from: from.into(), subject: "s".into(), received: "2026-11-01T12:00:00Z".into(),
