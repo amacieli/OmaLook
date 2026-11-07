@@ -59,8 +59,8 @@ SettingsPage {
     for (var acct in runStates) {
       var r = runStates[acct]
       if (!r.running || r.phase !== "sending") continue
-      if (pendingFor(acct) === 0) setRun(acct, { running: false, id: "", notice: "Finished: " + r.tagged + " message" + (r.tagged === 1 ? "" : "s") + " tagged and sent to the server." })
-      else if (now - r.started > 120000) setRun(acct, { running: false, id: "", notice: "Tagged " + r.tagged + ". " + pendingFor(acct) + " are still going to the server in the background." })
+      if (pendingFor(acct) === 0) setRun(acct, { running: false, notice: "Finished: " + r.tagged + " message" + (r.tagged === 1 ? "" : "s") + " tagged and sent to the server." })
+      else if (now - r.started > 120000) setRun(acct, { running: false, notice: "Tagged " + r.tagged + ". " + pendingFor(acct) + " are still going to the server in the background." })
     }
   }
   function anyRunning() { for (var a in runStates) if (runStates[a].running) return true; return false }
@@ -194,9 +194,9 @@ SettingsPage {
         page.setRun(account, { running: true, id: target, phase: "tagging", tagged: 0, started: Date.now(), notice: "" })
         page.app.ruleRun(account, target === "*" ? "" : target, over, function(r) {
           var o = r.outcome
-          if (!r.ok) page.setRun(account, { running: false, id: "", notice: "Could not run: " + (r.error || "no answer") })
-          else if (o && o.result === "refused") page.setRun(account, { running: false, id: "", notice: "Not run: it would tag " + o.would_change + " messages, over the limit of " + o.limit + "." })
-          else if (!o || o.messages === 0) page.setRun(account, { running: false, id: "", notice: "Nothing to tag: every matching message already has its tag." })
+          if (!r.ok) page.setRun(account, { running: false, notice: "Could not run: " + (r.error || "no answer") })
+          else if (o && o.result === "refused") page.setRun(account, { running: false, notice: "Not run: it would tag " + o.would_change + " messages, over the limit of " + o.limit + "." })
+          else if (!o || o.messages === 0) page.setRun(account, { running: false, notice: "Nothing to tag: every matching message already has its tag." })
           else { page.setRun(account, { phase: "sending", tagged: o.messages, started: Date.now() }); page.app.loadRules(function() { page.checkRuns() }) }
         })
       }
@@ -212,41 +212,7 @@ SettingsPage {
           onClicked: acct.startRun("*")
         }
       }
-      Column {
-        visible: acct.runTarget !== ""
-        width: parent.width
-        spacing: Style.space(4)
-        UiText {
-          width: parent.width
-          wrapMode: Text.WordWrap
-          font.pixelSize: Style.font.caption
-          foreground: acct.runPreview && (acct.runPreview.ok !== true || acct.runPreview.preview.messages > acct.runPreview.limit) ? Commons.Color.urgent : Commons.Color.foreground
-          text: !acct.runPreview ? "Counting\u2026"
-              : acct.runPreview.ok !== true ? acct.runPreview.error
-              : (acct.runTarget === "*" ? "Running " + acct.runPreview.rules + " enabled tag rules, in order. " : "Running this rule. ")
-                + "Inbox mail they match: " + acct.runPreview.preview.matched + ". They would tag " + acct.runPreview.preview.messages + " message" + (acct.runPreview.preview.messages === 1 ? "" : "s")
-                + " that lack the tag" + (acct.runPreview.preview.messages > 0 ? " (" + Object.keys(acct.runPreview.preview.by_tag).map(function(t) { return t + " " + acct.runPreview.preview.by_tag[t] }).join(", ") + ")" : "")
-                + (acct.runPreview.preview.messages > acct.runPreview.limit ? ". That is more than your limit of " + acct.runPreview.limit + ", so it needs your explicit go-ahead." : ".")
-                + (acct.runTarget === "*" && acct.runPreview.left_out.length > 0 ? " Left out (not plain tag rules): " + acct.runPreview.left_out.join(", ") + "." : "")
-        }
-        RowLayout {
-          width: parent.width
-          Item { Layout.fillWidth: true }
-          Button { Layout.preferredWidth: Style.space(96); bordered: true; text: "Cancel"; onClicked: { acct.runTarget = ""; acct.runPreview = null } }
-          Button {
-            Layout.preferredWidth: Style.space(180); bordered: true
-            enabled: !!acct.runPreview && acct.runPreview.ok === true && acct.runPreview.preview.messages > 0
-            text: acct.runPreview && acct.runPreview.ok === true && acct.runPreview.preview.messages > acct.runPreview.limit ? "Run anyway" : "Run now"
-            onClicked: acct.confirmRun()
-          }
-        }
-      }
-      UiText {
-        visible: page.runText(acct.modelData.account_id) !== ""
-        width: parent.width; wrapMode: Text.WordWrap; font.pixelSize: Style.font.caption
-        foreground: page.runText(acct.modelData.account_id).indexOf("Could not") === 0 || page.runText(acct.modelData.account_id).indexOf("Not run") === 0 ? Commons.Color.urgent : Commons.Color.foreground
-        text: page.runText(acct.modelData.account_id)
-      }
+      RunConfirm { owner: acct; page: page; target: "*"; width: parent.width }
 
       // add a rule: a sender address or a whole domain -> a tag; checked first, then created last in the list
       Column {
@@ -359,11 +325,16 @@ SettingsPage {
           }
           Repeater {
             model: grp.modelData.rules
-            delegate: RowLayout {
-              id: rrow
+            delegate: Column {
+              id: rwrap
               required property var modelData
               x: Style.space(24)
               width: parent.width - Style.space(24)
+              spacing: Style.space(4)
+              RowLayout {
+              id: rrow
+              readonly property var modelData: rwrap.modelData
+              width: parent.width
               spacing: Style.spacing.md
               UiText {
                 Layout.fillWidth: true
@@ -418,6 +389,8 @@ SettingsPage {
                   page.app.ruleDelete(acct.modelData.account_id, rrow.modelData.id)
                 }
               }
+              }
+              RunConfirm { owner: acct; page: page; target: rwrap.modelData.id; width: parent.width }
             }
           }
         }
