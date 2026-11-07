@@ -177,6 +177,36 @@ impl Database {
         Ok(ApplyOutcome::Applied { messages, per_rule })
     }
 
+    /// The account's cached Exchange rules as local rules, for a manual "run now": the enabled tag rules that
+    /// `from_graph` reads without loss, scoped to this account. `only` picks one rule by id (it must be a
+    /// usable, enabled tag rule); otherwise all of them, in server order, so `stop` works as it does there.
+    /// Returns the rules and the names of enabled rules left out (forward, delete, importance, anything the
+    /// engine cannot reproduce exactly, and Outlook's empty read-only ones).
+    pub fn exchange_rules_to_run(&self, account_id: &str, only: Option<&str>) -> std::result::Result<(Vec<LocalRule>, Vec<String>), String> {
+        let raw = self.rules_raw(account_id).map_err(|e| e.to_string())?;
+        let (mut rules, mut left_out) = (Vec::new(), Vec::new());
+        let mut found = false;
+        for r in &raw {
+            let id = r["id"].as_str().unwrap_or("");
+            let name = r["displayName"].as_str().unwrap_or(id).to_string();
+            if only.is_some_and(|o| o != id) { continue; }
+            found = true;
+            match crate::local_rules::from_graph(r) {
+                Ok(mut rule) if rule.validate().is_ok() => {
+                    if !rule.enabled { if only.is_some() { return Err("that rule is switched off".into()); } continue; }
+                    rule.applies_to = vec![account_id.to_string()];
+                    rules.push(rule);
+                }
+                _ => {
+                    if only.is_some() { return Err("that rule does more than tag mail (or uses something this cannot reproduce exactly), so it cannot be run here".into()); }
+                    if r["isEnabled"].as_bool().unwrap_or(true) && !r["conditions"].as_object().map(|o| o.is_empty()).unwrap_or(true) { left_out.push(name); }
+                }
+            }
+        }
+        if only.is_some() && !found { return Err("no such rule".into()); }
+        Ok((rules, left_out))
+    }
+
     /// Swap this rule's place with its neighbour (`up` = runs earlier). False when it cannot move.
     pub fn move_local_rule(&self, id: &str, up: bool) -> Result<bool> {
         let rules = self.local_rules()?;
@@ -371,6 +401,30 @@ mod tests {
     }
 
     #[test]
+    fn exchange_rules_run_manually_only_tag_rules_scoped_to_the_account() {
+        let d = db_for("exchange-primary");
+        let rules = vec![
+            serde_json::json!({"id":"t1","displayName":"For mail from Bob","sequence":1,"isEnabled":true,"conditions":{"senderContains":["bob@"]},"actions":{"assignCategories":["Work"],"stopProcessingRules":true}}),
+            serde_json::json!({"id":"off","displayName":"off one","sequence":2,"isEnabled":false,"conditions":{"senderContains":["amy@"]},"actions":{"assignCategories":["Friends"]}}),
+            serde_json::json!({"id":"fwd","displayName":"forwarder","sequence":3,"isEnabled":true,"conditions":{"senderContains":["x@"]},"actions":{"forwardTo":[{"emailAddress":{"address":"e@y.z"}}]}}),
+            serde_json::json!({"id":"cp1","displayName":"CP1","sequence":4,"isEnabled":true,"conditions":{},"actions":{}}),
+        ];
+        d.replace_rules(&rules).unwrap();
+        let (all, left) = d.exchange_rules_to_run("exchange-primary", None).unwrap();
+        assert_eq!(all.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), vec!["t1"]);
+        assert_eq!(all[0].applies_to, vec!["exchange-primary"]);
+        assert_eq!(left, vec!["forwarder"], "enabled rules that are not plain tag rules are reported, empty system rules are not");
+        assert_eq!(d.exchange_rules_to_run("exchange-primary", Some("t1")).unwrap().0.len(), 1);
+        assert!(d.exchange_rules_to_run("exchange-primary", Some("off")).unwrap_err().contains("switched off"));
+        assert!(d.exchange_rules_to_run("exchange-primary", Some("fwd")).unwrap_err().contains("more than tag"));
+        assert!(d.exchange_rules_to_run("exchange-primary", Some("nope")).unwrap_err().contains("no such"));
+        // and it runs: Inbox mail of that account only
+        put(&d, "m1", "bob@x.com", "inb", &[], true);
+        let ApplyOutcome::Applied { messages, .. } = d.apply_local_rules(&all, 1000, false).unwrap() else { panic!() };
+        assert_eq!(messages, 1);
+    }
+
+    #[test]
     fn move_swaps_neighbours_even_when_sequences_collide_and_stops_at_the_ends() {
         let d = db();
         for id in ["a", "b", "c"] { d.save_local_rule(&rule(id, 5, &format!("{id}@"), "T", false)).unwrap(); } // equal sequences
@@ -465,5 +519,16 @@ mod real_cache {
         println!("by folder (matches, would gain): {by_folder:?}");
         let dr = d.dry_run(&rules).unwrap();
         println!("dry_run (Inbox, details fetched, rules in order with stop): scanned {} messages {} additions {} by_rule {:?}", dr.scanned, dr.messages, dr.additions, dr.by_rule);
+    }
+
+    #[test]
+    #[ignore]
+    fn run_all_exchange_tag_rules_against_the_cache() {
+        let path = std::env::var("OMALOOK_DRYRUN_DB").expect("set OMALOOK_DRYRUN_DB to a copy of messages.db");
+        let d = Database::open_for_account(&path, "exchange-primary").unwrap();
+        let (rules, left_out) = d.exchange_rules_to_run("exchange-primary", None).unwrap();
+        let dr = d.dry_run(&rules).unwrap();
+        println!("run all: {} rules, left out {:?}; scanned {} matched {} would tag {} messages ({} additions); by tag {:?}",
+            rules.len(), left_out, dr.scanned, dr.matched, dr.messages, dr.additions, dr.by_tag);
     }
 }

@@ -1246,7 +1246,7 @@ fn rules_response(config_dir: &PathBuf, first_line: &str) -> String {
     use omalook::rules::{Match, NewRule};
     let err = |m: &str| serde_json::json!({ "ok": false, "error": m }).to_string();
     let path = config_dir.join("messages.db");
-    if first_line.starts_with("POST /rules/") || first_line.starts_with("GET /rules/preview") {
+    if first_line.starts_with("POST /rules/") || first_line.starts_with("GET /rules/preview") || first_line.starts_with("GET /rules/run-preview") {
         let Some(account) = query_param(first_line, "account").filter(|a| !a.is_empty()) else { return err("need account=<id>") };
         let db = match Database::open_for_account(path.to_str().unwrap_or("messages.db"), &account) {
             Ok(d) => d,
@@ -1270,6 +1270,29 @@ fn rules_response(config_dir: &PathBuf, first_line: &str) -> String {
             Ok(op) => { omalook::sync_state::request_read_push(); serde_json::json!({ "ok": true, "op": op }).to_string() }
             Err(m) => err(&m),
         };
+        // Manual "run now" of the account's Exchange tag rules over cached Inbox mail (all of them, or `id`).
+        // Count first (run-preview); `run` writes nothing over the limit until confirm=yes. Tags only, added never removed.
+        if first_line.starts_with("GET /rules/run-preview") || first_line.starts_with("POST /rules/run") {
+            let only = if id.is_empty() { None } else { Some(id.as_str()) };
+            let (rules, left_out) = match db.exchange_rules_to_run(&account, only) { Ok(x) => x, Err(m) => return err(&m) };
+            if rules.is_empty() { return err("no enabled tag rules to run on this account") }
+            let limit = omalook::settings::read_rules_confirm_over(&config_dir.join("settings.toml"));
+            return if first_line.starts_with("GET /rules/run-preview") {
+                match db.dry_run(&rules) {
+                    Ok(p) => serde_json::json!({ "ok": true, "preview": p, "rules": rules.len(), "left_out": left_out, "limit": limit }).to_string(),
+                    Err(e) => err(&e.to_string()),
+                }
+            } else {
+                let confirmed = query_param(first_line, "confirm").as_deref() == Some("yes");
+                match db.apply_local_rules(&rules, limit, confirmed) {
+                    Ok(out) => {
+                        if matches!(out, omalook::db::local_rules::ApplyOutcome::Applied { messages, .. } if messages > 0) { omalook::sync_state::request_read_push(); }
+                        serde_json::json!({ "ok": true, "outcome": out, "rules": rules.len(), "left_out": left_out, "limit": limit }).to_string()
+                    }
+                    Err(e) => err(&e.to_string()),
+                }
+            };
+        }
         return if first_line.starts_with("GET /rules/preview") {
             match new_rule().and_then(|n| db.rule_preview(&n)) {
                 Ok(p) => serde_json::json!({ "ok": true, "preview": p }).to_string(),
@@ -2359,6 +2382,9 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                 //   POST /rules/enable?account=A&id=R&on=true|false
                 //   POST /rules/delete?account=A&id=R&confirm=yes
                 //   POST /rules/move?account=A&id=R&dir=up|down       swap with the neighbour in the list
+                //   GET  /rules/run-preview?account=A[&id=R]  → {ok, preview:{scanned,matched,messages,additions,by_tag,..}, rules, left_out:[names], limit}
+                //   POST /rules/run?account=A[&id=R][&confirm=yes]  run the enabled Exchange tag rules (or one) over cached Inbox mail now; tags added
+                //                                              locally and pushed; over `limit` messages writes nothing until confirm=yes; never touches the server's rules
                 //   The write routes only queue ({ok, op}); the mail daemon does the checked write and the result shows in GET /rules `ops`
                 //   ({id,kind,state:pending|done|failed|conflict|exists,message}). Plain tag rules only.
                 if first_line.starts_with("GET /rules") || first_line.starts_with("POST /rules/") {

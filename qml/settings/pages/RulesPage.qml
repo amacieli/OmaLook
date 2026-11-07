@@ -141,6 +141,64 @@ SettingsPage {
         text: page.app ? page.app.ruleNotice : ""
       }
 
+      // run the tag rules now over mail already in the Inbox: count first, then an explicit go-ahead
+      property string runTarget: ""        // "" none, "*" every enabled tag rule, else one rule id
+      property var runPreview: null
+      property string runNotice: ""
+      function startRun(target) {
+        runTarget = target; runPreview = null; runNotice = ""
+        page.app.ruleRunPreview(modelData.account_id, target === "*" ? "" : target, function(r) { acct.runPreview = r })
+      }
+      function confirmRun() {
+        var p = runPreview && runPreview.preview ? runPreview : null
+        var over = p && p.preview.messages > p.limit
+        var target = runTarget
+        runTarget = ""; runPreview = null
+        page.app.ruleRun(modelData.account_id, target === "*" ? "" : target, over, function(r) {
+          var o = r.outcome
+          if (!r.ok) acct.runNotice = "Could not run: " + (r.error || "no answer")
+          else if (o && o.result === "refused") acct.runNotice = "Not run: it would tag " + o.would_change + " messages, over the limit of " + o.limit + "."
+          else acct.runNotice = "Tagged " + (o ? o.messages : 0) + " existing messages. The tags go to the server in the background."
+        })
+      }
+      RowLayout {
+        visible: acct.modelData.can_write
+        width: parent.width
+        UiText { Layout.fillWidth: true; dim: true; font.pixelSize: Style.font.caption; text: "Tag mail that is already in the Inbox and missed a rule (the server only runs rules on arriving mail)." }
+        Button { Layout.preferredWidth: Style.space(200); bordered: true; iconText: "\uf04b"; text: "Run all tag rules"; onClicked: acct.startRun("*") }
+      }
+      Column {
+        visible: acct.runTarget !== ""
+        width: parent.width
+        spacing: Style.space(4)
+        UiText {
+          width: parent.width
+          wrapMode: Text.WordWrap
+          font.pixelSize: Style.font.caption
+          foreground: acct.runPreview && (acct.runPreview.ok !== true || acct.runPreview.preview.messages > acct.runPreview.limit) ? Commons.Color.urgent : Commons.Color.foreground
+          text: !acct.runPreview ? "Counting\u2026"
+              : acct.runPreview.ok !== true ? acct.runPreview.error
+              : (acct.runTarget === "*" ? "Running " + acct.runPreview.rules + " enabled tag rules, in order. " : "Running this rule. ")
+                + "Inbox mail they match: " + acct.runPreview.preview.matched + ". They would tag " + acct.runPreview.preview.messages + " message" + (acct.runPreview.preview.messages === 1 ? "" : "s")
+                + " that lack the tag" + (acct.runPreview.preview.messages > 0 ? " (" + Object.keys(acct.runPreview.preview.by_tag).map(function(t) { return t + " " + acct.runPreview.preview.by_tag[t] }).join(", ") + ")" : "")
+                + (acct.runPreview.preview.messages > acct.runPreview.limit ? ". That is more than your limit of " + acct.runPreview.limit + ", so it needs your explicit go-ahead." : ".")
+                + (acct.runTarget === "*" && acct.runPreview.left_out.length > 0 ? " Left out (not plain tag rules): " + acct.runPreview.left_out.join(", ") + "." : "")
+        }
+        RowLayout {
+          width: parent.width
+          Item { Layout.fillWidth: true }
+          Button { Layout.preferredWidth: Style.space(96); bordered: true; text: "Cancel"; onClicked: { acct.runTarget = ""; acct.runPreview = null } }
+          Button {
+            Layout.preferredWidth: Style.space(180); bordered: true
+            enabled: !!acct.runPreview && acct.runPreview.ok === true && acct.runPreview.preview.messages > 0
+            text: acct.runPreview && acct.runPreview.ok === true && acct.runPreview.preview.messages > acct.runPreview.limit ? "Run anyway" : "Run now"
+            onClicked: acct.confirmRun()
+          }
+        }
+      }
+      UiText { visible: acct.runNotice !== ""; width: parent.width; wrapMode: Text.WordWrap; font.pixelSize: Style.font.caption
+               foreground: acct.runNotice.indexOf("Tagged") === 0 ? Commons.Color.foreground : Commons.Color.urgent; text: acct.runNotice }
+
       // add a rule: a sender address or a whole domain -> a tag; checked first, then created last in the list
       Column {
         visible: acct.modelData.can_write
@@ -265,6 +323,13 @@ SettingsPage {
                 font.pixelSize: Style.font.caption
                 text: (page.position(acct.modelData, rrow.modelData.id) > 0 ? "#" + page.position(acct.modelData, rrow.modelData.id) + "  " : "")
                       + (rrow.modelData.enabled ? "" : "(off)  ") + page.line(rrow.modelData) + (rrow.modelData.stops ? "" : "   (keeps going)")
+              }
+              Button {
+                visible: acct.modelData.can_write && rrow.modelData.enabled
+                Layout.preferredWidth: Style.space(32)
+                bordered: true
+                iconText: "\uf04b"
+                onClicked: acct.startRun(rrow.modelData.id)
               }
               Button {
                 visible: acct.modelData.can_write

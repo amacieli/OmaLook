@@ -1068,6 +1068,23 @@ Item {
   function ruleDelete(account, id, done) {
     _ruleCall("POST", "/rules/delete?account=" + encodeURIComponent(account) + "&id=" + encodeURIComponent(id) + "&confirm=yes", "Rule deleted.", done)
   }
+  // Manual "run now" of Exchange tag rules over mail already in the Inbox (id "" = all enabled tag rules).
+  // Count first; the run itself refuses over the limit unless confirm is true.
+  function _runQuery(account, id) { return "account=" + encodeURIComponent(account) + (id ? "&id=" + encodeURIComponent(id) : "") }
+  function ruleRunPreview(account, id, done) {
+    request("GET", "/rules/run-preview?" + _runQuery(account, id), function(xhr) {
+      var r = null
+      try { r = JSON.parse(xhr.responseText) } catch (e) { r = null }
+      done(xhr.status === 200 && r ? r : { ok: false, error: "the backend did not answer" })
+    })
+  }
+  function ruleRun(account, id, confirm, done) {
+    request("POST", "/rules/run?" + _runQuery(account, id) + (confirm ? "&confirm=yes" : ""), function(xhr) {
+      var r = null
+      try { r = JSON.parse(xhr.responseText) } catch (e) { r = null }
+      done(xhr.status === 200 && r ? r : { ok: false, error: "the backend did not answer" })
+    })
+  }
   function ruleMove(account, id, up, done) {
     _ruleCall("POST", "/rules/move?account=" + encodeURIComponent(account) + "&id=" + encodeURIComponent(id) + "&dir=" + (up ? "up" : "down"),
       up ? "Rule moved up." : "Rule moved down.", done)
