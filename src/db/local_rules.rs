@@ -12,6 +12,8 @@ use std::collections::BTreeMap;
 pub struct DryRun {
     /// Inbox messages looked at.
     pub scanned: usize,
+    /// Messages the enabled rules match at all, tagged already or not.
+    pub matched: usize,
     /// Messages that would gain at least one tag.
     pub messages: usize,
     /// Tag additions in total (a message gaining two tags counts twice).
@@ -80,8 +82,8 @@ impl Database {
     /// fetched (`meta_ok = 0`): matching on missing recipients or categories would be guessing. Rules are for
     /// incoming mail, so only the Inbox is considered.
     fn scan_inbox(&self, rules: &[LocalRule], extra_where: &str, args: &[&dyn rusqlite::ToSql])
-        -> Result<(Vec<String>, Vec<(String, Vec<(String, String)>)>)> {
-        let (mut looked, mut plan) = (Vec::new(), Vec::new());
+        -> Result<(Vec<String>, Vec<(String, Vec<(String, String)>)>, usize)> {
+        let (mut looked, mut plan, mut matched) = (Vec::new(), Vec::new(), 0usize);
         let sql = format!(
             "SELECT m.id, m.account_id, m.from_email, COALESCE(m.from_name,''), COALESCE(m.to_text,''),
                     COALESCE(m.cc_text,''), m.subject, m.body, COALESCE(m.importance,''),
@@ -101,22 +103,23 @@ impl Database {
         for row in rows {
             let (id, m) = row?;
             let add = additions(rules, &m);
+            if rules.iter().any(|r| r.enabled && r.applies(&m.account_id) && r.matches(&m)) { matched += 1; }
             looked.push(id.clone());
             if !add.is_empty() { plan.push((id, add)); }
         }
-        Ok((looked, plan))
+        Ok((looked, plan, matched))
     }
 
     /// Every cached Inbox message (all accounts) `rules` would add tags to, plus how many were looked at.
     pub fn plan_local_rules(&self, rules: &[LocalRule]) -> Result<(usize, Vec<(String, Vec<(String, String)>)>)> {
-        let (looked, plan) = self.scan_inbox(rules, "", &[])?;
+        let (looked, plan, _) = self.scan_inbox(rules, "", &[])?;
         Ok((looked.len(), plan))
     }
 
     /// Counts for the preview: what `plan_local_rules` would do. Read-only.
     pub fn dry_run(&self, rules: &[LocalRule]) -> Result<DryRun> {
-        let (scanned, plan) = self.plan_local_rules(rules)?;
-        let mut out = DryRun { scanned, messages: plan.len(), ..Default::default() };
+        let (looked, plan, matched) = self.scan_inbox(rules, "", &[])?;
+        let mut out = DryRun { scanned: looked.len(), matched, messages: plan.len(), ..Default::default() };
         for (id, add) in &plan {
             out.additions += add.len();
             let mut seen_rules: Vec<&str> = Vec::new();
@@ -174,6 +177,22 @@ impl Database {
         Ok(ApplyOutcome::Applied { messages, per_rule })
     }
 
+    /// Swap this rule's place with its neighbour (`up` = runs earlier). False when it cannot move.
+    pub fn move_local_rule(&self, id: &str, up: bool) -> Result<bool> {
+        let rules = self.local_rules()?;
+        let Some(i) = rules.iter().position(|r| r.id == id) else { return Ok(false) };
+        let j = if up { i.checked_sub(1) } else { Some(i + 1).filter(|j| *j < rules.len()) };
+        let Some(j) = j else { return Ok(false) };
+        // renumber the whole list 1..n so equal or gappy sequences cannot make the swap a no-op
+        let mut order: Vec<LocalRule> = rules;
+        order.swap(i, j);
+        for (n, mut r) in order.into_iter().enumerate() {
+            r.sequence = n as i64 + 1;
+            self.save_local_rule(&r)?;
+        }
+        Ok(true)
+    }
+
     /// Messages each rule has tagged so far (retroactive runs and arrivals), by rule id.
     pub fn local_rule_stats(&self) -> Result<BTreeMap<String, i64>> {
         let mut st = self.conn.prepare("SELECT rule_id, applied FROM local_rule_stats")?;
@@ -211,7 +230,7 @@ impl Database {
         if rules.is_empty() { set_mark(iso(now))?; return Ok(0); }
         let floor = chrono::DateTime::parse_from_rfc3339(&since).map(|t| iso(t.with_timezone(&chrono::Utc) - chrono::Duration::days(1)))
             .unwrap_or(since);
-        let (looked, plan) = self.scan_inbox(&rules,
+        let (looked, plan, _) = self.scan_inbox(&rules,
             "AND m.account_id = ?1 AND m.received_at >= ?2 AND m.id NOT IN (SELECT message_id FROM local_rule_seen)",
             &[&acct, &floor])?;
         let (messages, _) = self.apply_plan(&plan)?;
@@ -349,6 +368,28 @@ mod tests {
         assert_eq!(d.local_rule_stats().unwrap().get("r1"), Some(&5));
         assert!(d.delete_local_rule("r1").is_ok());
         assert!(d.local_rule_stats().unwrap().is_empty());
+    }
+
+    #[test]
+    fn move_swaps_neighbours_even_when_sequences_collide_and_stops_at_the_ends() {
+        let d = db();
+        for id in ["a", "b", "c"] { d.save_local_rule(&rule(id, 5, &format!("{id}@"), "T", false)).unwrap(); } // equal sequences
+        let ids = |d: &Database| d.local_rules().unwrap().iter().map(|r| r.id.clone()).collect::<Vec<_>>();
+        assert_eq!(ids(&d), vec!["a", "b", "c"]);
+        assert!(d.move_local_rule("c", true).unwrap());
+        assert_eq!(ids(&d), vec!["a", "c", "b"]);
+        assert!(!d.move_local_rule("a", true).unwrap(), "already first");
+        assert!(!d.move_local_rule("b", false).unwrap(), "already last");
+        assert!(!d.move_local_rule("zz", true).unwrap());
+    }
+
+    #[test]
+    fn dry_run_reports_matches_separately_from_additions() {
+        let d = db();
+        put(&d, "1", "bob@x.com", "inb", &["Work"], true);   // matches, already tagged
+        put(&d, "2", "bob@x.com", "inb", &[], true);          // matches, would gain
+        let r = d.dry_run(&[rule("r1", 1, "bob@", "Work", true)]).unwrap();
+        assert_eq!((r.matched, r.messages), (2, 1));
     }
 
     #[test]

@@ -175,6 +175,18 @@ pub fn read_run_in_background(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// `[rules] apply_confirm_over`: a retroactive local-rule run that would change more messages than this
+/// needs an explicit confirm. Default 1,000 (plan OL-040 section 5); 0 means every run needs a confirm.
+pub const DEFAULT_RULES_CONFIRM_OVER: usize = 1000;
+pub fn read_rules_confirm_over(path: &Path) -> usize {
+    fs::read_to_string(path)
+        .ok()
+        .and_then(|s| toml::from_str::<toml::Value>(&s).ok())
+        .and_then(|v| v.get("rules")?.get("apply_confirm_over")?.as_integer())
+        .map(|n| n.max(0) as usize)
+        .unwrap_or(DEFAULT_RULES_CONFIRM_OVER)
+}
+
 /// Persist `[sync] run_in_background`, leaving every other setting as it was. Refuses to touch a
 /// file that does not parse. Returns what was stored.
 pub fn write_run_in_background(path: &Path, on: bool) -> Result<bool> {
@@ -570,6 +582,24 @@ mod send_delay_tests {
         fs::write(&p, "this is = not [valid toml").unwrap();
         assert!(write_send_delay(&p, 5).is_err());
         assert_eq!(fs::read_to_string(&p).unwrap(), "this is = not [valid toml");
+        let _ = fs::remove_file(&p);
+    }
+}
+
+#[cfg(test)]
+mod rules_limit_tests {
+    use super::*;
+    #[test]
+    fn default_override_and_garbage() {
+        let p = std::env::temp_dir().join(format!("omalook-ruleslimit-{}.toml", std::process::id()));
+        let _ = fs::remove_file(&p);
+        assert_eq!(read_rules_confirm_over(&p), 1000);
+        fs::write(&p, "[rules]\napply_confirm_over = 50\n").unwrap();
+        assert_eq!(read_rules_confirm_over(&p), 50);
+        fs::write(&p, "[rules]\napply_confirm_over = -5\n").unwrap();
+        assert_eq!(read_rules_confirm_over(&p), 0);
+        fs::write(&p, "[rules]\napply_confirm_over = \"many\"\n").unwrap();
+        assert_eq!(read_rules_confirm_over(&p), 1000);
         let _ = fs::remove_file(&p);
     }
 }

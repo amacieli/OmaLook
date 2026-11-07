@@ -342,4 +342,7 @@ SettingsPage {
     text: "No accounts yet."
     dim: true
   }
+
+  LocalRulesSection { id: localRules; app: page.app; width: parent.width }
+  editing: localRules.editing
 }

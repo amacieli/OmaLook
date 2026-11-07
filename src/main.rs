@@ -1153,6 +1153,93 @@ fn sender_prefs_response(config_dir: &PathBuf, first_line: &str) -> String {
     result.unwrap_or_else(|e| err(&e.to_string()))
 }
 
+/// JSON body for the `/local-rules` routes (Settings -> Rules, OL-040 phase 4d): rules that are exactly what a
+/// provider can store (see `omalook::local_rules`), run by OmaLook on arrival for accounts without a server
+/// engine and, on request, over existing Inbox mail.
+fn local_rules_response(config_dir: &PathBuf, first_line: &str) -> String {
+    use omalook::local_rules::{has_local_engine, LocalRule};
+    let err = |m: &str| serde_json::json!({ "ok": false, "error": m }).to_string();
+    let path = config_dir.join("messages.db");
+    let db = match Database::open(path.to_str().unwrap_or("messages.db")) {
+        Ok(d) => d,
+        Err(e) => return err(&format!("database: {}", e)),
+    };
+    let limit = omalook::settings::read_rules_confirm_over(&config_dir.join("settings.toml"));
+    let id = query_param(first_line, "id").unwrap_or_default();
+    // the rule from `rule=<json>`; a blank id means a new rule
+    let parsed = || -> Result<LocalRule, String> {
+        let raw = query_param(first_line, "rule").ok_or("need rule=<json>")?;
+        let mut v: serde_json::Value = serde_json::from_str(&raw).map_err(|e| format!("rule is not valid JSON: {e}"))?;
+        if v["id"].as_str().unwrap_or("").is_empty() {
+            let n = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+            v["id"] = serde_json::json!(format!("lr-{:x}", n));
+        }
+        serde_json::from_value::<LocalRule>(v).map_err(|e| format!("rule has the wrong shape: {e}"))
+    };
+    let named = |db: &Database| db.local_rules().map(|r| r.into_iter().find(|x| x.id == id));
+    let r: Result<String, String> = (|| {
+        if first_line.starts_with("GET /local-rules/preview") {
+            let mut rule = parsed()?;
+            rule.validate()?;
+            rule.enabled = true; // a preview shows what the rule would do if it were on
+            let d = db.dry_run(&[rule]).map_err(|e| e.to_string())?;
+            return Ok(serde_json::json!({ "ok": true, "preview": d }).to_string());
+        }
+        if first_line.starts_with("POST /local-rules/save") {
+            let mut rule = parsed()?;
+            rule.validate()?;
+            let existing = db.local_rules().map_err(|e| e.to_string())?;
+            match existing.iter().find(|x| x.id == rule.id) {
+                Some(old) => rule.sequence = old.sequence,
+                None => rule.sequence = existing.iter().map(|x| x.sequence).max().unwrap_or(0) + 1,
+            }
+            db.save_local_rule(&rule).map_err(|e| e.to_string())?;
+            return Ok(serde_json::json!({ "ok": true, "id": rule.id }).to_string());
+        }
+        if first_line.starts_with("POST /local-rules/delete") {
+            if query_param(first_line, "confirm").as_deref() != Some("yes") { return Err("confirm=yes is required".into()); }
+            let gone = db.delete_local_rule(&id).map_err(|e| e.to_string())?;
+            return Ok(serde_json::json!({ "ok": gone, "error": if gone { "" } else { "no such rule" } }).to_string());
+        }
+        if first_line.starts_with("POST /local-rules/enable") {
+            let mut rule = named(&db).map_err(|e| e.to_string())?.ok_or("no such rule")?;
+            rule.enabled = query_param(first_line, "on").as_deref() == Some("true");
+            db.save_local_rule(&rule).map_err(|e| e.to_string())?;
+            return Ok(serde_json::json!({ "ok": true }).to_string());
+        }
+        if first_line.starts_with("POST /local-rules/move") {
+            let up = match query_param(first_line, "dir").as_deref() { Some("up") => true, Some("down") => false, _ => return Err("dir must be up or down".into()) };
+            let moved = db.move_local_rule(&id, up).map_err(|e| e.to_string())?;
+            return Ok(serde_json::json!({ "ok": moved, "error": if moved { "" } else { "cannot move that way" } }).to_string());
+        }
+        if first_line.starts_with("POST /local-rules/apply") {
+            // This rule alone over existing Inbox mail. Over the limit it writes nothing and says how many it would
+            // change; the caller repeats with confirm=yes after the user agrees.
+            let rule = named(&db).map_err(|e| e.to_string())?.ok_or("no such rule")?;
+            if !rule.enabled { return Err("turn the rule on before applying it to existing mail".into()); }
+            let confirmed = query_param(first_line, "confirm").as_deref() == Some("yes");
+            let out = db.apply_local_rules(&[rule], limit, confirmed).map_err(|e| e.to_string())?;
+            if matches!(out, omalook::db::local_rules::ApplyOutcome::Applied { messages, .. } if messages > 0) { omalook::sync_state::request_read_push(); }
+            return Ok(serde_json::json!({ "ok": true, "outcome": out, "limit": limit }).to_string());
+        }
+        // GET /local-rules
+        let stats = db.local_rule_stats().unwrap_or_default();
+        let accounts: Vec<serde_json::Value> = db.accounts_basic().unwrap_or_default().into_iter().map(|(id, provider, email)| {
+            let on_arrival = has_local_engine(omalook::accounts::provider_of(&id));
+            serde_json::json!({ "id": id, "provider": provider, "email": email, "on_arrival": on_arrival })
+        }).collect();
+        let rules: Vec<serde_json::Value> = db.local_rules().map_err(|e| e.to_string())?.into_iter().map(|r| {
+            let applied = stats.get(&r.id).copied().unwrap_or(0);
+            let mut v = serde_json::to_value(&r).unwrap_or_default();
+            v["applied"] = serde_json::json!(applied);
+            v
+        }).collect();
+        let tags: Vec<String> = db.tags_overview().unwrap_or_default().into_iter().map(|t| t.name).collect();
+        Ok(serde_json::json!({ "ok": true, "rules": rules, "accounts": accounts, "tags": tags, "limit": limit }).to_string())
+    })();
+    r.unwrap_or_else(|m| err(&m))
+}
+
 /// JSON body for `GET /rules`: every account's cached mailbox rules, summarised and grouped.
 fn rules_response(config_dir: &PathBuf, first_line: &str) -> String {
     use omalook::db::rules::RuleChange;
@@ -2239,6 +2326,23 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                 //   GET  /addresses                              → [{email, name, score}] seen in mail, best first
                 if first_line.starts_with("GET /lists") || first_line.starts_with("POST /lists/") || first_line.starts_with("GET /addresses") {
                     let body = if first_line.starts_with("GET /addresses") { addresses_json(config_dir) } else { lists_response(config_dir, first_line) };
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                        body.len(), body
+                    );
+                    let _ = stream.write_all(response.as_bytes());
+                    continue;
+                }
+
+                // ── Local rules (Settings -> Rules, "Rules OmaLook runs"; OL-040 phase 4d) ───
+                //   GET  /local-rules → {ok, rules:[LocalRule + applied], accounts:[{id,provider,email,on_arrival}], tags:[..], limit}
+                //   GET  /local-rules/preview?rule=<json>        → {ok, preview:{scanned,matched,messages,additions,by_tag,sample}}
+                //   POST /local-rules/save?rule=<json>           create (blank id) or replace; validated; {ok,id}
+                //   POST /local-rules/delete?id=R&confirm=yes · /enable?id=R&on=true|false · /move?id=R&dir=up|down
+                //   POST /local-rules/apply?id=R[&confirm=yes]   this rule over existing Inbox mail; over `limit` messages
+                //                                                it writes nothing ({outcome:{result:"refused",would_change,limit}}) until confirm=yes
+                if first_line.starts_with("GET /local-rules") || first_line.starts_with("POST /local-rules/") {
+                    let body = local_rules_response(config_dir, first_line);
                     let response = format!(
                         "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                         body.len(), body
