@@ -112,6 +112,12 @@ Needs a backup step (copy `messages.db`, as done for mail fields) before the fir
 
 **Phase 4 — Local engine + retroactive apply**: SQLite rule tables, evaluation on ingest in the sync daemons, dry-run and apply, per-rule "applied N" stats. This is what makes Gmail and any non-server rule work.
 
+**Phase 4 progress (2026-11-07), 4a built, 4b-4d open.** Design follows the Graph limits found on 2026-11-07: a provider rule is flat (ALL of the predicates, ANY of one predicate's values, unless ANY exception; AND/OR semantics are documented for Exchange mail-flow rules and not for the inbox-rules API, so verify with the spike before relying on them), with no parentheses, no OR across fields and no AND within one field's values. The local engine is a superset: `when` is a tree of `all` / `any` / `not` over text and flag predicates, depth capped at 4. `local_rules::to_graph` says whether a rule also fits the flat shape, which decides the engine badge (server when it fits and the account is Exchange, otherwise local).
+- **4a (built):** `src/local_rules.rs` (pure evaluator, `additions`, `tags_for`, `to_graph`, 9 tests) and `src/db/local_rules.rs` (`local_rules` table, save/list/delete, read-only `dry_run` over cached Inbox messages with details fetched; counts per rule and tag, 20-message sample; 2 tests). Tag actions only, plus `stop`.
+- **4b (open):** apply a dry run through `change_message_categories` (`cat_pending` push), refusing above the threshold setting (default 1,000) without confirm; per-rule "applied N" stats.
+- **4c (open):** evaluate on ingest in the sync daemons for new messages only, never removing a tag a person added.
+- **4d (open):** HTTP routes and Settings → Rules UI: group editor (all of / any of / not), live dry-run count, engine badge.
+
 **Phase 5 — Gmail server engine**: scope step-up (`gmail.settings.basic`), filters create/delete (edit = replace), label creation with allowed colours, mapping criteria to Gmail `query`.
 
 **Phase 6 — Calendar tags**: Exchange via `categories` (shared master list); Google per decision Q5; tag chips, picker, `tag:` filter in calendar, local rules for events (Graph and Google both have none).

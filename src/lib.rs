@@ -33,6 +33,7 @@ pub mod calendar_outbox;
 pub mod join_link;
 pub mod invites;
 pub mod attachments;
+pub mod local_rules;
 pub mod attach_spool;
 pub mod contacts_daemon;
 pub mod sms_daemon;

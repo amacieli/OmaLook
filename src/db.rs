@@ -88,6 +88,7 @@ pub mod sms;
 pub mod lists;
 pub mod tags;
 pub mod rules;
+pub mod local_rules;
 
 pub struct Database {
     conn: Connection,
@@ -359,6 +360,7 @@ impl Database {
         self.init_lists_schema()?;
         self.init_tags_schema()?;
         self.init_rules_schema()?;
+        self.init_local_rules_schema()?;
 
         // Outgoing mail: queued when the user presses Send, sent by the account's outbox worker
         // once `send_at` (unix ms) passes. state: pending | sending | sent | failed | cancelled.
