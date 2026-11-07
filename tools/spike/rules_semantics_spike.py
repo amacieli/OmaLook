@@ -42,7 +42,7 @@ def main():
         ("C_exc_body",     f"{R}C hello", f"plain {R}E1", []),                    # exception 1 only
         ("C_exc_subject",  f"{R}C {R}E2", "plain",       []),                     # exception 2 only (any one is enough)
         ("D_stop",         f"{R}D hello", "plain",       ["D1"]),                 # stop: second rule must not run
-        ("none",           "hello", "plain",             []),                      # nothing matches
+        ("none",           f"hello {R}N", "plain nothing", []),                      # nothing matches
     ]
     rule_defs = [
         ("A", {"subjectContains": [f"{R}A"], "bodyContains": [f"{R}B"]}, {}, [tag("A")], False),
@@ -100,16 +100,11 @@ def main():
         st, d = g.call("final", "GET", "/me/mailFolders/inbox/messages?$top=50&$orderby=receivedDateTime desc&$select=id,subject,categories,bodyPreview")
         got = {m["id"]: m for m in d["value"] if R in (m["subject"] or "") or R in (m.get("bodyPreview") or "")}
         print(f"delivered to Inbox: {len(got)} of {len(msgs)}")
-        by_key = {}
-        for m in got.values():
-            for key, subj, body, _ in msgs:
-                if (m["subject"] or "") == subj and (R in subj or (R in body and key in m["bodyPreview"] or body.split()[-1] in (m.get("bodyPreview") or ""))):
-                    by_key.setdefault(key, m)
         # unambiguous match on (subject, body) instead
         by_key = {}
         for key, subj, body, _ in msgs:
             for m in got.values():
-                if (m["subject"] or "") == subj and (m.get("bodyPreview") or "").strip().startswith(body.split(" ")[0]) and (body in (m.get("bodyPreview") or "")):
+                if (m["subject"] or "") == subj and (m.get("bodyPreview") or "").strip() == body.strip():
                     by_key[key] = m
         results, ok_all = [], True
         for key, subj, body, expect in msgs:
