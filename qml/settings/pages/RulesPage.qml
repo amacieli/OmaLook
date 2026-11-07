@@ -29,6 +29,43 @@ SettingsPage {
   property string armedId: ""
   Timer { id: disarm; interval: 4000; onTriggered: page.armedId = "" }
 
+  // Manual runs, per account: kept here (not in the rows) because the list is rebuilt whenever the data changes.
+  //   { running, id ("*" = all tag rules, else a rule id), phase: "tagging" | "sending", tagged, started, notice }
+  // A run is "running" from the click until every tag it made has gone to the server (the account's
+  // tag_pushes_pending is back to 0), or two minutes, after which it carries on in the background.
+  property var runStates: ({})
+  function runState(acct) { return runStates[acct] || { running: false, id: "", phase: "", tagged: 0, started: 0, notice: "" } }
+  function setRun(acct, patch) {
+    var m = {}
+    for (var k in runStates) m[k] = runStates[k]
+    var cur = runState(acct), n = {}
+    for (var c in cur) n[c] = cur[c]
+    for (var q in patch) n[q] = patch[q]
+    m[acct] = n
+    runStates = m
+  }
+  function pendingFor(acct) {
+    for (var i = 0; i < accounts.length; i++) if (accounts[i].account_id === acct) return accounts[i].tag_pushes_pending || 0
+    return 0
+  }
+  function runText(acct) {
+    var r = runState(acct)
+    if (r.running && r.phase === "tagging") return "Running\u2026"
+    if (r.running) return "Tagged " + r.tagged + " message" + (r.tagged === 1 ? "" : "s") + ". Sending the tags to the server, " + pendingFor(acct) + " left\u2026"
+    return r.notice
+  }
+  function checkRuns() {
+    var now = Date.now()
+    for (var acct in runStates) {
+      var r = runStates[acct]
+      if (!r.running || r.phase !== "sending") continue
+      if (pendingFor(acct) === 0) setRun(acct, { running: false, id: "", notice: "Finished: " + r.tagged + " message" + (r.tagged === 1 ? "" : "s") + " tagged and sent to the server." })
+      else if (now - r.started > 120000) setRun(acct, { running: false, id: "", notice: "Tagged " + r.tagged + ". " + pendingFor(acct) + " are still going to the server in the background." })
+    }
+  }
+  function anyRunning() { for (var a in runStates) if (runStates[a].running) return true; return false }
+  Timer { interval: 1500; repeat: true; running: !!page.app && page.anyRunning(); onTriggered: page.app.loadRules(function() { page.checkRuns() }) }
+
   function position(a, id) {
     for (var i = 0; i < a.order.length; i++) if (a.order[i].id === id) return i + 1
     return 0
@@ -144,28 +181,36 @@ SettingsPage {
       // run the tag rules now over mail already in the Inbox: count first, then an explicit go-ahead
       property string runTarget: ""        // "" none, "*" every enabled tag rule, else one rule id
       property var runPreview: null
-      property string runNotice: ""
       function startRun(target) {
-        runTarget = target; runPreview = null; runNotice = ""
+        if (!page.runState(modelData.account_id).running) page.setRun(modelData.account_id, { notice: "" })
+        runTarget = target; runPreview = null
         page.app.ruleRunPreview(modelData.account_id, target === "*" ? "" : target, function(r) { acct.runPreview = r })
       }
       function confirmRun() {
         var p = runPreview && runPreview.preview ? runPreview : null
         var over = p && p.preview.messages > p.limit
-        var target = runTarget
+        var target = runTarget, account = modelData.account_id
         runTarget = ""; runPreview = null
-        page.app.ruleRun(modelData.account_id, target === "*" ? "" : target, over, function(r) {
+        page.setRun(account, { running: true, id: target, phase: "tagging", tagged: 0, started: Date.now(), notice: "" })
+        page.app.ruleRun(account, target === "*" ? "" : target, over, function(r) {
           var o = r.outcome
-          if (!r.ok) acct.runNotice = "Could not run: " + (r.error || "no answer")
-          else if (o && o.result === "refused") acct.runNotice = "Not run: it would tag " + o.would_change + " messages, over the limit of " + o.limit + "."
-          else acct.runNotice = "Tagged " + (o ? o.messages : 0) + " existing messages. The tags go to the server in the background."
+          if (!r.ok) page.setRun(account, { running: false, id: "", notice: "Could not run: " + (r.error || "no answer") })
+          else if (o && o.result === "refused") page.setRun(account, { running: false, id: "", notice: "Not run: it would tag " + o.would_change + " messages, over the limit of " + o.limit + "." })
+          else if (!o || o.messages === 0) page.setRun(account, { running: false, id: "", notice: "Nothing to tag: every matching message already has its tag." })
+          else { page.setRun(account, { phase: "sending", tagged: o.messages, started: Date.now() }); page.app.loadRules(function() { page.checkRuns() }) }
         })
       }
       RowLayout {
         visible: acct.modelData.can_write
         width: parent.width
         UiText { Layout.fillWidth: true; dim: true; font.pixelSize: Style.font.caption; text: "Tag mail that is already in the Inbox and missed a rule (the server only runs rules on arriving mail)." }
-        Button { Layout.preferredWidth: Style.space(200); bordered: true; iconText: "\uf04b"; text: "Run all tag rules"; onClicked: acct.startRun("*") }
+        Button {
+          Layout.preferredWidth: Style.space(220); bordered: true
+          enabled: !page.runState(acct.modelData.account_id).running
+          iconText: page.runState(acct.modelData.account_id).running && page.runState(acct.modelData.account_id).id === "*" ? "\uf04c" : "\uf04b"
+          text: page.runState(acct.modelData.account_id).running && page.runState(acct.modelData.account_id).id === "*" ? "Running\u2026" : "Run all tag rules"
+          onClicked: acct.startRun("*")
+        }
       }
       Column {
         visible: acct.runTarget !== ""
@@ -196,8 +241,12 @@ SettingsPage {
           }
         }
       }
-      UiText { visible: acct.runNotice !== ""; width: parent.width; wrapMode: Text.WordWrap; font.pixelSize: Style.font.caption
-               foreground: acct.runNotice.indexOf("Tagged") === 0 ? Commons.Color.foreground : Commons.Color.urgent; text: acct.runNotice }
+      UiText {
+        visible: page.runText(acct.modelData.account_id) !== ""
+        width: parent.width; wrapMode: Text.WordWrap; font.pixelSize: Style.font.caption
+        foreground: page.runText(acct.modelData.account_id).indexOf("Could not") === 0 || page.runText(acct.modelData.account_id).indexOf("Not run") === 0 ? Commons.Color.urgent : Commons.Color.foreground
+        text: page.runText(acct.modelData.account_id)
+      }
 
       // add a rule: a sender address or a whole domain -> a tag; checked first, then created last in the list
       Column {
@@ -328,7 +377,8 @@ SettingsPage {
                 visible: acct.modelData.can_write && rrow.modelData.enabled
                 Layout.preferredWidth: Style.space(32)
                 bordered: true
-                iconText: "\uf04b"
+                enabled: !page.runState(acct.modelData.account_id).running
+                iconText: page.runState(acct.modelData.account_id).running && page.runState(acct.modelData.account_id).id === rrow.modelData.id ? "\uf04c" : "\uf04b"
                 onClicked: acct.startRun(rrow.modelData.id)
               }
               Button {

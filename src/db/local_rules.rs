@@ -207,6 +207,12 @@ impl Database {
         Ok((rules, left_out))
     }
 
+    /// Messages of this account whose tag change is saved here but not yet sent to the server. A manual run
+    /// is finished when this reaches 0.
+    pub fn tag_pushes_pending(&self, account_id: &str) -> Result<i64> {
+        Ok(self.conn.query_row("SELECT COUNT(*) FROM messages WHERE account_id = ?1 AND cat_pending = 1", params![account_id], |r| r.get(0))?)
+    }
+
     /// Swap this rule's place with its neighbour (`up` = runs earlier). False when it cannot move.
     pub fn move_local_rule(&self, id: &str, up: bool) -> Result<bool> {
         let rules = self.local_rules()?;
@@ -422,6 +428,19 @@ mod tests {
         put(&d, "m1", "bob@x.com", "inb", &[], true);
         let ApplyOutcome::Applied { messages, .. } = d.apply_local_rules(&all, 1000, false).unwrap() else { panic!() };
         assert_eq!(messages, 1);
+    }
+
+    #[test]
+    fn pending_tag_pushes_are_counted_per_account_and_drop_when_pushed() {
+        let d = db();
+        put(&d, "1", "bob@x.com", "inb", &[], true);
+        put(&d, "2", "bob@x.com", "inb", &[], true);
+        assert_eq!(d.tag_pushes_pending("ex").unwrap(), 0);
+        d.apply_local_rules(&[rule("r1", 1, "bob@", "Work", false)], 1000, false).unwrap();
+        assert_eq!(d.tag_pushes_pending("ex").unwrap(), 2);
+        assert_eq!(d.tag_pushes_pending("other").unwrap(), 0);
+        d.finish_category_push("1", &["Work".to_string()]).unwrap();
+        assert_eq!(d.tag_pushes_pending("ex").unwrap(), 1);
     }
 
     #[test]

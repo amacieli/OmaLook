@@ -1349,6 +1349,7 @@ fn rules_response(config_dir: &PathBuf, first_line: &str) -> String {
             "groups": groups, "other": org.other, "system": org.system,
             "can_write": provider == "exchange" && state.as_ref().map(|s| s.state == "ok").unwrap_or(false),
             "order": order, "ops": ops,
+            "tag_pushes_pending": db.tag_pushes_pending(&id).unwrap_or(0),
         }));
     }
     serde_json::json!({ "accounts": accounts }).to_string()
