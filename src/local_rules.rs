@@ -1,58 +1,95 @@
 //! Local rule engine (docs/PLAN-tags-and-rules.md, OL-040 phase 4): pure evaluation, no I/O.
 //!
-//! Provider rules (Graph `messageRule`) are flat: ALL of the condition predicates, each predicate matching
-//! ANY of its values, unless ANY exception predicate matches. The local engine is a superset: a rule's `when`
-//! is a tree of `all` / `any` / `not` over predicates, so parentheses and OR across different fields work
-//! here, for every account. `to_graph()` says whether a rule also fits the flat provider shape, which is
-//! what decides the engine badge (server or local) in the UI.
-//!
-//! Matching is case-insensitive "contains" like Outlook's; `from` / `to` match addresses, `domain` the part
-//! after the @. Empty value lists never match (a predicate with no values is rejected by `validate`).
+//! The model is exactly what a provider can store, nothing more (decision, user, 2026-11-07): a Graph
+//! `messageRule` is a flat list of predicates, so a rule here is
+//!   - `conditions`: ALL of these predicates must match (each predicate kind at most once);
+//!   - inside one predicate: ANY of its values matches;
+//!   - `exceptions`: the rule is skipped if ANY of these predicates matches (same shape);
+//!   - `actions`: tags to add, and `stop` (stop processing more rules).
+//! No groups, no parentheses, no NOT, no OR across different predicates. A rule is therefore always
+//! writable to Exchange unchanged (`to_graph`) and any Exchange rule made of supported predicates can be read
+//! back (`from_graph`); a rule using anything else is refused, never approximated, so a local result can
+//! never differ from what the server would do. (The AND/OR semantics above are documented for Exchange
+//! mail-flow rules; for inbox rules they match Outlook's behaviour but are unverified by a live test.)
 
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Field {
-    /// Sender address.
-    From,
-    /// Sender display name.
-    FromName,
-    /// To or Cc addresses.
-    Recipient,
-    Subject,
-    Body,
-    BodyOrSubject,
-    /// Sender domain (exact, or a subdomain of it).
-    Domain,
-    /// Category already on the message (exact, case-insensitive).
-    Category,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Flag {
-    HasAttachments,
-    HighImportance,
-    LowImportance,
-}
-
+/// One predicate. Text predicates match when ANY value matches; matching is case-insensitive.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "op", rename_all = "snake_case")]
-pub enum Expr {
-    /// Text predicate: matches when ANY of `values` matches the field.
-    Text { field: Field, values: Vec<String> },
-    Flag { flag: Flag, #[serde(default = "yes")] is: bool },
-    All { of: Vec<Expr> },
-    Any { of: Vec<Expr> },
-    Not { of: Box<Expr> },
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
+pub enum Pred {
+    /// `fromAddresses`: the sender address equals one of these.
+    FromAddresses(Vec<String>),
+    /// `senderContains`: the From (address or display name) contains one of these.
+    SenderContains(Vec<String>),
+    /// `recipientContains`: To or Cc contains one of these.
+    RecipientContains(Vec<String>),
+    SubjectContains(Vec<String>),
+    BodyContains(Vec<String>),
+    BodyOrSubjectContains(Vec<String>),
+    /// `categories`: the message already carries one of these tags.
+    Categories(Vec<String>),
+    HasAttachments(bool),
+    /// `low`, `normal` or `high`.
+    Importance(String),
+}
+
+impl Pred {
+    /// Graph property name; also the "at most once per list" key.
+    pub fn key(&self) -> &'static str {
+        match self {
+            Pred::FromAddresses(_) => "fromAddresses",
+            Pred::SenderContains(_) => "senderContains",
+            Pred::RecipientContains(_) => "recipientContains",
+            Pred::SubjectContains(_) => "subjectContains",
+            Pred::BodyContains(_) => "bodyContains",
+            Pred::BodyOrSubjectContains(_) => "bodyOrSubjectContains",
+            Pred::Categories(_) => "categories",
+            Pred::HasAttachments(_) => "hasAttachments",
+            Pred::Importance(_) => "importance",
+        }
+    }
+
+    fn values(&self) -> Option<&Vec<String>> {
+        match self {
+            Pred::FromAddresses(v) | Pred::SenderContains(v) | Pred::RecipientContains(v) | Pred::SubjectContains(v)
+            | Pred::BodyContains(v) | Pred::BodyOrSubjectContains(v) | Pred::Categories(v) => Some(v),
+            _ => None,
+        }
+    }
+
+    pub fn eval(&self, m: &Msg) -> bool {
+        let any = |v: &Vec<String>, f: &dyn Fn(&str) -> bool| v.iter().any(|x| !x.trim().is_empty() && f(x.trim()));
+        match self {
+            Pred::FromAddresses(v) => any(v, &|x| m.from_email.trim().eq_ignore_ascii_case(x)),
+            Pred::SenderContains(v) => any(v, &|x| has(&m.from_email, x) || has(&m.from_name, x)),
+            Pred::RecipientContains(v) => any(v, &|x| has(&m.to_text, x) || has(&m.cc_text, x)),
+            Pred::SubjectContains(v) => any(v, &|x| has(&m.subject, x)),
+            Pred::BodyContains(v) => any(v, &|x| has(&m.body, x)),
+            Pred::BodyOrSubjectContains(v) => any(v, &|x| has(&m.body, x) || has(&m.subject, x)),
+            Pred::Categories(v) => any(v, &|x| m.categories.iter().any(|c| c.trim().eq_ignore_ascii_case(x))),
+            Pred::HasAttachments(b) => m.has_attachments == *b,
+            Pred::Importance(i) => m.importance.eq_ignore_ascii_case(i.trim()),
+        }
+    }
+}
+
+fn has(hay: &str, needle: &str) -> bool {
+    hay.to_lowercase().contains(&needle.to_lowercase())
 }
 
 fn yes() -> bool { true }
 
-/// Actions the local engine may take. Tags only in phase 4 (plan §5: nothing destructive without the
-/// phase-7 confirm gate); `stop` ends rule processing for the message like Outlook's flag.
+/// Same tag for the engine's purposes: letters and digits only, case-insensitive, so `Saint Lucia` and
+/// `SaintLucia` count as present for each other. The user keeps near-duplicate spellings (plan Q3) and a
+/// retroactive run must not stack a second spelling on a message that already has the first.
+pub fn tag_eq(a: &str, b: &str) -> bool {
+    let k = |s: &str| s.chars().filter(|c| c.is_alphanumeric()).flat_map(|c| c.to_lowercase()).collect::<String>();
+    let (a, b) = (k(a), k(b));
+    !a.is_empty() && a == b
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Actions {
     #[serde(default)]
@@ -73,7 +110,11 @@ pub struct LocalRule {
     /// Account ids; empty = every account.
     #[serde(default)]
     pub applies_to: Vec<String>,
-    pub when: Expr,
+    /// ALL must match.
+    pub conditions: Vec<Pred>,
+    /// ANY match skips the rule.
+    #[serde(default)]
+    pub exceptions: Vec<Pred>,
     #[serde(default)]
     pub actions: Actions,
 }
@@ -93,74 +134,27 @@ pub struct Msg {
     pub categories: Vec<String>,
 }
 
-fn has(hay: &str, needle: &str) -> bool {
-    !needle.trim().is_empty() && hay.to_lowercase().contains(&needle.trim().to_lowercase())
-}
-
-fn domain_matches(addr: &str, dom: &str) -> bool {
-    let d = dom.trim().trim_start_matches('@').to_lowercase();
-    if d.is_empty() { return false; }
-    let Some((_, host)) = addr.trim().to_lowercase().rsplit_once('@').map(|(a, b)| (a.to_string(), b.to_string())) else { return false };
-    host == d || host.ends_with(&format!(".{d}"))
-}
-
-impl Expr {
-    pub fn eval(&self, m: &Msg) -> bool {
-        match self {
-            Expr::Text { field, values } => values.iter().any(|v| match field {
-                Field::From => has(&m.from_email, v),
-                Field::FromName => has(&m.from_name, v),
-                Field::Recipient => has(&m.to_text, v) || has(&m.cc_text, v),
-                Field::Subject => has(&m.subject, v),
-                Field::Body => has(&m.body, v),
-                Field::BodyOrSubject => has(&m.body, v) || has(&m.subject, v),
-                Field::Domain => domain_matches(&m.from_email, v),
-                Field::Category => m.categories.iter().any(|c| c.trim().eq_ignore_ascii_case(v.trim())),
-            }),
-            Expr::Flag { flag, is } => {
-                let actual = match flag {
-                    Flag::HasAttachments => m.has_attachments,
-                    Flag::HighImportance => m.importance.eq_ignore_ascii_case("high"),
-                    Flag::LowImportance => m.importance.eq_ignore_ascii_case("low"),
-                };
-                actual == *is
-            }
-            // An empty `all` is rejected by validate(); evaluating one as "no match" keeps a broken rule inert.
-            Expr::All { of } => !of.is_empty() && of.iter().all(|e| e.eval(m)),
-            Expr::Any { of } => of.iter().any(|e| e.eval(m)),
-            Expr::Not { of } => !of.eval(m),
+fn check_list(what: &str, preds: &[Pred]) -> Result<(), String> {
+    let mut seen: Vec<&str> = Vec::new();
+    for p in preds {
+        if seen.contains(&p.key()) { return Err(format!("{what}: {} appears twice; put all its values in one entry", p.key())); }
+        seen.push(p.key());
+        if let Some(v) = p.values() {
+            if v.iter().all(|x| x.trim().is_empty()) { return Err(format!("{what}: {} needs at least one value", p.key())); }
+        }
+        if let Pred::Importance(i) = p {
+            if !["low", "normal", "high"].contains(&i.trim().to_lowercase().as_str()) { return Err(format!("{what}: importance must be low, normal or high")); }
         }
     }
-
-    pub fn validate(&self) -> Result<(), String> {
-        match self {
-            Expr::Text { values, .. } => {
-                if values.iter().all(|v| v.trim().is_empty()) { Err("a text condition needs at least one value".into()) } else { Ok(()) }
-            }
-            Expr::Flag { .. } => Ok(()),
-            Expr::All { of } | Expr::Any { of } => {
-                if of.is_empty() { return Err("an empty group matches nothing".into()); }
-                of.iter().try_for_each(|e| e.validate())
-            }
-            Expr::Not { of } => of.validate(),
-        }
-    }
-
-    /// Nesting depth, to cap what the editor lets through.
-    pub fn depth(&self) -> usize {
-        match self {
-            Expr::All { of } | Expr::Any { of } => 1 + of.iter().map(|e| e.depth()).max().unwrap_or(0),
-            Expr::Not { of } => 1 + of.depth(),
-            _ => 0,
-        }
-    }
+    Ok(())
 }
 
 impl LocalRule {
     pub fn validate(&self) -> Result<(), String> {
         if self.name.trim().is_empty() { return Err("a rule needs a name".into()); }
-        self.when.validate()?;
-        if self.when.depth() > 4 { return Err("conditions nest too deeply (max 4)".into()); }
+        if self.conditions.is_empty() { return Err("a rule needs at least one condition (an empty rule would match every message)".into()); }
+        check_list("conditions", &self.conditions)?;
+        check_list("exceptions", &self.exceptions)?;
         if self.actions.tags.iter().all(|t| t.trim().is_empty()) { return Err("a rule needs at least one tag".into()); }
         Ok(())
     }
@@ -168,19 +162,24 @@ impl LocalRule {
     pub fn applies(&self, account_id: &str) -> bool {
         self.applies_to.is_empty() || self.applies_to.iter().any(|a| a == account_id)
     }
+
+    /// ALL conditions match and NO exception does. An invalid (empty) rule never matches.
+    pub fn matches(&self, m: &Msg) -> bool {
+        !self.conditions.is_empty() && self.conditions.iter().all(|p| p.eval(m)) && !self.exceptions.iter().any(|p| p.eval(m))
+    }
 }
 
 /// (rule id, tag) pairs the enabled rules would add to `m`, in rule order, each tag once. Honours `stop` and
-/// tags the message already has (never "adds" a tag that is present). `rules` need not be sorted.
+/// tags the message already has. `rules` need not be sorted.
 pub fn additions(rules: &[LocalRule], m: &Msg) -> Vec<(String, String)> {
     let mut sorted: Vec<&LocalRule> = rules.iter().filter(|r| r.enabled && r.applies(&m.account_id)).collect();
     sorted.sort_by_key(|r| r.sequence);
     let mut out: Vec<(String, String)> = Vec::new();
     for r in sorted {
-        if !r.when.eval(m) { continue; }
+        if !r.matches(m) { continue; }
         for t in &r.actions.tags {
             let t = t.trim();
-            let same = |c: &str| c.trim().eq_ignore_ascii_case(t);
+            let same = |c: &str| tag_eq(c, t);
             if !t.is_empty() && !m.categories.iter().any(|c| same(c)) && !out.iter().any(|(_, c)| same(c)) {
                 out.push((r.id.clone(), t.to_string()));
             }
@@ -190,68 +189,99 @@ pub fn additions(rules: &[LocalRule], m: &Msg) -> Vec<(String, String)> {
     out
 }
 
-/// Just the tags of `additions`.
 pub fn tags_for(rules: &[LocalRule], m: &Msg) -> Vec<String> {
     additions(rules, m).into_iter().map(|(_, t)| t).collect()
 }
 
-/// The same rule as Graph `conditions` / `exceptions` objects, when it fits the flat provider shape:
-/// `all` of text/flag predicates (a lone predicate counts as an `all` of one), optionally with one top-level
-/// `not(any(...))` as the exceptions. Anything else (nested OR across fields, `not` inside) returns None, which
-/// means local engine only. Domain and from_name have no exact Graph form and are not exported.
-pub fn to_graph(rule: &LocalRule) -> Option<Value> {
-    let parts: Vec<&Expr> = match &rule.when {
-        Expr::All { of } => of.iter().collect(),
-        other => vec![other],
+fn pred_to_json(p: &Pred, out: &mut Map<String, Value>) {
+    let addr = |v: &Vec<String>| json!(v.iter().map(|a| json!({ "emailAddress": { "address": a } })).collect::<Vec<_>>());
+    let val = match p {
+        Pred::FromAddresses(v) => addr(v),
+        Pred::SenderContains(v) | Pred::RecipientContains(v) | Pred::SubjectContains(v) | Pred::BodyContains(v)
+        | Pred::BodyOrSubjectContains(v) | Pred::Categories(v) => json!(v),
+        Pred::HasAttachments(b) => json!(b),
+        Pred::Importance(i) => json!(i.trim().to_lowercase()),
     };
-    let mut cond = serde_json::Map::new();
-    let mut exc = serde_json::Map::new();
-    for p in parts {
-        match p {
-            Expr::Not { of } => {
-                let inner: Vec<&Expr> = match &**of { Expr::Any { of } => of.iter().collect(), o => vec![o] };
-                for e in inner { put(&mut exc, e)?; }
-            }
-            e => put(&mut cond, e)?,
-        }
-    }
-    Some(json!({ "conditions": cond, "exceptions": exc,
-                 "actions": { "assignCategories": rule.actions.tags, "stopProcessingRules": rule.actions.stop } }))
+    out.insert(p.key().to_string(), val);
 }
 
-fn put(m: &mut serde_json::Map<String, Value>, e: &Expr) -> Option<()> {
-    let (key, val) = match e {
-        Expr::Text { field, values } => {
-            let k = match field {
-                Field::From => "senderContains",
-                Field::Recipient => "recipientContains",
-                Field::Subject => "subjectContains",
-                Field::Body => "bodyContains",
-                Field::BodyOrSubject => "bodyOrSubjectContains",
-                Field::Category => "categories",
-                Field::Domain | Field::FromName => return None,
-            };
-            (k, json!(values))
+/// The Graph `messageRule` body for this rule (`displayName`, `sequence`, `isEnabled`, `conditions`,
+/// `exceptions`, `actions`). Always possible: the model is the Graph shape.
+pub fn to_graph(rule: &LocalRule) -> Value {
+    let (mut c, mut e) = (Map::new(), Map::new());
+    rule.conditions.iter().for_each(|p| pred_to_json(p, &mut c));
+    rule.exceptions.iter().for_each(|p| pred_to_json(p, &mut e));
+    json!({ "displayName": rule.name, "sequence": rule.sequence, "isEnabled": rule.enabled,
+            "conditions": c, "exceptions": e,
+            "actions": { "assignCategories": rule.actions.tags, "stopProcessingRules": rule.actions.stop } })
+}
+
+fn strings(v: &Value) -> Vec<String> {
+    v.as_array().map(|a| a.iter().filter_map(|x| match x {
+        Value::String(s) => Some(s.trim().to_string()),
+        Value::Object(_) => x["emailAddress"]["address"].as_str().or_else(|| x["address"].as_str()).map(|s| s.trim().to_string()),
+        _ => None,
+    }).filter(|s| !s.is_empty()).collect()).unwrap_or_default()
+}
+
+fn preds_from(obj: &Value, unsupported: &mut Vec<String>) -> Vec<Pred> {
+    let mut out = Vec::new();
+    let Some(o) = obj.as_object() else { return out };
+    for (k, v) in o {
+        let set = match v { Value::Null | Value::Bool(false) => false, Value::Array(a) => !a.is_empty(), Value::String(s) => !s.is_empty(), _ => true };
+        if !set { continue; }
+        match k.as_str() {
+            "fromAddresses" => out.push(Pred::FromAddresses(strings(v))),
+            "senderContains" => out.push(Pred::SenderContains(strings(v))),
+            "recipientContains" => out.push(Pred::RecipientContains(strings(v))),
+            "subjectContains" => out.push(Pred::SubjectContains(strings(v))),
+            "bodyContains" => out.push(Pred::BodyContains(strings(v))),
+            "bodyOrSubjectContains" => out.push(Pred::BodyOrSubjectContains(strings(v))),
+            "categories" => out.push(Pred::Categories(strings(v))),
+            "hasAttachments" => out.push(Pred::HasAttachments(v.as_bool().unwrap_or(true))),
+            "importance" => out.push(Pred::Importance(v.as_str().unwrap_or("").to_string())),
+            other => unsupported.push(other.to_string()),
         }
-        Expr::Flag { flag: Flag::HasAttachments, is: true } => ("hasAttachments", json!(true)),
-        Expr::Flag { flag: Flag::HighImportance, is: true } => ("importance", json!("high")),
-        Expr::Flag { flag: Flag::LowImportance, is: true } => ("importance", json!("low")),
-        _ => return None,
-    };
-    // Two predicates of the same kind would have to be ANDed; a flat Graph object cannot hold both.
-    if m.contains_key(key) { return None; }
-    m.insert(key.to_string(), val);
-    Some(())
+    }
+    out
+}
+
+/// Read a cached Graph rule. `Err(keys)` lists the condition / exception / action keys this engine cannot
+/// reproduce exactly (forward, move, delete, headerContains...): such a rule is not evaluated locally.
+/// Only tag rules (`assignCategories`, optionally `stopProcessingRules`) are accepted.
+pub fn from_graph(raw: &Value) -> Result<LocalRule, Vec<String>> {
+    let mut bad = Vec::new();
+    let conditions = preds_from(&raw["conditions"], &mut bad);
+    let exceptions = preds_from(&raw["exceptions"], &mut bad);
+    let mut actions = Actions::default();
+    if let Some(a) = raw["actions"].as_object() {
+        for (k, v) in a {
+            match k.as_str() {
+                "assignCategories" => actions.tags = strings(v),
+                "stopProcessingRules" => actions.stop = v.as_bool().unwrap_or(false),
+                _ => { let set = match v { Value::Null | Value::Bool(false) => false, Value::Array(x) => !x.is_empty(), _ => true }; if set { bad.push(format!("action:{k}")); } }
+            }
+        }
+    }
+    if !bad.is_empty() { return Err(bad); }
+    Ok(LocalRule {
+        id: raw["id"].as_str().unwrap_or("").to_string(),
+        name: raw["displayName"].as_str().unwrap_or("").to_string(),
+        enabled: raw["isEnabled"].as_bool().unwrap_or(true),
+        sequence: raw["sequence"].as_i64().unwrap_or(0),
+        applies_to: vec![],
+        conditions, exceptions, actions,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn text(f: Field, v: &[&str]) -> Expr { Expr::Text { field: f, values: v.iter().map(|s| s.to_string()).collect() } }
-    fn rule(id: &str, seq: i64, when: Expr, tags: &[&str], stop: bool) -> LocalRule {
-        LocalRule { id: id.into(), name: id.into(), enabled: true, sequence: seq, applies_to: vec![], when,
-            actions: Actions { tags: tags.iter().map(|s| s.to_string()).collect(), stop } }
+    fn s(v: &[&str]) -> Vec<String> { v.iter().map(|x| x.to_string()).collect() }
+    fn rule(id: &str, seq: i64, conditions: Vec<Pred>, tags: &[&str], stop: bool) -> LocalRule {
+        LocalRule { id: id.into(), name: id.into(), enabled: true, sequence: seq, applies_to: vec![],
+            conditions, exceptions: vec![], actions: Actions { tags: s(tags), stop } }
     }
     fn msg() -> Msg {
         Msg { account_id: "a1".into(), from_email: "Bob@Example.com".into(), from_name: "Bob B".into(),
@@ -261,61 +291,53 @@ mod tests {
 
     #[test]
     fn values_in_one_predicate_are_or_and_case_insensitive() {
-        assert!(text(Field::Subject, &["nope", "INVOICE"]).eval(&msg()));
-        assert!(!text(Field::Subject, &["nope", "zzz"]).eval(&msg()));
+        assert!(Pred::SubjectContains(s(&["nope", "INVOICE"])).eval(&msg()));
+        assert!(!Pred::SubjectContains(s(&["nope", "zzz"])).eval(&msg()));
+        assert!(!Pred::SubjectContains(s(&[" "])).eval(&msg()), "blank value never matches everything");
     }
 
     #[test]
-    fn all_is_and_any_is_or_not_negates_and_empty_is_inert() {
+    fn conditions_are_and_exceptions_are_or_and_both_are_flat() {
         let m = msg();
-        let a = text(Field::From, &["bob@"]);
-        let b = text(Field::Subject, &["nothing"]);
-        assert!(!Expr::All { of: vec![a.clone(), b.clone()] }.eval(&m));
-        assert!(Expr::Any { of: vec![a.clone(), b.clone()] }.eval(&m));
-        assert!(Expr::Not { of: Box::new(b) }.eval(&m));
-        assert!(!Expr::All { of: vec![] }.eval(&m));
-        assert!(!text(Field::Subject, &[""]).eval(&m), "blank value never matches everything");
+        let mut r = rule("r", 1, vec![Pred::SenderContains(s(&["bob@"])), Pred::SubjectContains(s(&["invoice"]))], &["T"], false);
+        assert!(r.matches(&m));
+        r.conditions.push(Pred::BodyContains(s(&["absent"])));
+        assert!(!r.matches(&m), "one failing condition fails the rule");
+        r.conditions.pop();
+        r.exceptions = vec![Pred::BodyContains(s(&["nothing"])), Pred::HasAttachments(true)];
+        assert!(r.matches(&m), "no exception matches");
+        r.exceptions.push(Pred::SubjectContains(s(&["42"])));
+        assert!(!r.matches(&m), "any one exception skips the rule");
+        assert!(!rule("e", 1, vec![], &["T"], false).matches(&m), "no conditions never matches");
     }
 
     #[test]
-    fn parentheses_work_locally() {
-        // (from bob OR from alice) AND (subject invoice OR subject receipt) AND NOT body "spam"
-        let e = Expr::All { of: vec![
-            Expr::Any { of: vec![text(Field::From, &["bob@"]), text(Field::From, &["alice@"])] },
-            Expr::Any { of: vec![text(Field::Subject, &["invoice"]), text(Field::Subject, &["receipt"])] },
-            Expr::Not { of: Box::new(text(Field::Body, &["spam"])) },
-        ]};
-        assert!(e.eval(&msg()));
-        let mut spam = msg(); spam.body = "total SPAM".into();
-        assert!(!e.eval(&spam));
-    }
-
-    #[test]
-    fn domain_matches_exact_and_subdomain_but_not_lookalikes() {
-        let mut m = msg();
-        assert!(text(Field::Domain, &["example.com"]).eval(&m));
-        assert!(text(Field::Domain, &["@example.com"]).eval(&m));
-        m.from_email = "x@mail.example.com".into();
-        assert!(text(Field::Domain, &["example.com"]).eval(&m));
-        m.from_email = "x@notexample.com".into();
-        assert!(!text(Field::Domain, &["example.com"]).eval(&m));
+    fn from_addresses_is_exact_and_sender_contains_covers_domain_and_name() {
+        let m = msg();
+        assert!(Pred::FromAddresses(s(&["bob@example.com"])).eval(&m));
+        assert!(!Pred::FromAddresses(s(&["bob@example"])).eval(&m));
+        assert!(Pred::SenderContains(s(&["@example.com"])).eval(&m), "a domain rule is senderContains");
+        assert!(Pred::SenderContains(s(&["bob b"])).eval(&m));
     }
 
     #[test]
     fn tags_follow_sequence_stop_and_existing_tags() {
-        let r1 = rule("r1", 1, text(Field::From, &["bob@"]), &["Work"], true);
-        let r2 = rule("r2", 2, text(Field::Subject, &["invoice"]), &["Money"], false);
+        let r1 = rule("r1", 1, vec![Pred::SenderContains(s(&["bob@"]))], &["Work"], true);
+        let r2 = rule("r2", 2, vec![Pred::SubjectContains(s(&["invoice"]))], &["Money"], false);
         let mut m = msg();
         assert_eq!(tags_for(&[r2.clone(), r1.clone()], &m), vec!["Work"], "r1 first, it stops");
-        let r1n = rule("r1", 1, text(Field::From, &["bob@"]), &["Work"], false);
+        let r1n = rule("r1", 1, vec![Pred::SenderContains(s(&["bob@"]))], &["Work"], false);
         assert_eq!(tags_for(&[r2.clone(), r1n.clone()], &m), vec!["Work", "Money"]);
         m.categories = vec!["work".into()];
-        assert_eq!(tags_for(&[r1n, r2], &m), vec!["Money"], "already tagged: not added again");
+        assert_eq!(tags_for(&[r1n.clone(), r2.clone()], &m), vec!["Money"]);
+        let spaced = rule("sp", 1, vec![Pred::SenderContains(s(&["bob@"]))], &["SaintLucia"], false);
+        m.categories = vec!["Saint Lucia".into()];
+        assert!(tags_for(&[spaced], &m).is_empty(), "a near-duplicate spelling counts as already tagged");
     }
 
     #[test]
     fn disabled_and_other_account_rules_are_skipped() {
-        let mut r = rule("r", 1, text(Field::From, &["bob@"]), &["Work"], false);
+        let mut r = rule("r", 1, vec![Pred::SenderContains(s(&["bob@"]))], &["Work"], false);
         r.enabled = false;
         assert!(tags_for(&[r.clone()], &msg()).is_empty());
         r.enabled = true; r.applies_to = vec!["other".into()];
@@ -325,40 +347,32 @@ mod tests {
     }
 
     #[test]
-    fn validate_rejects_empty_and_deep_rules() {
-        assert!(rule("x", 0, Expr::All { of: vec![] }, &["T"], false).validate().is_err());
-        assert!(rule("x", 0, text(Field::From, &[" "]), &["T"], false).validate().is_err());
-        assert!(rule("x", 0, text(Field::From, &["a"]), &[], false).validate().is_err());
-        let mut e = text(Field::From, &["a"]);
-        for _ in 0..5 { e = Expr::Not { of: Box::new(e) }; }
-        assert!(rule("x", 0, e, &["T"], false).validate().is_err());
-        assert!(rule("x", 0, text(Field::From, &["a"]), &["T"], false).validate().is_ok());
+    fn validate_refuses_what_graph_cannot_hold() {
+        let ok = vec![Pred::SenderContains(s(&["a"]))];
+        assert!(rule("x", 0, ok.clone(), &["T"], false).validate().is_ok());
+        assert!(rule("x", 0, vec![], &["T"], false).validate().is_err());
+        assert!(rule("x", 0, vec![Pred::SenderContains(s(&[" "]))], &["T"], false).validate().is_err());
+        assert!(rule("x", 0, ok.clone(), &[], false).validate().is_err());
+        let twice = vec![Pred::SubjectContains(s(&["a"])), Pred::SubjectContains(s(&["b"]))];
+        assert!(rule("x", 0, twice, &["T"], false).validate().is_err(), "AND within one field is not storable");
+        assert!(rule("x", 0, vec![Pred::Importance("urgent".into())], &["T"], false).validate().is_err());
     }
 
     #[test]
-    fn graph_export_only_for_flat_shapes() {
-        let flat = rule("f", 0, Expr::All { of: vec![
-            text(Field::From, &["a@", "b@"]), Expr::Flag { flag: Flag::HasAttachments, is: true },
-            Expr::Not { of: Box::new(Expr::Any { of: vec![text(Field::Subject, &["spam"]), text(Field::Body, &["x"])] }) },
-        ]}, &["T"], true);
-        let g = to_graph(&flat).expect("flat");
-        assert_eq!(g["conditions"]["senderContains"], json!(["a@", "b@"]));
-        assert_eq!(g["conditions"]["hasAttachments"], json!(true));
-        assert_eq!(g["exceptions"]["subjectContains"], json!(["spam"]));
-        assert_eq!(g["actions"]["stopProcessingRules"], json!(true));
+    fn graph_round_trip_and_unsupported_rules_are_refused() {
+        let mut r = rule("g", 4, vec![Pred::FromAddresses(s(&["a@b.c"])), Pred::SubjectContains(s(&["x", "y"])), Pred::HasAttachments(true)], &["T"], true);
+        r.exceptions = vec![Pred::Importance("low".into())];
+        let mut g = to_graph(&r);
+        g["id"] = json!("g");
+        assert_eq!(g["conditions"]["fromAddresses"][0]["emailAddress"]["address"], json!("a@b.c"));
+        assert_eq!(from_graph(&g).unwrap().conditions.len(), 3);
+        let back = from_graph(&g).unwrap();
+        assert_eq!(back.exceptions, r.exceptions);
+        assert_eq!(back.actions, r.actions);
 
-        let or_across = rule("o", 0, Expr::Any { of: vec![text(Field::From, &["a"]), text(Field::Subject, &["b"])] }, &["T"], false);
-        assert!(to_graph(&or_across).is_none(), "OR across fields has no flat form");
-        let dup = rule("d", 0, Expr::All { of: vec![text(Field::Subject, &["a"]), text(Field::Subject, &["b"])] }, &["T"], false);
-        assert!(to_graph(&dup).is_none(), "two subject predicates ANDed cannot be one Graph object");
-        assert!(to_graph(&rule("m", 0, text(Field::Domain, &["x.com"]), &["T"], false)).is_none());
-        assert!(to_graph(&rule("s", 0, text(Field::From, &["a"]), &["T"], false)).is_some(), "lone predicate");
-    }
-
-    #[test]
-    fn json_round_trip() {
-        let r = rule("j", 3, Expr::All { of: vec![text(Field::From, &["a"]), Expr::Not { of: Box::new(Expr::Flag { flag: Flag::HasAttachments, is: true }) }] }, &["T"], true);
-        let s = serde_json::to_string(&r).unwrap();
-        assert_eq!(serde_json::from_str::<LocalRule>(&s).unwrap(), r);
+        let fwd = json!({"id":"f","conditions":{"senderContains":["a"]},"actions":{"forwardTo":[{"emailAddress":{"address":"x@y.z"}}]}});
+        assert_eq!(from_graph(&fwd).unwrap_err(), vec!["action:forwardTo"]);
+        let hdr = json!({"id":"h","conditions":{"headerContains":["a"]},"actions":{"assignCategories":["T"]}});
+        assert_eq!(from_graph(&hdr).unwrap_err(), vec!["headerContains"]);
     }
 }

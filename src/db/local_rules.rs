@@ -34,6 +34,12 @@ impl Database {
                 sequence INTEGER NOT NULL DEFAULT 0,
                 json TEXT NOT NULL
             )", [])?;
+        self.conn.execute(
+            "CREATE TABLE IF NOT EXISTS local_rule_stats (
+                rule_id TEXT PRIMARY KEY,
+                applied INTEGER NOT NULL DEFAULT 0,
+                last_applied_at INTEGER NOT NULL DEFAULT 0
+            )", [])?;
         Ok(())
     }
 
@@ -47,6 +53,7 @@ impl Database {
     }
 
     pub fn delete_local_rule(&self, id: &str) -> Result<bool> {
+        self.conn.execute("DELETE FROM local_rule_stats WHERE rule_id = ?1", params![id])?;
         Ok(self.conn.execute("DELETE FROM local_rules WHERE id = ?1", params![id])? > 0)
     }
 
@@ -61,11 +68,13 @@ impl Database {
         Ok(out)
     }
 
-    /// What `rules` would add to the cached Inbox messages. Read-only. Messages with a pending move or
-    /// delete are skipped, as are rows whose details were never fetched (`meta_ok = 0`): matching on
-    /// missing recipients or categories would be guessing.
-    pub fn dry_run(&self, rules: &[LocalRule]) -> Result<DryRun> {
-        let mut out = DryRun::default();
+    /// Every cached Inbox message `rules` would add tags to: `(message id, [(rule id, tag)])`, plus how many
+    /// messages were looked at. Read-only. Messages with a pending move or delete are skipped, as are rows
+    /// whose details were never fetched (`meta_ok = 0`): matching on missing recipients or categories would
+    /// be guessing. Rules are for incoming mail, so only the Inbox is considered.
+    pub fn plan_local_rules(&self, rules: &[LocalRule]) -> Result<(usize, Vec<(String, Vec<(String, String)>)>)> {
+        let mut scanned = 0;
+        let mut plan = Vec::new();
         let mut st = self.conn.prepare(
             "SELECT m.id, m.account_id, m.from_email, COALESCE(m.from_name,''), COALESCE(m.to_text,''),
                     COALESCE(m.cc_text,''), m.subject, m.body, COALESCE(m.importance,''),
@@ -83,34 +92,94 @@ impl Database {
         })?;
         for row in rows {
             let (id, m) = row?;
-            out.scanned += 1;
+            scanned += 1;
             let add = additions(rules, &m);
-            if add.is_empty() { continue; }
-            out.messages += 1;
+            if !add.is_empty() { plan.push((id, add)); }
+        }
+        Ok((scanned, plan))
+    }
+
+    /// Counts for the preview: what `plan_local_rules` would do. Read-only.
+    pub fn dry_run(&self, rules: &[LocalRule]) -> Result<DryRun> {
+        let (scanned, plan) = self.plan_local_rules(rules)?;
+        let mut out = DryRun { scanned, messages: plan.len(), ..Default::default() };
+        for (id, add) in &plan {
             out.additions += add.len();
             let mut seen_rules: Vec<&str> = Vec::new();
-            for (rid, tag) in &add {
+            for (rid, tag) in add {
                 *out.by_tag.entry(tag.clone()).or_default() += 1;
                 if !seen_rules.contains(&rid.as_str()) {
                     seen_rules.push(rid);
                     *out.by_rule.entry(rid.clone()).or_default() += 1;
                 }
             }
-            if out.sample.len() < SAMPLE { out.sample.push((id, add.into_iter().map(|(_, t)| t).collect())); }
+            if out.sample.len() < SAMPLE { out.sample.push((id.clone(), add.iter().map(|(_, t)| t.clone()).collect())); }
         }
         Ok(out)
     }
+
+    /// Apply the plan for real: add each tag through `change_message_categories` (local edit, `cat_pending`
+    /// = 1, pushed to the provider by the normal category push), and count it per rule.
+    ///
+    /// The plan is recomputed here, not taken from an earlier preview, so it reflects the cache now. If more
+    /// than `max_messages` would change and `confirmed` is false nothing is written and `Refused` is returned
+    /// with the count (plan section 5: show the count, refuse over the threshold without an explicit confirm).
+    pub fn apply_local_rules(&self, rules: &[LocalRule], max_messages: usize, confirmed: bool) -> Result<ApplyOutcome> {
+        let (_, plan) = self.plan_local_rules(rules)?;
+        if plan.len() > max_messages && !confirmed {
+            return Ok(ApplyOutcome::Refused { would_change: plan.len(), limit: max_messages });
+        }
+        let now = Self::now_secs();
+        let mut messages = 0;
+        let mut per_rule: BTreeMap<String, usize> = BTreeMap::new();
+        for (id, add) in &plan {
+            let mut touched = false;
+            let mut rules_seen: Vec<&str> = Vec::new();
+            for (rid, tag) in add {
+                if self.change_message_categories(std::slice::from_ref(id), true, tag)? > 0 {
+                    touched = true;
+                    if !rules_seen.contains(&rid.as_str()) {
+                        rules_seen.push(rid);
+                        *per_rule.entry(rid.clone()).or_default() += 1;
+                    }
+                }
+            }
+            if touched { messages += 1; }
+        }
+        for (rid, n) in &per_rule {
+            self.conn.execute(
+                "INSERT INTO local_rule_stats (rule_id, applied, last_applied_at) VALUES (?1, ?2, ?3)
+                 ON CONFLICT(rule_id) DO UPDATE SET applied = applied + ?2, last_applied_at = ?3",
+                params![rid, *n as i64, now])?;
+        }
+        Ok(ApplyOutcome::Applied { messages, per_rule })
+    }
+
+    /// Messages each rule has tagged so far (retroactive runs), by rule id.
+    pub fn local_rule_stats(&self) -> Result<BTreeMap<String, i64>> {
+        let mut st = self.conn.prepare("SELECT rule_id, applied FROM local_rule_stats")?;
+        let rows = st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum ApplyOutcome {
+    /// Nothing written: the run would change more messages than the limit and was not confirmed.
+    Refused { would_change: usize, limit: usize },
+    Applied { messages: usize, per_rule: BTreeMap<String, usize> },
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::local_rules::{Actions, Expr, Field};
+    use crate::local_rules::{Actions, Pred};
     use crate::models::EmailMessage;
 
     fn rule(id: &str, seq: i64, from: &str, tag: &str, stop: bool) -> LocalRule {
         LocalRule { id: id.into(), name: id.into(), enabled: true, sequence: seq, applies_to: vec![],
-            when: Expr::Text { field: Field::From, values: vec![from.into()] },
+            conditions: vec![Pred::SenderContains(vec![from.into()])], exceptions: vec![],
             actions: Actions { tags: vec![tag.into()], stop } }
     }
 
@@ -140,6 +209,29 @@ mod tests {
         assert_eq!(d.local_rules().unwrap().len(), 1);
     }
 
+    fn pending(d: &Database) -> i64 { d.conn.query_row("SELECT COUNT(*) FROM messages WHERE cat_pending = 1", [], |r| r.get(0)).unwrap() }
+
+    #[test]
+    fn apply_refuses_over_the_limit_then_tags_once_confirmed_and_counts() {
+        let d = db();
+        for i in 0..5 { put(&d, &format!("b{i}"), "bob@x.com", "inb", &[], true); }
+        put(&d, "t", "bob@x.com", "inb", &["Work"], true);
+        put(&d, "o", "bob@x.com", "oth", &[], true);
+        let rules = vec![rule("r1", 1, "bob@", "Work", true)];
+        assert_eq!(d.apply_local_rules(&rules, 4, false).unwrap(), ApplyOutcome::Refused { would_change: 5, limit: 4 });
+        assert_eq!(pending(&d), 0, "refusal writes nothing");
+        let ApplyOutcome::Applied { messages, per_rule } = d.apply_local_rules(&rules, 4, true).unwrap() else { panic!("applied") };
+        assert_eq!((messages, per_rule.get("r1")), (5, Some(&5)));
+        assert_eq!(pending(&d), 5, "queued for the provider push; the tagged and non-Inbox rows untouched");
+        assert_eq!(d.local_rule_stats().unwrap().get("r1"), Some(&5));
+        // second run: nothing left to do, nothing double counted
+        let ApplyOutcome::Applied { messages, .. } = d.apply_local_rules(&rules, 4, false).unwrap() else { panic!("applied") };
+        assert_eq!(messages, 0);
+        assert_eq!(d.local_rule_stats().unwrap().get("r1"), Some(&5));
+        assert!(d.delete_local_rule("r1").is_ok());
+        assert!(d.local_rule_stats().unwrap().is_empty());
+    }
+
     #[test]
     fn dry_run_counts_inbox_only_skips_tagged_unfetched_and_changes_nothing() {
         let d = db();
@@ -159,5 +251,59 @@ mod tests {
         assert_eq!(r.sample.len(), 2);
         let after: i64 = d.conn.query_row("SELECT COUNT(*) FROM messages WHERE cat_pending = 1", [], |r| r.get(0)).unwrap();
         assert_eq!(before, after, "dry run must not mark anything pending");
+    }
+}
+
+#[cfg(test)]
+mod real_cache {
+    //! Manual check against a COPY of the real cache: `OMALOOK_DRYRUN_DB=/path/copy.db cargo test --lib
+    //! real_cache -- --ignored --nocapture`. Read-only; prints counts, no addresses.
+    use super::*;
+    use crate::local_rules::{from_graph, Msg};
+
+    #[test]
+    #[ignore]
+    fn saint_lucia_rules_against_the_cache() {
+        let path = std::env::var("OMALOOK_DRYRUN_DB").expect("set OMALOOK_DRYRUN_DB to a copy of messages.db");
+        let tag_key = std::env::var("OMALOOK_DRYRUN_TAG").unwrap_or_else(|_| "saintlucia".into());
+        let d = Database::open_for_account(&path, "exchange-primary").unwrap();
+        let squash = |s: &str| s.chars().filter(|c| c.is_alphanumeric()).collect::<String>().to_lowercase();
+        let mut rules = Vec::new();
+        let mut skipped = Vec::new();
+        for raw in d.rules_raw("exchange-primary").unwrap() {
+            let tags: Vec<String> = raw["actions"]["assignCategories"].as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default();
+            if !tags.iter().any(|t| squash(t) == tag_key) { continue; }
+            match from_graph(&raw) { Ok(r) => rules.push(r), Err(k) => skipped.push((raw["displayName"].as_str().unwrap_or("?").to_string(), k)) }
+        }
+        println!("rules for tag '{tag_key}': {} usable ({} enabled), {} unsupported {:?}", rules.len(), rules.iter().filter(|r| r.enabled).count(), skipped.len(), skipped);
+        for r in &rules { println!("  seq {:>3} enabled={} stop={} conds={:?} tags={:?}", r.sequence, r.enabled, r.actions.stop, r.conditions.iter().map(|p| p.key()).collect::<Vec<_>>(), r.actions.tags); }
+
+        // Evaluate each rule alone (matches), over every cached Exchange message, by folder kind.
+        let mut st = d.conn.prepare(
+            "SELECT m.account_id, m.from_email, COALESCE(m.from_name,''), COALESCE(m.to_text,''), COALESCE(m.cc_text,''), m.subject, m.body,
+                    COALESCE(m.importance,''), COALESCE(m.has_attachments,0), m.categories, COALESCE(lower(f.well_known_name),'(custom)'), m.meta_ok, m.action_pending
+             FROM messages m LEFT JOIN folders f ON f.id = m.folder_id WHERE m.account_id = 'exchange-primary'").unwrap();
+        let rows = st.query_map([], |r| Ok((Msg { account_id: r.get(0)?, from_email: r.get(1)?, from_name: r.get(2)?, to_text: r.get(3)?, cc_text: r.get(4)?,
+            subject: r.get(5)?, body: r.get(6)?, importance: r.get(7)?, has_attachments: r.get::<_, i64>(8)? != 0,
+            categories: categories_from_json(r.get::<_, Option<String>>(9)?.as_deref()) },
+            r.get::<_, String>(10)?, r.get::<_, i64>(11)?, r.get::<_, Option<String>>(12)?))).unwrap();
+        let (mut scanned, mut matched, mut tagged, mut gain) = (0, 0, 0, 0);
+        let mut by_folder: BTreeMap<String, (usize, usize)> = BTreeMap::new();
+        let (mut inbox_gain, mut no_meta_match) = (0, 0);
+        for row in rows {
+            let (m, folder, meta, pending) = row.unwrap();
+            scanned += 1;
+            let hit = rules.iter().filter(|r| r.enabled).any(|r| r.matches(&m));
+            if !hit { continue; }
+            matched += 1;
+            let already = m.categories.iter().any(|c| squash(c) == tag_key);
+            if already { tagged += 1; } else { gain += 1; if folder == "inbox" && pending.is_none() && meta == 1 { inbox_gain += 1; } }
+            if meta != 1 { no_meta_match += 1; }
+            let e = by_folder.entry(folder).or_default(); e.0 += 1; if !already { e.1 += 1; }
+        }
+        println!("scanned {scanned}; rules match {matched}: already tagged {tagged}, would gain {gain}; of the gain {inbox_gain} are applicable Inbox rows; {no_meta_match} matches have meta_ok=0");
+        println!("by folder (matches, would gain): {by_folder:?}");
+        let dr = d.dry_run(&rules).unwrap();
+        println!("dry_run (Inbox, details fetched, rules in order with stop): scanned {} messages {} additions {} by_rule {:?}", dr.scanned, dr.messages, dr.additions, dr.by_rule);
     }
 }
