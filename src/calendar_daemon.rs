@@ -42,6 +42,8 @@ impl Default for CalendarDaemonConfig {
 }
 
 /// Near-term occurrence window, in days relative to today (the full window comes from Settings).
+/// Set (per account) once a full walk of the events has finished.
+const EVENTS_FULL_FLAG: &str = "events_full_walk";
 const NEAR_BACK_DAYS: i64 = 7;
 const NEAR_AHEAD_DAYS: i64 = 90;
 /// Size of one calendarView request/replace unit.
@@ -72,7 +74,6 @@ impl CalendarDaemon {
         let mut last_near: Option<Instant> = None;
         let mut last_full: Option<Instant> = None;
         let mut applied_years: Option<(i32, i32)> = None;
-        let mut authenticated_once = false;
 
         // Mail's priority stages first; calendar starts a few seconds after contacts.
         let acct = self.db.account_id().to_string();
@@ -82,8 +83,9 @@ impl CalendarDaemon {
         loop {
             match self.provider.is_token_valid().await {
                 Ok(true) => {
-                    let is_first_run = !authenticated_once;
-                    authenticated_once = true;
+                    // Until one full walk of the events has finished (recorded in the database) every
+                    // round tries it again; a start with no network must not skip it for good.
+                    let is_first_run = !self.db.flag_is_set(EVENTS_FULL_FLAG).unwrap_or(false);
 
                     let should_sync = is_first_run
                         || last_sync.map(|t| t.elapsed() >= interval).unwrap_or(true);
@@ -123,6 +125,9 @@ impl CalendarDaemon {
                         let _t = perf::span(format!("calendar[{}] sync_events(first_run={})", self.db.account_id(), is_first_run));
                         match self.sync_events(is_first_run).await {
                             Ok(count) => {
+                                if is_first_run {
+                                    if let Err(e) = self.db.set_flag(EVENTS_FULL_FLAG) { warn!("Could not record the full calendar walk: {}", e); }
+                                }
                                 if count > 0 {
                                     info!("Successfully synced {} calendar events", count);
                                 } else {
@@ -223,8 +228,10 @@ impl CalendarDaemon {
                 tokio::task::yield_now().await;
             }
 
-            if let Ok(Err(e)) = fetch_handle.await {
-                error!("Paginated calendar fetch error: {}", e);
+            match fetch_handle.await {
+                Ok(Ok(_)) => {}
+                Ok(Err(e)) => return Err(e),
+                Err(e) => return Err(crate::errors::OmarchyError::HttpError(format!("calendar task failed: {}", e))),
             }
             Ok(written)
         } else {

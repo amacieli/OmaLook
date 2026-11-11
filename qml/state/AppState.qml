@@ -469,7 +469,9 @@ Item {
     if (id === "") { _setBody({ id: "", state: "idle", type: "", content: "" }); return }
     var hit = _bodyCache[id]
     if (hit) { _setBody({ id: id, state: "ready", type: hit.type, content: hit.content }); return }
-    _setBody({ id: id, state: "loading", type: "", content: "" })
+    // The snippet the list already holds shows at once; the full body replaces it when it lands.
+    _setBody({ id: id, state: "loading", type: "", content: "",
+               preview: currentMessage && String(currentMessage.id) === id ? String(currentMessage.body_preview || "") : "" })
     request("GET", "/messages/body?id=" + encodeURIComponent(id), function(xhr) {
       var result = null
       if (xhr.status === 200) {
@@ -986,7 +988,8 @@ Item {
   // { accounts: [{ account_id, provider, email, state, error, fetched_at, total, can_write,
   //                groups: [{ tag, color, rules: [...] }], other: [...], system: [...],
   //                order: [{ id, locked }],            every rule by position; locked = not ours to move
-  //                ops: [{ id, kind, state, message, created_at, payload }] }] }   changes asked for, newest first
+  //                ops: [{ id, kind, state, message, created_at, payload }],     changes asked for, newest first
+  //                filters: [{ id, tags, text, editable, reason, rule }] }] }     Gmail accounts only (groups etc. are empty)
   property var rulesData: ({ accounts: [] })
   property string _rulesJson: ""
   property string ruleNotice: ""
@@ -1050,7 +1053,23 @@ Item {
   function _ruleQuery(account, tag, kind, value) {
     return "account=" + encodeURIComponent(account) + "&tag=" + encodeURIComponent(tag) + "&" + kind + "=" + encodeURIComponent(value)
   }
+  // `T` and the Exchange form speak "tag + address|domain"; a Gmail account gets the same thing as a filter.
+  function _isGmailAccount(id) { var a = ruleAccount(id); return !!a && a.provider === "gmail" }
+  function _gmailRule(tag, kind, value) {
+    var v = kind === "domain" ? "@" + String(value).replace(/^@/, "") : String(value)
+    return JSON.stringify({ name: "Gmail filter: " + tag, conditions: [{ kind: kind === "domain" ? "sender_contains" : "from_addresses", value: [v] }],
+                            exceptions: [], actions: { tags: [tag], stop: false } })
+  }
   function ruleCheck(account, tag, kind, value, done) {
+    if (_isGmailAccount(account)) {
+      filterCheck(account, _gmailRule(tag, kind, value), function(r) {
+        if (!r.ok) return done(r)
+        if (r.writable === false) return done({ ok: false, error: "Gmail cannot hold this: " + r.reason })
+        var p = r.preview || {}
+        done({ ok: true, preview: { matches: p.matched || 0, already_tagged: (p.matched || 0) - (p.messages || 0), shadowed_by: [], exists: false } })
+      })
+      return
+    }
     request("GET", "/rules/preview?" + _ruleQuery(account, tag, kind, value), function(xhr) {
       var r = null
       try { r = JSON.parse(xhr.responseText) } catch (e) { r = null }
@@ -1058,8 +1077,29 @@ Item {
     })
   }
   function ruleAdd(account, tag, kind, value, done) {
+    if (_isGmailAccount(account)) {
+      filterAdd(account, _gmailRule(tag, kind, value), "Filter: mail from " + (kind === "domain" ? "@" + String(value).replace(/^@/, "") : value) + " \u2192 tag \u201c" + tag + "\u201d.", done)
+      return
+    }
     _ruleCall("POST", "/rules/add?" + _ruleQuery(account, tag, kind, value),
       "Rule: mail from " + (kind === "domain" ? "@" + String(value).replace(/^@/, "") : value) + " \u2192 tag \u201c" + tag + "\u201d.", done)
+  }
+  // Gmail filters (OL-040 phase 5): `ruleJson` is a local-rule JSON; the backend refuses what Gmail cannot hold exactly.
+  function filterCheck(account, ruleJson, done) {
+    request("GET", "/rules/filter-preview?account=" + encodeURIComponent(account) + "&rule=" + encodeURIComponent(ruleJson), function(xhr) {
+      var r = null
+      try { r = JSON.parse(xhr.responseText) } catch (e) { r = null }
+      done(xhr.status === 200 && r ? r : { ok: false, error: "the backend did not answer" })
+    })
+  }
+  function filterAdd(account, ruleJson, text, done) {
+    _ruleCall("POST", "/rules/filter-add?account=" + encodeURIComponent(account) + "&rule=" + encodeURIComponent(ruleJson), text, done)
+  }
+  function filterEdit(account, id, ruleJson, text, done) {
+    _ruleCall("POST", "/rules/filter-edit?account=" + encodeURIComponent(account) + "&id=" + encodeURIComponent(id) + "&rule=" + encodeURIComponent(ruleJson), text, done)
+  }
+  function filterDelete(account, id, text, done) {
+    _ruleCall("POST", "/rules/filter-delete?account=" + encodeURIComponent(account) + "&id=" + encodeURIComponent(id) + "&confirm=yes", text, done)
   }
   function ruleEnable(account, id, on, done) {
     _ruleCall("POST", "/rules/enable?account=" + encodeURIComponent(account) + "&id=" + encodeURIComponent(id) + "&on=" + (on ? "true" : "false"),

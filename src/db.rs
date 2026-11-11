@@ -89,6 +89,8 @@ pub mod lists;
 pub mod tags;
 pub mod rules;
 pub mod local_rules;
+pub mod gmail_filters;
+pub mod tasks;
 
 pub struct Database {
     conn: Connection,
@@ -361,6 +363,7 @@ impl Database {
         self.init_tags_schema()?;
         self.init_rules_schema()?;
         self.init_local_rules_schema()?;
+        self.init_tasks_schema()?;
 
         // Outgoing mail: queued when the user presses Send, sent by the account's outbox worker
         // once `send_at` (unix ms) passes. state: pending | sending | sent | failed | cancelled.
@@ -437,6 +440,7 @@ impl Database {
             ("online_url", "TEXT NOT NULL DEFAULT ''"), ("reminder_minutes", "INTEGER"),
             ("web_link", "TEXT NOT NULL DEFAULT ''"), ("sensitivity", "TEXT NOT NULL DEFAULT ''"),
             ("recurrence_json", "TEXT NOT NULL DEFAULT ''"), ("calendar_id", "TEXT NOT NULL DEFAULT ''"),
+            ("tags_json", "TEXT NOT NULL DEFAULT ''"),
         ] {
             let has: bool = self.conn.query_row(
                 "SELECT COUNT(*) FROM pragma_table_info('calendar_events') WHERE name = ?1",
@@ -850,7 +854,54 @@ impl Database {
             "UPDATE messages SET body_type = ?1, body_full = ?2 WHERE id = ?3",
             params![content_type, content, id],
         )?;
+        // A row stored without its preview snippet gets one from the body it now has.
+        let missing: bool = self.conn.query_row(
+            "SELECT body = '' FROM messages WHERE id = ?1", params![id], |r| r.get(0),
+        ).unwrap_or(false);
+        if missing {
+            let text = if content_type == "html" { crate::compose::html_to_text(content) } else { content.to_string() };
+            let snippet = body_snippet(&text);
+            if !snippet.is_empty() {
+                self.conn.execute("UPDATE messages SET body = ?1 WHERE id = ?2", params![snippet, id])?;
+            }
+        }
         Ok(())
+    }
+
+    /// Ids (newest first) of this account's messages received in the last `days` days whose
+    /// full body is not cached yet: the daemon's prefetch queue.
+    pub fn messages_needing_body(&self, days: i64, limit: usize) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id FROM messages WHERE account_id = ?1 AND body_full IS NULL
+               AND received_at >= strftime('%Y-%m-%dT%H:%M:%SZ', 'now', ?2)
+             ORDER BY received_at DESC LIMIT ?3",
+        )?;
+        let rows = stmt
+            .query_map(params![self.account_id, format!("-{} days", days), limit as i64], |r| r.get::<_, String>(0))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// Give rows that hold a full body but no preview snippet one. Returns how many.
+    pub fn fill_missing_previews(&self) -> Result<usize> {
+        let rows: Vec<(String, String, String)> = {
+            let mut stmt = self.conn.prepare(
+                "SELECT id, body_type, body_full FROM messages WHERE account_id = ?1 AND body = '' AND body_full IS NOT NULL AND body_full != ''",
+            )?;
+            let v = stmt.query_map(params![self.account_id], |r| Ok((r.get(0)?, r.get::<_, Option<String>>(1)?.unwrap_or_default(), r.get(2)?)))?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            v
+        };
+        let mut n = 0;
+        for (id, t, c) in rows {
+            let text = if t == "html" { crate::compose::html_to_text(&c) } else { c };
+            let snippet = body_snippet(&text);
+            if !snippet.is_empty() {
+                self.conn.execute("UPDATE messages SET body = ?1 WHERE id = ?2", params![snippet, id])?;
+                n += 1;
+            }
+        }
+        Ok(n)
     }
 
     /// Normalise an address for the sender table: trimmed, lower-cased. None if it is not
@@ -1210,6 +1261,40 @@ impl Database {
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(rows)
+    }
+
+    /// Queue "set the tags of this event" (OL-040 phase 6). A recurring event is tagged as a whole (decision Q8):
+    /// an occurrence resolves to its series master. Returns (the id that will be written, whether it is a series).
+    pub fn cal_queue_event_tags(&self, outbox_id: &str, event_id: &str, tags: &[String], due_ms: i64) -> std::result::Result<(String, bool), String> {
+        use rusqlite::OptionalExtension;
+        let row: Option<(String, Option<String>, String)> = self.conn
+            .query_row("SELECT id, series_master_id, event_type FROM calendar_events WHERE id = ?1 AND account_id = ?2",
+                       params![event_id, self.account_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .optional().map_err(|e| e.to_string())?;
+        let Some((id, master, kind)) = row else { return Err("no such event in this account".into()) };
+        let target = master.filter(|m| !m.is_empty()).unwrap_or(id);
+        let series = kind == "seriesMaster" || kind == "occurrence" || kind == "exception";
+        let pending: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM calendar_outbox WHERE account_id = ?1 AND op = 'set_tags' AND state IN ('pending','sending') AND payload_json LIKE ?2",
+            params![self.account_id, format!("%\"event_id\":{}%", serde_json::to_string(&target).unwrap_or_default())], |r| r.get(0)).map_err(|e| e.to_string())?;
+        if pending > 0 { return Err("a tag change for this event is already waiting".into()) }
+        let payload = serde_json::json!({ "event_id": target, "tags": tags, "series": series }).to_string();
+        self.cal_outbox_enqueue(outbox_id, &self.account_id, "set_tags", &payload, 0, outbox_id, due_ms).map_err(|e| e.to_string())?;
+        Ok((target, series))
+    }
+
+    /// After the provider confirmed new tags: the event and, for a series master, its cached occurrences.
+    pub fn cal_set_event_tags_local(&self, event_id: &str, tags: &[String]) -> Result<usize> {
+        let json = if tags.is_empty() { String::new() } else { serde_json::to_string(tags).unwrap_or_default() };
+        Ok(self.conn.execute(
+            "UPDATE calendar_events SET tags_json = ?3 WHERE account_id = ?1 AND (id = ?2 OR series_master_id = ?2)",
+            params![self.account_id, event_id, json])?)
+    }
+
+    /// The cached tags of one event (series masters included, which the month query does not return).
+    pub fn cal_event_tags(&self, event_id: &str) -> Vec<String> {
+        self.conn.query_row("SELECT tags_json FROM calendar_events WHERE id = ?1 AND account_id = ?2", params![event_id, self.account_id], |r| r.get::<_, String>(0))
+            .ok().and_then(|j| serde_json::from_str(&j).ok()).unwrap_or_default()
     }
 
     pub fn cal_outbox_status(&self, id: &str) -> Result<Option<(String, Option<String>, Option<String>)>> {
@@ -2023,6 +2108,22 @@ impl Database {
         Ok(())
     }
 
+    /// After a COMPLETE walk of a folder: drop this account's cached contacts of that folder
+    /// the walk did not see (deleted elsewhere). Returns how many.
+    pub fn purge_contacts_unseen(&self, folder_id: &str, seen: &std::collections::HashSet<String>) -> Result<usize> {
+        let ids: Vec<String> = {
+            let mut stmt = self.conn.prepare("SELECT id FROM contacts WHERE account_id = ?1 AND folder_id = ?2")?;
+            let v = stmt.query_map(params![self.account_id, folder_id], |r| r.get::<_, String>(0))?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            v
+        };
+        let mut n = 0;
+        for id in ids.into_iter().filter(|i| !seen.contains(i)) {
+            n += self.conn.execute("DELETE FROM contacts WHERE id = ?1 AND account_id = ?2", params![id, self.account_id])?;
+        }
+        Ok(n)
+    }
+
     pub fn set_contact_favorite(&self, id: &str, favorite: bool) -> Result<()> {
         self.conn.execute("UPDATE contacts SET is_favorite = ?1 WHERE id = ?2", params![favorite, id])?;
         Ok(())
@@ -2093,9 +2194,9 @@ impl Database {
                                           event_type, series_master_id,
                                           location, organizer_name, organizer_email, is_organizer, attendees_json, my_response,
                                           show_as, online_provider, online_url, reminder_minutes, web_link, sensitivity,
-                                          recurrence_json, calendar_id)
+                                          recurrence_json, calendar_id, tags_json)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, CURRENT_TIMESTAMP, ?8, ?9, ?10,
-                     ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)
+                     ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)
              ON CONFLICT(id) DO UPDATE SET
                subject    = excluded.subject,
                body       = excluded.body,
@@ -2112,6 +2213,7 @@ impl Database {
                online_url = excluded.online_url, reminder_minutes = excluded.reminder_minutes,
                web_link = excluded.web_link, sensitivity = excluded.sensitivity,
                recurrence_json = excluded.recurrence_json, calendar_id = excluded.calendar_id,
+               tags_json = excluded.tags_json,
                cached_at  = CURRENT_TIMESTAMP",
             params![
                 ev.id, ev.subject, ev.body, ev.start, ev.end, ev.is_all_day, ev.time_zone, self.account_id,
@@ -2120,6 +2222,7 @@ impl Database {
                 ev.location, ev.organizer_name, ev.organizer_email, ev.is_organizer, ev.attendees_json, ev.my_response,
                 ev.show_as, ev.online_provider, ev.online_url, ev.reminder_minutes, ev.web_link, ev.sensitivity,
                 ev.recurrence_json, ev.calendar_id,
+                if ev.tags.is_empty() { String::new() } else { serde_json::to_string(&ev.tags).unwrap_or_default() },
             ],
         )?;
         Ok(())
@@ -2179,7 +2282,7 @@ impl Database {
                     e.series_master_id, COALESCE(e.account_id, ''), COALESCE(a.email, ''),
                     e.location, e.organizer_name, e.organizer_email, e.is_organizer, e.attendees_json, e.my_response,
                     e.show_as, e.online_provider, e.online_url, e.reminder_minutes, e.web_link, e.sensitivity,
-                    e.recurrence_json, e.calendar_id
+                    e.recurrence_json, e.calendar_id, e.tags_json
              FROM calendar_events e LEFT JOIN accounts a ON a.id = e.account_id
              WHERE e.start_at < ?2 AND e.end_at >= ?1 AND e.event_type != 'seriesMaster'
                AND (?3 IS NULL OR e.account_id = ?3 OR lower(a.email) = lower(?3))
@@ -2211,6 +2314,7 @@ impl Database {
                     sensitivity:      row.get(22)?,
                     recurrence_json:  row.get(23)?,
                     calendar_id:      row.get(24)?,
+                    tags:             serde_json::from_str::<Vec<String>>(&row.get::<_, String>(25)?).unwrap_or_default(),
                 }, row.get(9)?, row.get(10)?))
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -3020,3 +3124,10 @@ mod outbox_tests {
     }
 }
 
+
+/// The preview snippet of a plain-text body: whitespace collapsed, at most 255 characters
+/// (what the providers' own preview fields hold).
+pub fn body_snippet(text: &str) -> String {
+    let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    flat.chars().take(255).collect()
+}

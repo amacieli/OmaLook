@@ -19,6 +19,7 @@ Rectangle {
     readonly property var raw: event ? event.raw : null
     readonly property string joinHref: CU.joinUrl(raw)
     readonly property var attendees: raw && raw.attendees ? raw.attendees : []
+    readonly property var tags: raw && raw.tags ? raw.tags : []
 
     color: "transparent"
     clip: true
@@ -102,6 +103,24 @@ Rectangle {
                     return bits.join("  ·  ")
                 }
                 font.family: root.monoFont; font.pixelSize: Style.font.caption; color: root.dimColor
+            }
+            // OmaLook tags (OL-040 phase 6): Exchange categories / Google private property. Read-only for now.
+            Flow {
+                visible: root.tags.length > 0
+                width: parent.width
+                spacing: 6
+                Text { text: "tags"; font.family: root.monoFont; font.pixelSize: Style.font.caption; color: root.dimColor }
+                Repeater {
+                    model: root.tags
+                    delegate: Rectangle {
+                        required property string modelData
+                        radius: 3
+                        color: Qt.rgba(root.accentColor.r, root.accentColor.g, root.accentColor.b, 0.18)
+                        width: tagText.implicitWidth + 10
+                        height: tagText.implicitHeight + 2
+                        Text { id: tagText; anchors.centerIn: parent; text: parent.modelData; font.family: root.monoFont; font.pixelSize: Style.font.caption; color: root.textColor }
+                    }
+                }
             }
             Text {
                 visible: root.accounts.length > 1 && !!root.raw && !!root.raw.account_email

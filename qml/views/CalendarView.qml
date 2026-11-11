@@ -88,6 +88,29 @@ Item {
     property string undoId: ""                     // the queued write the undo bar is about
     property string undoMessage: ""
     property string undoState: ""                  // pending | sending | sent | failed | ""
+    property string undoKind: "event"              // event | tags: what the bar is about (Ctrl-Z only reopens the editor for an event)
+
+    // OL-040 phase 6: show only events whose tags match (mail `tag:` syntax). "" = all.
+    property string tagFilter: ""
+    onTagFilterChanged: loadEvents(true)
+
+    // Set the selected event's tags (a recurring event is tagged as a whole). Returns a message for the status bar, or "".
+    function setSelectedTags(tags) {
+        if (!selectedEvent) return "No event selected"
+        var raw = selectedEvent.raw
+        if (raw.pending === true) return "That event is not saved yet"
+        _post("POST", "/calendar/tags?account=" + encodeURIComponent(raw.account_id) + "&id=" + encodeURIComponent(raw.id)
+              + "&tags=" + encodeURIComponent(JSON.stringify(tags)), null, function(r) {
+            if (!r.ok) { undoKind = "tags"; undoId = ""; undoState = "failed"; undoMessage = "Tags not saved: " + (r.error || "unknown error"); hideBar.restart(); return }
+            undoKind = "tags"
+            undoId = r.id
+            undoState = "pending"
+            undoMessage = (tags.length === 0 ? "Removing the tags" : "Tags queued") + (r.series ? " on the whole series" : "")
+            pollOutbox()
+            outboxTimer.start()
+        })
+        return ""
+    }
 
     function newEvent() {
         if (editorOpen) return ""
@@ -125,6 +148,7 @@ Item {
             editorOpen = false
             editorStatus = ""
             accountUsed(body.account_id)
+            undoKind = "event"
             undoId = r.id
             undoState = "pending"
             var n = r.attendees || 0
@@ -143,6 +167,7 @@ Item {
             if (r.cancelled === true) {
                 undoId = ""; undoState = ""; undoMessage = ""
                 pollOutbox()
+                if (undoKind === "tags") { undoMessage = ""; return }
                 if (editorSnapshot && !editorOpen) {
                     editorRestore = editorSnapshot; editorStatus = "Undone. Your event is back in the editor."
                     editorStart = editorSnapshot.base.start
@@ -167,7 +192,7 @@ Item {
                 if (items[i].id === undoId) {
                     undoState = items[i].state
                     if (items[i].state === "sent") undoMessage = "Saved"
-                    else if (items[i].state === "failed") undoMessage = "Not saved: " + (items[i].error || "the server refused it") + "   (Ctrl-Z to edit it again)"
+                    else if (items[i].state === "failed") undoMessage = "Not saved: " + (items[i].error || "the server refused it") + (undoKind === "event" ? "   (Ctrl-Z to edit it again)" : "")
                 }
             }
             pendingItems = items.filter(function(it) { return it.state === "pending" || it.state === "sending" || it.state === "failed" })
@@ -283,7 +308,7 @@ Item {
                 var c = root._cache; c[m] = res; root._cache = c
                 if (--pending === 0 && serial === root._reqSerial) { root.loading = false; root._merge() }
             }
-            xhr.open("GET", root.backendUrl + "/calendar/events?month=" + m)
+            xhr.open("GET", root.backendUrl + "/calendar/events?month=" + m + (root.tagFilter !== "" ? "&tag=" + encodeURIComponent(root.tagFilter) : ""))
             xhr.send()
         })
         if (pending === 0) { loading = false; _merge() } else loading = true
@@ -421,6 +446,12 @@ Item {
 
                     Item { Layout.fillWidth: true }
 
+                    UiText {
+                        visible: root.tagFilter !== ""
+                        text: "tag: " + root.tagFilter + "  (f)"
+                        foreground: Commons.Color.accent
+                        font.pixelSize: Style.font.caption
+                    }
                     UiText {
                         visible: root.accounts.length > 1
                         text: (root.accountFilter === "" ? "all accounts" : root.accountFilter) + "  (A)"

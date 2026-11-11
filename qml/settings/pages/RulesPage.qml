@@ -11,14 +11,15 @@ import ".."
 // forward or delete rule can never hide among the tag rules. Plain tag rules can be added, turned on and
 // off, moved and deleted here; every change is checked against the server before and after it is made.
 // Forward / delete / importance rules and Outlook's own read-only rules are shown but never changed here.
-// Gmail filters need a permission OmaLook does not ask for yet.
+// Gmail accounts show their filters instead (GmailFilters.qml): add, change and delete, limited to what Gmail
+// can hold exactly.
 SettingsPage {
   id: page
 
   property var app: null
 
   title: "Rules"
-  description: "What your mail server does with arriving mail. Tag rules can be added, switched off, moved and deleted here; other rules are shown but are changed in Outlook. A new rule only tags mail that arrives from then on."
+  description: "What your mail server does with arriving mail. Exchange tag rules can be added, switched off, moved and deleted here; other rules are shown but are changed in Outlook. Gmail filters can be added, changed and deleted. A new rule only tags mail that arrives from then on."
 
   readonly property var accounts: app ? app.rulesData.accounts : []
 
@@ -89,10 +90,13 @@ SettingsPage {
   }
   function opText(o) {
     var p = o.payload || {}
-    var what = o.kind === "add" ? "new rule \u201c" + ((p.body && p.body.displayName) || "") + "\u201d"
+    var what = o.kind === "gmail_add" ? "new filter"
+             : o.kind === "gmail_edit" ? "change a filter"
+             : o.kind === "gmail_delete" ? "delete a filter"
+             : o.kind === "add" ? "new rule \u201c" + ((p.body && p.body.displayName) || "") + "\u201d"
              : o.kind === "enable" ? (p.on ? "turn a rule on" : "turn a rule off")
              : o.kind === "delete" ? "delete a rule" : "move a rule"
-    if (o.state === "pending") return "Waiting for the server: " + what
+    if (o.state === "pending") return (o.kind.indexOf("gmail_") === 0 ? "Waiting for Gmail: " : "Waiting for the server: ") + what
     return "Not done (" + what + "): " + o.message
   }
 
@@ -142,14 +146,18 @@ SettingsPage {
 
       PanelSectionHeader { text: acct.modelData.email.toUpperCase() + "  (" + acct.modelData.provider + ")" }
 
+      GmailFilters { visible: acct.modelData.provider === "gmail"; app: page.app; page: page; account: acct.modelData; width: parent.width }
+
       UiText {
+        visible: acct.modelData.provider !== "gmail"
         width: parent.width
         wrapMode: Text.WordWrap
         dim: true
         font.pixelSize: Style.font.caption
         text: {
           var m = acct.modelData
-          if (m.provider !== "exchange") return "Gmail filters are not read yet: that needs a Gmail settings permission, asked for together with editing them."
+          if (m.provider === "gmail") return ""
+          if (m.provider !== "exchange") return "This kind of account has no rules OmaLook can show."
           if (m.state === "needs_signin") return "The server refused the rule list. Sign in to this account again (Settings \u203a Accounts) to allow it." + (m.total > 0 ? " Showing the last copy." : "")
           if (m.state === "error") return "Could not read the rules: " + m.error + (m.total > 0 ? " Showing the last copy." : "")
           if (m.state === "none") return "Not read yet."
@@ -201,7 +209,7 @@ SettingsPage {
         })
       }
       RowLayout {
-        visible: acct.modelData.can_write
+        visible: acct.modelData.can_write && acct.modelData.provider === "exchange"
         width: parent.width
         UiText { Layout.fillWidth: true; dim: true; font.pixelSize: Style.font.caption; text: "Tag mail that is already in the Inbox and missed a rule (the server only runs rules on arriving mail)." }
         Button {
@@ -216,7 +224,7 @@ SettingsPage {
 
       // add a rule: a sender address or a whole domain -> a tag; checked first, then created last in the list
       Column {
-        visible: acct.modelData.can_write
+        visible: acct.modelData.can_write && acct.modelData.provider === "exchange"
         width: parent.width
         spacing: Style.space(6)
         UiText { text: "Add a rule"; dim: true; font.pixelSize: Style.font.caption }

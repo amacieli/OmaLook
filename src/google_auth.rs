@@ -37,6 +37,9 @@ pub const SCOPES: &[&str] = &[
     "openid",
     "email",
     "https://www.googleapis.com/auth/gmail.modify",
+    // Mail filters (OL-040 phase 5). Restricted scope: an account that signed in before this was added has
+    // no filter access until it signs in again (the API answers insufficientPermissions).
+    "https://www.googleapis.com/auth/gmail.settings.basic",
     "https://www.googleapis.com/auth/calendar",
     "https://www.googleapis.com/auth/contacts",
     "https://www.googleapis.com/auth/tasks",

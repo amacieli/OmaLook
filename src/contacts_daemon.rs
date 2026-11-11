@@ -18,6 +18,11 @@ use log::{debug, error, info, warn};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+/// Set (per account) once a full walk of the contacts has finished.
+const FULL_FLAG: &str = "contacts_full_walk";
+/// How often the whole contact list is walked again.
+const FULL_EVERY: Duration = Duration::from_secs(6 * 3600);
+
 pub struct ContactsDaemonConfig {
     pub poll_interval_secs: u64,
     pub folder_sync_interval_secs: u64,
@@ -49,7 +54,7 @@ impl ContactsDaemon {
         let message_interval = Duration::from_secs(self.config.poll_interval_secs);
         let mut last_folder_sync: Option<Instant> = None;
         let mut last_sync: Option<Instant> = None;
-        let mut authenticated_once = false;
+        let mut last_full: Option<Instant> = None;
 
         // Mail's priority stages (recent 50, folders, read flags) go first.
         let acct = self.db.account_id().to_string();
@@ -58,8 +63,11 @@ impl ContactsDaemon {
         loop {
             match self.provider.is_token_valid().await {
                 Ok(true) => {
-                    let is_first_run = !authenticated_once;
-                    authenticated_once = true;
+                    // A full walk runs until one has finished (kept in the database, so a start with
+                    // no network cannot leave the cache on 50-per-folder updates for good), then
+                    // again every FULL_EVERY to pick up edits and deletions made elsewhere.
+                    let full_done = self.db.flag_is_set(FULL_FLAG).unwrap_or(false);
+                    let full_due = !full_done || last_full.map(|t| t.elapsed() >= FULL_EVERY).unwrap_or(true);
 
                     if last_folder_sync.map(|t| t.elapsed() >= folder_interval).unwrap_or(true) {
                         let _t = perf::span(format!("contacts[{}] sync_folders", self.db.account_id()));
@@ -72,12 +80,17 @@ impl ContactsDaemon {
                         }
                     }
 
-                    if is_first_run || last_sync.map(|t| t.elapsed() >= message_interval).unwrap_or(true) {
-                        let _t = perf::span(format!("contacts[{}] sync_contacts(first_run={})", self.db.account_id(), is_first_run));
-                        match self.sync_contacts(is_first_run).await {
+                    if full_due || last_sync.map(|t| t.elapsed() >= message_interval).unwrap_or(true) {
+                        let _t = perf::span(format!("contacts[{}] sync_contacts(full={})", self.db.account_id(), full_due));
+                        match self.sync_contacts(full_due).await {
                             Ok(n) => {
                                 if n > 0 { info!("Synced {} contacts", n) } else { debug!("No contact changes") }
                                 last_sync = Some(Instant::now());
+                                if full_due {
+                                    last_full = Some(Instant::now());
+                                    if let Err(e) = self.db.set_flag(FULL_FLAG) { warn!("Could not record the full contacts walk: {}", e); }
+                                    crate::sync_state::bump_mail("contacts walked");
+                                }
                             }
                             Err(e) => error!("Failed to sync contacts: {}", e),
                         }
@@ -106,20 +119,30 @@ impl ContactsDaemon {
         Ok(folders.len())
     }
 
-    async fn sync_contacts(&self, is_initial: bool) -> Result<usize> {
+    /// `full`: walk every contact of every folder (and drop the ones deleted elsewhere); an Err
+    /// then means the walk did not finish, so the caller tries again. Otherwise the 50 most
+    /// recently changed per folder.
+    async fn sync_contacts(&self, full: bool) -> Result<usize> {
         let folders: Vec<ContactFolder> = self.db.get_contact_folders()?;
+        if full && folders.is_empty() {
+            return Err(crate::errors::OmarchyError::HttpError("no contact folders known yet".into()));
+        }
         let mut total = 0;
+        let mut failed = 0;
         for folder in &folders {
-            match self.sync_folder(&folder.id, is_initial).await {
+            match self.sync_folder(&folder.id, full).await {
                 Ok(n) => total += n,
-                Err(e) => error!("Failed to sync contact folder {}: {}", folder.display_name, e),
+                Err(e) => { failed += 1; error!("Failed to sync contact folder {}: {}", folder.display_name, e); }
             }
+        }
+        if full && failed > 0 {
+            return Err(crate::errors::OmarchyError::HttpError(format!("{} contact folder(s) not fully read", failed)));
         }
         Ok(total)
     }
 
-    async fn sync_folder(&self, folder_id: &str, is_initial: bool) -> Result<usize> {
-        if is_initial {
+    async fn sync_folder(&self, folder_id: &str, full: bool) -> Result<usize> {
+        if full {
             debug!("Full paginated contacts sync for folder: {}", folder_id);
             let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<Contact>>(4);
             let provider = Arc::clone(&self.provider);
@@ -127,8 +150,10 @@ impl ContactsDaemon {
             let fetch = tokio::spawn(async move { provider.fetch_all_folder_contacts(&folder_owned, tx).await });
 
             let mut written = 0usize;
+            let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
             while let Some(batch) = rx.recv().await {
                 for c in &batch {
+                    seen.insert(c.id.clone());
                     match self.db.upsert_contact(c) {
                         Ok(()) => written += 1,
                         Err(e) => error!("Failed to store contact {}: {}", c.id, e),
@@ -136,9 +161,14 @@ impl ContactsDaemon {
                 }
                 tokio::task::yield_now().await;
             }
-            if let Ok(Err(e)) = fetch.await {
-                error!("Paginated contacts fetch error for {}: {}", folder_id, e);
+            match fetch.await {
+                Ok(Ok(_)) => {}
+                Ok(Err(e)) => return Err(e),
+                Err(e) => return Err(crate::errors::OmarchyError::HttpError(format!("contacts task failed: {}", e))),
             }
+            // Only a walk that reached its end may say what is gone.
+            let purged = self.db.purge_contacts_unseen(folder_id, &seen)?;
+            if purged > 0 { info!("Removed {} contacts deleted elsewhere (folder {})", purged, folder_id); }
             Ok(written)
         } else {
             let contacts = self.provider.fetch_folder_contacts(folder_id, 50).await?;
@@ -212,6 +242,21 @@ mod tests {
         d.sync_contacts(false).await.unwrap();
         assert_eq!(d.db.query_contacts("all", "first").unwrap().len(), 125, "upserts must not duplicate");
         assert!(p.calls.lock().unwrap().contains(&"recent:f1:50".to_string()));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_full_walk_needs_folders_and_removes_contacts_deleted_elsewhere() {
+        let (d, _p) = daemon();
+        assert!(d.sync_contacts(true).await.is_err(), "no folders known yet: the walk cannot count as done");
+        d.sync_folders().await.unwrap();
+        d.sync_contacts(true).await.unwrap();
+        // a contact cached earlier that the server no longer has
+        d.db.upsert_contact(&contact(999, "f2")).unwrap();
+        assert_eq!(d.db.query_contacts("all", "first").unwrap().len(), 126);
+        d.sync_contacts(false).await.unwrap();
+        assert_eq!(d.db.query_contacts("all", "first").unwrap().len(), 126, "an incremental pass never purges");
+        d.sync_contacts(true).await.unwrap();
+        assert_eq!(d.db.query_contacts("all", "first").unwrap().len(), 125);
     }
 
     #[tokio::test(flavor = "current_thread")]

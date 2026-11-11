@@ -99,6 +99,32 @@ pub trait EmailProvider: Send + Sync {
         Err(crate::errors::OmarchyError::HttpError("delete_message_rule not supported".into()))
     }
 
+    /// The account's server-side mail filters as the provider's raw JSON (Gmail `users.settings.filters`).
+    /// OL-040 phase 5. Err for providers without filters; Err mentioning "sign in" when the scope is missing.
+    async fn fetch_mail_filters(&self) -> Result<Vec<serde_json::Value>> {
+        Err(crate::errors::OmarchyError::HttpError("fetch_mail_filters not supported".into()))
+    }
+
+    /// Create a filter (`body` = `criteria` + `action`); returns what the server stored.
+    async fn create_mail_filter(&self, _body: &serde_json::Value) -> Result<serde_json::Value> {
+        Err(crate::errors::OmarchyError::HttpError("create_mail_filter not supported".into()))
+    }
+
+    /// Delete a filter by id. Already gone counts as done. (Gmail filters cannot be edited.)
+    async fn delete_mail_filter(&self, _id: &str) -> Result<()> {
+        Err(crate::errors::OmarchyError::HttpError("delete_mail_filter not supported".into()))
+    }
+
+    /// User labels of the account, id -> name (Gmail). Empty for providers without label ids.
+    async fn label_names(&self) -> Result<std::collections::HashMap<String, String>> {
+        Ok(Default::default())
+    }
+
+    /// Id of the user label named `name` (case-insensitive), None when there is no such label.
+    async fn label_id_for_tag(&self, _name: &str) -> Result<Option<String>> {
+        Ok(None)
+    }
+
     /// Change a category / label's colour on the provider. Implementations re-read it afterwards and
     /// fail (not transiently) when the provider silently kept the old colour.
     async fn update_category_color(&self, _name: &str, _color: &crate::models::PaletteColor) -> Result<crate::models::CategoryDef> {
@@ -126,6 +152,12 @@ pub trait EmailProvider: Send + Sync {
     /// Details of these (scoped) message ids; ones that fail are left out and retried later.
     async fn fetch_message_meta(&self, _ids: &[String]) -> Vec<EmailMessage> {
         Vec::new()
+    }
+
+    /// Full body of one (scoped) message: (content type \"html\"|\"text\", content). The daemon
+    /// uses this to fill the cache ahead of the user; Err leaves the message for a later round.
+    async fn fetch_body(&self, _id: &str) -> Result<(String, String)> {
+        Err(crate::errors::OmarchyError::HttpError("fetch_body not supported".into()))
     }
 
     /// Send a composed message. `from` is the account's own address (providers that sign the
@@ -160,8 +192,21 @@ pub trait EmailProvider: Send + Sync {
     async fn is_token_valid(&self) -> Result<bool>;
 }
 
+/// HTTP client with bounded waits: a connection that is up but has no route must fail in
+/// seconds (the cache then serves), not hang for minutes.
+pub fn http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(5))
+        .timeout(std::time::Duration::from_secs(60))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new())
+}
+
 pub mod graph;
 pub use graph::GraphEmailProvider;
+
+pub mod tasks;
+pub use tasks::{GraphTasksProvider, TasksProvider};
 
 pub mod calendar;
 pub use calendar::{CalendarProvider, GraphCalendarProvider};

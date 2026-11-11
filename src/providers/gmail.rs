@@ -411,6 +411,10 @@ impl GmailProvider {
 
 #[async_trait]
 impl super::EmailProvider for GmailProvider {
+    async fn fetch_body(&self, id: &str) -> Result<(String, String)> {
+        self.fetch_message_body(id).await
+    }
+
     async fn fetch_inbox(&self, limit: usize) -> Result<Vec<EmailMessage>> {
         self.fetch_folder_messages("INBOX", limit).await
     }
@@ -669,6 +673,36 @@ impl super::EmailProvider for GmailProvider {
                 name: name.to_string(), color: color.gmail_bg.to_string(), provider_color: Some(bg.to_string()) }),
             other => Err(crate::errors::OmarchyError::HttpError(format!("label '{}' kept colour {:?} after the change", name, other))),
         }
+    }
+
+    async fn fetch_mail_filters(&self) -> Result<Vec<serde_json::Value>> {
+        // Empty list comes back as 204 with no body (phase 0), which the client reads as Null.
+        let r = self.api.get(&format!("{}/settings/filters", BASE)).await?;
+        Ok(r["filter"].as_array().cloned().unwrap_or_default())
+    }
+
+    async fn create_mail_filter(&self, body: &serde_json::Value) -> Result<serde_json::Value> {
+        self.api.post(&format!("{}/settings/filters", BASE), body).await
+    }
+
+    async fn delete_mail_filter(&self, id: &str) -> Result<()> {
+        match self.api.delete(&format!("{}/settings/filters/{}", BASE, urlencoding::encode(id))).await {
+            Ok(_) => Ok(()),
+            Err(e) if e.to_string().contains(" 404") => Ok(()),
+            Err(e) => Err(e),
+        }
+    }
+
+    async fn label_names(&self) -> Result<HashMap<String, String>> {
+        let labels = self.api.get(&format!("{}/labels", BASE)).await?;
+        self.remember_labels(&labels);
+        Ok(self.labels.lock().unwrap_or_else(|p| p.into_inner()).clone())
+    }
+
+    async fn label_id_for_tag(&self, name: &str) -> Result<Option<String>> {
+        let labels = self.api.get(&format!("{}/labels", BASE)).await?;
+        self.remember_labels(&labels);
+        Ok(self.label_id_for(name))
     }
 
     async fn delete_category(&self, name: &str) -> Result<()> {

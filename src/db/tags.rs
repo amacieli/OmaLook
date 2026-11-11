@@ -48,7 +48,7 @@ pub fn tag_key(name: &str) -> String {
 
 /// Letters and digits only, lower case, "saint" written "st": `Saint Lucia`, `SaintLucia` and `St Lucia`
 /// all give `stlucia`, `Civil Air Patrol` and `CivilAirPatrol` give `civilairpatrol`.
-fn squash(name: &str) -> String {
+pub(crate) fn squash(name: &str) -> String {
     let lower = name.to_lowercase().replace("saint", "st");
     lower.chars().filter(|c| c.is_alphanumeric()).collect()
 }

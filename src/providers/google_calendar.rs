@@ -92,6 +92,7 @@ pub(crate) fn parse_event(account_id: &str, time_zone: &str, ev: &serde_json::Va
         sensitivity: ev["visibility"].as_str().unwrap_or("").to_string(),
         recurrence_json: String::new(),
         calendar_id: String::new(),
+        tags: crate::calendar_tags::from_google(ev["extendedProperties"]["private"][crate::calendar_tags::GOOGLE_TAGS_KEY].as_str().unwrap_or("")),
     })
 }
 
@@ -159,6 +160,16 @@ impl super::CalendarProvider for GoogleCalendarProvider {
         }
         debug!("Google events {}..{}: {}", from, to, all.len());
         Ok(all)
+    }
+
+    async fn set_event_tags(&self, id: &str, tags: &[String]) -> Result<Vec<String>> {
+        let url = format!("{}/{}", EVENTS, urlencoding::encode(crate::accounts::unscoped(&self.account_id, id)));
+        let value = crate::calendar_tags::to_google(tags);
+        // `null` removes the key; other private properties (ours or another app's) are left alone by PATCH
+        let prop = if value.is_empty() { serde_json::Value::Null } else { serde_json::json!(value) };
+        self.api.patch(&url, &serde_json::json!({ "extendedProperties": { "private": { crate::calendar_tags::GOOGLE_TAGS_KEY: prop } } })).await?;
+        let back = self.api.get(&url).await?;
+        Ok(crate::calendar_tags::from_google(back["extendedProperties"]["private"][crate::calendar_tags::GOOGLE_TAGS_KEY].as_str().unwrap_or("")))
     }
 
     async fn is_token_valid(&self) -> Result<bool> {

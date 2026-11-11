@@ -249,6 +249,9 @@ pub struct CalendarEvent {
     /// Graph `recurrence` object as JSON (series masters only); "" = none
     pub recurrence_json: String,
     pub calendar_id: String,
+    /// OmaLook tags: Graph `categories`, Google private property `omalook_tags` (see `calendar_tags`).
+    #[serde(default)]
+    pub tags: Vec<String>,
 }
 
 /// Phone number with its type ("mobile", "home", "work")

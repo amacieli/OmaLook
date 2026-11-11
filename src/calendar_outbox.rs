@@ -92,6 +92,10 @@ impl CalendarOutboxWorker {
         };
         let n = due.len();
         for (id, op, payload, tx, attempt) in due {
+            if op == "set_tags" {
+                self.run_set_tags(&id, &payload, attempt).await;
+                continue;
+            }
             if op != "create" {
                 let _ = self.db.cal_outbox_mark_failed(&id, &format!("unknown operation: {op}"));
                 continue;
@@ -127,6 +131,42 @@ impl CalendarOutboxWorker {
             }
         }
         n
+    }
+
+    /// One "set the tags" write: send it, read the provider's answer back, and accept it only when it is what was asked
+    /// (case-insensitive, order ignored). Transient failures retry; the write is idempotent (it sets, never adds).
+    async fn run_set_tags(&self, id: &str, payload: &str, attempt: i64) {
+        let parsed: Option<(String, Vec<String>)> = serde_json::from_str::<serde_json::Value>(payload).ok().and_then(|v| {
+            Some((v["event_id"].as_str()?.to_string(), v["tags"].as_array()?.iter().filter_map(|t| t.as_str().map(String::from)).collect()))
+        });
+        let Some((event_id, wanted)) = parsed else {
+            let _ = self.db.cal_outbox_mark_failed(id, "the queued tag change could not be read");
+            return;
+        };
+        let wanted = crate::calendar_tags::clean(wanted);
+        match self.provider.set_event_tags(&event_id, &wanted).await {
+            Ok(stored) => {
+                let key = |v: &[String]| { let mut k: Vec<String> = v.iter().map(|t| crate::db::tags::tag_key(t)).collect(); k.sort(); k };
+                if key(&stored) != key(&wanted) {
+                    let _ = self.db.cal_set_event_tags_local(&event_id, &stored);
+                    let _ = self.db.cal_outbox_mark_failed(id, &format!("the calendar kept different tags than asked ({}); the page shows what it holds", stored.join(", ")));
+                } else {
+                    if let Err(e) = self.db.cal_set_event_tags_local(&event_id, &stored) { error!("Calendar outbox {}: tags set but not cached: {}", self.account_id, e); }
+                    let _ = self.db.cal_outbox_mark_sent(id, &event_id);
+                    info!("Calendar outbox {}: tags of {} set ({})", self.account_id, id, stored.join(", "));
+                }
+                sync_state::bump_mail("calendar event tags changed");
+            }
+            Err(e) if is_transient(&e) && attempt < MAX_ATTEMPTS => {
+                let wait = retry_delay_secs(attempt);
+                warn!("Calendar outbox {}: tags {} not set ({}); retrying in {}s", self.account_id, id, e, wait);
+                let _ = self.db.cal_outbox_mark_retry(id, &short_error(&e), Database::now_ms() + wait * 1000);
+            }
+            Err(e) => {
+                error!("Calendar outbox {}: tags {} failed: {}", self.account_id, id, e);
+                let _ = self.db.cal_outbox_mark_failed(id, &short_error(&e));
+            }
+        }
     }
 
     /// Make the new event visible now instead of at the next poll.
@@ -263,5 +303,107 @@ mod tests {
         assert_eq!(w.drain().await, 0);
         assert!(fake.seen.lock().unwrap().is_empty());
         assert!(db.cal_outbox_status("c1").unwrap().unwrap().1.unwrap().contains("check your calendar"));
+    }
+
+    // ── tags on events (OL-040 phase 6b) ──
+
+    struct TagFake { script: Mutex<Vec<Result<Vec<String>>>>, seen: Mutex<Vec<(String, Vec<String>)>> }
+    #[async_trait]
+    impl CalendarProvider for TagFake {
+        async fn fetch_events(&self, _l: usize) -> Result<Vec<CalendarEvent>> { Ok(vec![]) }
+        async fn fetch_all_events(&self, _tx: tokio::sync::mpsc::Sender<Vec<CalendarEvent>>) -> Result<usize> { Ok(0) }
+        async fn fetch_window(&self, _f: chrono::NaiveDate, _t: chrono::NaiveDate) -> Result<Vec<CalendarEvent>> { Ok(vec![]) }
+        async fn is_token_valid(&self) -> Result<bool> { Ok(true) }
+        async fn set_event_tags(&self, id: &str, tags: &[String]) -> Result<Vec<String>> {
+            self.seen.lock().unwrap().push((id.to_string(), tags.to_vec()));
+            self.script.lock().unwrap().remove(0)
+        }
+    }
+    fn t(v: &[&str]) -> Vec<String> { v.iter().map(|x| x.to_string()).collect() }
+
+    fn tag_setup(script: Vec<Result<Vec<String>>>) -> (CalendarOutboxWorker, Arc<TagFake>, Arc<Database>) {
+        static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let dir = std::env::temp_dir().join(format!("omalook-caltags-{}-{}", std::process::id(), N.fetch_add(1, std::sync::atomic::Ordering::SeqCst)));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = Arc::new(Database::open_for_account(dir.join("m.db").to_str().unwrap(), "exchange-test").unwrap());
+        let ev = |id: &str, kind: &str, master: Option<&str>| CalendarEvent { id: id.into(), subject: id.into(), start: "2026-10-05T09:00:00".into(), end: "2026-10-05T10:00:00".into(),
+            event_type: kind.into(), series_master_id: master.map(String::from), ..Default::default() };
+        db.upsert_event(&ev("M", "seriesMaster", None)).unwrap();
+        db.upsert_event(&ev("O1", "occurrence", Some("M"))).unwrap();
+        db.upsert_event(&ev("O2", "occurrence", Some("M"))).unwrap();
+        db.upsert_event(&ev("S", "singleInstance", None)).unwrap();
+        let fake = Arc::new(TagFake { script: Mutex::new(script), seen: Mutex::new(vec![]) });
+        (CalendarOutboxWorker::new("exchange-test", db.clone(), fake.clone(), None), fake, db)
+    }
+    fn cached(db: &Database, id: &str) -> Vec<String> {
+        db.cal_event_tags(id)
+    }
+
+    #[tokio::test]
+    async fn tagging_an_occurrence_tags_the_whole_series_and_reads_back() {
+        let (w, fake, db) = tag_setup(vec![Ok(t(&["Family", "Panama"]))]);
+        let (target, series) = db.cal_queue_event_tags("t1", "O2", &t(&["Family", "Panama"]), 0).unwrap();
+        assert_eq!((target.as_str(), series), ("M", true), "an occurrence resolves to its master");
+        assert_eq!(w.drain().await, 1);
+        assert_eq!(fake.seen.lock().unwrap().as_slice(), &[("M".to_string(), t(&["Family", "Panama"]))]);
+        assert_eq!(db.cal_outbox_status("t1").unwrap().unwrap().0, "sent");
+        for id in ["M", "O1", "O2"] { assert_eq!(cached(&db, id), t(&["Family", "Panama"]), "{id}") }
+        assert!(cached(&db, "S").is_empty(), "other events untouched");
+    }
+
+    #[tokio::test]
+    async fn a_single_event_is_not_a_series() {
+        let (_w, _f, db) = tag_setup(vec![]);
+        assert_eq!(db.cal_queue_event_tags("t1", "S", &t(&["X"]), 0).unwrap(), ("S".to_string(), false));
+        assert!(db.cal_queue_event_tags("t2", "nope", &t(&["X"]), 0).is_err());
+        assert!(db.cal_queue_event_tags("t3", "S", &t(&["Y"]), 0).unwrap_err().contains("already waiting"), "no two changes racing on one event");
+    }
+
+    #[tokio::test]
+    async fn if_the_provider_keeps_other_tags_the_write_fails_and_the_cache_shows_the_truth() {
+        let (w, _f, db) = tag_setup(vec![Ok(t(&["Family"]))]);
+        db.cal_queue_event_tags("t1", "S", &t(&["Family", "Panama"]), 0).unwrap();
+        w.drain().await;
+        let (state, err, _) = db.cal_outbox_status("t1").unwrap().unwrap();
+        assert_eq!(state, "failed");
+        assert!(err.unwrap().contains("kept different tags"));
+        assert_eq!(cached(&db, "S"), t(&["Family"]));
+    }
+
+    #[tokio::test]
+    async fn removing_every_tag_is_a_write_too_and_case_order_do_not_matter_for_the_check() {
+        let (w, fake, db) = tag_setup(vec![Ok(vec![]), Ok(t(&["b", "A"]))]);
+        db.cal_queue_event_tags("t1", "S", &[], 0).unwrap();
+        w.drain().await;
+        assert_eq!(db.cal_outbox_status("t1").unwrap().unwrap().0, "sent");
+        db.cal_queue_event_tags("t2", "S", &t(&["A", "B"]), 0).unwrap();
+        w.drain().await;
+        assert_eq!(db.cal_outbox_status("t2").unwrap().unwrap().0, "sent");
+        assert!(fake.seen.lock().unwrap()[0].1.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_transient_failure_retries_and_a_refusal_does_not() {
+        let (w, fake, db) = tag_setup(vec![
+            Err(OmarchyError::HttpError("Graph API error: 429 Too Many Requests — {}".into())), Ok(t(&["X"])),
+            Err(OmarchyError::HttpError(r#"Google API error: 403 — {"error":{"message":"Forbidden"}}"#.into()))]);
+        db.cal_queue_event_tags("t1", "S", &t(&["X"]), 0).unwrap();
+        w.drain().await;
+        assert_eq!(db.cal_outbox_status("t1").unwrap().unwrap().0, "pending");
+        db.cal_outbox_mark_retry("t1", "again", 0).unwrap();
+        w.drain().await;
+        assert_eq!(db.cal_outbox_status("t1").unwrap().unwrap().0, "sent");
+        db.cal_queue_event_tags("t2", "S", &t(&["Z"]), 0).unwrap();
+        w.drain().await;
+        assert_eq!(db.cal_outbox_status("t2").unwrap().unwrap().0, "failed");
+        assert_eq!(fake.seen.lock().unwrap().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn tag_writes_are_listed_with_their_op_so_the_editor_can_tell_them_from_creates() {
+        let (_w, _f, db) = tag_setup(vec![]);
+        db.cal_queue_event_tags("t1", "S", &t(&["X"]), 0).unwrap();
+        assert!(db.cal_outbox_list().unwrap().iter().any(|r| r.2 == "set_tags"), "the outbox list carries the op; draft.js only draws creates as marks");
     }
 }

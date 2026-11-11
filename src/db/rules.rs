@@ -133,7 +133,7 @@ impl Database {
         Ok(rows)
     }
 
-    fn cached_rules_for_write(&self) -> std::result::Result<Vec<Value>, String> {
+    pub(crate) fn cached_rules_for_write(&self) -> std::result::Result<Vec<Value>, String> {
         match self.rules_state(self.account_id()).map_err(|e| e.to_string())? {
             Some(s) if s.state == "ok" => {}
             Some(s) if s.state == "unsupported" => return Err("this account's rules cannot be changed from OmaLook".into()),
@@ -145,6 +145,9 @@ impl Database {
 
     /// Cached counts and warnings for a rule that does not exist yet.
     pub fn rule_preview(&self, rule: &crate::rules::NewRule) -> std::result::Result<RulePreview, String> {
+        if self.accounts_basic().map_err(|e| e.to_string())?.iter().any(|(id, p, _)| id == self.account_id() && !p.eq_ignore_ascii_case("exchange")) {
+            return Err("this account's rules are not Exchange rules (Gmail accounts use filters)".into());
+        }
         let rules = self.cached_rules_for_write()?;
         let like = match &rule.matcher {
             crate::rules::Match::Address(a) => a.trim().to_lowercase(),
@@ -165,6 +168,11 @@ impl Database {
     /// clear answer; the daemon repeats them against the server's own copy before writing anything.
     pub fn queue_rule_change(&self, change: &RuleChange) -> std::result::Result<i64, String> {
         use crate::rules as r;
+        // These are Graph `messageRule` changes. A Gmail account's cached "rules" are filters (phase 5b): the
+        // Graph shapes must never be queued against them (`queue_filter_change` is their way in).
+        if self.accounts_basic().map_err(|e| e.to_string())?.iter().any(|(id, p, _)| id == self.account_id() && !p.eq_ignore_ascii_case("exchange")) {
+            return Err("this account's rules are not Exchange rules (Gmail accounts use filters)".into());
+        }
         let rules = self.cached_rules_for_write()?;
         let pending = self.pending_rule_ops().map_err(|e| e.to_string())?;
         let touching = |id: &str| pending.iter().any(|o| o.payload["id"].as_str() == Some(id) || o.payload["neighbour_id"].as_str() == Some(id));

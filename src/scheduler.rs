@@ -13,11 +13,12 @@ use crate::calendar_daemon::{CalendarDaemon, CalendarDaemonConfig};
 use crate::contacts_daemon::{ContactsDaemon, ContactsDaemonConfig};
 use crate::db::Database;
 use crate::email_daemon::{DaemonConfig, EmailDaemon};
+use crate::tasks_daemon::{TasksDaemon, TasksDaemonConfig};
 use crate::outbox::OutboxWorker;
 use crate::calendar_outbox::CalendarOutboxWorker;
 use crate::providers::{
     CalendarProvider, ContactsProvider, EmailProvider, GmailProvider, GoogleCalendarProvider, GoogleContactsProvider,
-    GraphCalendarProvider, GraphContactsProvider, GraphEmailProvider,
+    GraphCalendarProvider, GraphContactsProvider, GraphEmailProvider, GraphTasksProvider,
 };
 use log::{error, info, warn};
 use std::collections::HashMap;
@@ -151,6 +152,20 @@ impl SyncScheduler {
             ContactsDaemon::new(ContactsDaemonConfig::default(), db, provider).start().await;
         });
 
+        // To Do tasks (Microsoft accounts; Google Tasks needs a scope the Gmail sign-in does not ask for).
+        let tasks_stop = Arc::new(Notify::new());
+        if provider != "gmail" {
+            let (id, path) = (account_id.to_string(), self.db_str());
+            spawn_sync_thread(format!("tasks-{}", account_id), tasks_stop.clone(), move || async move {
+                let db = match Database::open_for_account(&path, &id) {
+                    Ok(db) => Arc::new(db),
+                    Err(e) => return error!("Tasks sync {}: cannot open database: {}", id, e),
+                };
+                let provider = Arc::new(GraphTasksProvider::new(AuthManager::for_account(&id)));
+                TasksDaemon::new(TasksDaemonConfig::default(), db, provider).start().await;
+            });
+        }
+
         // Sends what the user queued with Send, the moment it is due: its own thread, so a slow
         // mail sync can never hold a message back.
         let outbox_stop = Arc::new(Notify::new());
@@ -176,7 +191,7 @@ impl SyncScheduler {
             CalendarOutboxWorker::new(&id, db, provider, Some(settings_path)).run().await;
         });
 
-        running.insert(account_id.to_string(), vec![mail_stop, cal_stop, contacts_stop, outbox_stop, cal_outbox_stop]);
+        running.insert(account_id.to_string(), vec![mail_stop, cal_stop, contacts_stop, tasks_stop, outbox_stop, cal_outbox_stop]);
         info!("Scheduler: started sync for account {}", account_id);
         true
     }

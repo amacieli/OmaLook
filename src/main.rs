@@ -1120,6 +1120,47 @@ fn calendar_outbox_response(config_dir: &PathBuf, first_line: &str) -> String {
     }
 }
 
+/// POST /calendar/tags?account=A&id=EVENT&tags=["Family","Panama"] (OL-040 phase 6b): set the tags of an event. A recurring
+/// event is tagged as a whole (an occurrence resolves to its series). The change waits `[mail] send_delay_secs`, the same
+/// undo window as every calendar write (`POST /calendar/event/undo?id=`), then the account's calendar outbox writes it
+/// (Exchange categories / Google private property) and reads it back. `?dry_run=1` answers what would be written and queues
+/// nothing. Answers `{ok, id, event_id, series, tags, delay_secs}` or `{ok:false, error}`.
+fn calendar_tags_response(config_dir: &PathBuf, first_line: &str) -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let err = |m: &str| serde_json::json!({ "ok": false, "error": m }).to_string();
+    let account = query_param(first_line, "account").unwrap_or_default();
+    let event = query_param(first_line, "id").unwrap_or_default();
+    if account.is_empty() || event.is_empty() { return err("missing account or id") }
+    let tags: Vec<String> = match serde_json::from_str::<Vec<String>>(&query_param(first_line, "tags").unwrap_or_else(|| "[]".into())) {
+        Ok(t) => omalook::calendar_tags::clean(t),
+        Err(_) => return err("tags must be a JSON list of names"),
+    };
+    if tags.len() > 25 { return err("too many tags on one event (25 at most)") }
+    if let Some(bad) = tags.iter().find(|t| !omalook::rules::valid_tag_name(t)) { return err(&format!("\"{}\" is not a usable tag name", bad)) }
+    let db = match Database::open_for_account(config_dir.join("messages.db").to_str().unwrap_or("messages.db"), &account) {
+        Ok(db) => db,
+        Err(e) => return err(&format!("database: {}", e)),
+    };
+    let now = Database::now_ms();
+    let id = format!("ct-{:x}-{:03x}", now, COUNTER.fetch_add(1, Ordering::Relaxed) & 0xfff);
+    let dry = query_param(first_line, "dry_run").as_deref() == Some("1");
+    if !dry && !SCHEDULER.get().map(|s| s.is_running(&account)).unwrap_or(false) {
+        return err("that account is not signed in, so it cannot save tags");
+    }
+    let delay = omalook::settings::read_send_delay(&config_dir.join("settings.toml"));
+    // a dry run queues far in the future and is cancelled at once: it exercises the same lookups without a write
+    let queued = db.cal_queue_event_tags(&id, &event, &tags, if dry { i64::MAX / 2 } else { now + delay as i64 * 1000 });
+    let (target, series) = match queued { Ok(v) => v, Err(e) => return err(&e) };
+    if dry {
+        let _ = db.cal_outbox_cancel(&id);
+        return serde_json::json!({ "ok": true, "dry_run": true, "event_id": target, "series": series, "tags": tags }).to_string();
+    }
+    omalook::sync_state::request_cal_outbox_run();
+    info!("Calendar: queued tags {:?} on {} ({}), saves in {}s", tags, target, account, delay);
+    serde_json::json!({ "ok": true, "id": id, "event_id": target, "series": series, "tags": tags, "delay_secs": delay }).to_string()
+}
+
 /// JSON body for the /settings/senders endpoints (see the route comment).
 fn sender_prefs_response(config_dir: &PathBuf, first_line: &str) -> String {
     use omalook::db::SenderAdd;
@@ -1246,7 +1287,7 @@ fn rules_response(config_dir: &PathBuf, first_line: &str) -> String {
     use omalook::rules::{Match, NewRule};
     let err = |m: &str| serde_json::json!({ "ok": false, "error": m }).to_string();
     let path = config_dir.join("messages.db");
-    if first_line.starts_with("POST /rules/") || first_line.starts_with("GET /rules/preview") || first_line.starts_with("GET /rules/run-preview") {
+    if first_line.starts_with("POST /rules/") || first_line.starts_with("GET /rules/preview") || first_line.starts_with("GET /rules/run-preview") || first_line.starts_with("GET /rules/filter-preview") {
         let Some(account) = query_param(first_line, "account").filter(|a| !a.is_empty()) else { return err("need account=<id>") };
         let db = match Database::open_for_account(path.to_str().unwrap_or("messages.db"), &account) {
             Ok(d) => d,
@@ -1254,6 +1295,11 @@ fn rules_response(config_dir: &PathBuf, first_line: &str) -> String {
         };
         if !db.accounts_basic().unwrap_or_default().iter().any(|(id, _, _)| *id == account) { return err("no such account") }
         let id = query_param(first_line, "id").unwrap_or_default();
+        // The Exchange routes (everything but filter-*) are Graph rule changes and runs; Gmail accounts have their own.
+        let provider_of = db.accounts_basic().unwrap_or_default().into_iter().find(|(a, _, _)| *a == account).map(|(_, p, _)| p).unwrap_or_default();
+        if !first_line.contains("/rules/filter-") && !provider_of.eq_ignore_ascii_case("exchange") {
+            return err("this account's rules are not Exchange rules (Gmail accounts use filters)");
+        }
         let new_rule = || -> Result<NewRule, String> {
             let matcher = match (query_param(first_line, "address"), query_param(first_line, "domain")) {
                 (Some(a), None) => Match::Address(a),
@@ -1270,6 +1316,41 @@ fn rules_response(config_dir: &PathBuf, first_line: &str) -> String {
             Ok(op) => { omalook::sync_state::request_read_push(); serde_json::json!({ "ok": true, "op": op }).to_string() }
             Err(m) => err(&m),
         };
+        // Gmail filters (OL-040 phase 5b): the rule is a local-rule JSON, written to Gmail only when Gmail can hold it
+        // exactly (omalook::gmail_filters). Everything is queued; the daemon does the checked write.
+        if first_line.starts_with("GET /rules/filter-preview") || first_line.starts_with("POST /rules/filter-") {
+            let rule = || -> Result<omalook::local_rules::LocalRule, String> {
+                let raw = query_param(first_line, "rule").ok_or("need rule=<json>")?;
+                let mut v: serde_json::Value = serde_json::from_str(&raw).map_err(|e| format!("rule is not valid JSON: {e}"))?;
+                if v["id"].as_str().unwrap_or("").is_empty() { v["id"] = serde_json::json!("gmail-filter"); }
+                if v["name"].as_str().unwrap_or("").is_empty() { v["name"] = serde_json::json!("Gmail filter"); }
+                let mut r: omalook::local_rules::LocalRule = serde_json::from_value(v).map_err(|e| format!("rule has the wrong shape: {e}"))?;
+                r.applies_to = vec![account.clone()];
+                r.enabled = true;
+                Ok(r)
+            };
+            if first_line.starts_with("GET /rules/filter-preview") {
+                return match rule() {
+                    Err(m) => err(&m),
+                    Ok(r) => {
+                        let (writable, reason) = match omalook::gmail_filters::writable(&r) { Ok(()) => (true, String::new()), Err(m) => (false, m) };
+                        match db.dry_run(&[r]) {
+                            Ok(p) => serde_json::json!({ "ok": true, "writable": writable, "reason": reason, "preview": p }).to_string(),
+                            Err(e) => err(&e.to_string()),
+                        }
+                    }
+                };
+            }
+            use omalook::db::gmail_filters::FilterChange;
+            let change = if first_line.starts_with("POST /rules/filter-add") {
+                rule().map(FilterChange::Add)
+            } else if first_line.starts_with("POST /rules/filter-edit") {
+                rule().map(|r| FilterChange::Edit { id: id.clone(), rule: r })
+            } else if first_line.starts_with("POST /rules/filter-delete") {
+                if query_param(first_line, "confirm").as_deref() != Some("yes") { Err("confirm=yes is required".to_string()) } else { Ok(FilterChange::Delete { id: id.clone() }) }
+            } else { Err("no such route".to_string()) };
+            return match change { Ok(c) => queued(db.queue_filter_change(&c)), Err(m) => err(&m) };
+        }
         // Manual "run now" of the account's Exchange tag rules over cached Inbox mail (all of them, or `id`).
         // Count first (run-preview); `run` writes nothing over the limit until confirm=yes. Tags only, added never removed.
         if first_line.starts_with("GET /rules/run-preview") || first_line.starts_with("POST /rules/run") {
@@ -1327,13 +1408,16 @@ fn rules_response(config_dir: &PathBuf, first_line: &str) -> String {
     for (id, provider, email) in db.accounts_basic().unwrap_or_default() {
         let state = db.rules_state(&id).ok().flatten();
         let raw = db.rules_raw(&id).unwrap_or_default();
-        let mut order: Vec<(i64, String, bool)> = raw.iter().map(|r| (r["sequence"].as_i64().unwrap_or(0), r["id"].as_str().unwrap_or_default().to_string(),
+        let mut order: Vec<(i64, String, bool)> = raw.iter().filter(|_| !provider.eq_ignore_ascii_case("gmail")).map(|r| (r["sequence"].as_i64().unwrap_or(0), r["id"].as_str().unwrap_or_default().to_string(),
             omalook::rules::writable(r).is_err())).collect();
         order.sort();
         let order: Vec<serde_json::Value> = order.into_iter().map(|(_, rid, locked)| serde_json::json!({ "id": rid, "locked": locked })).collect();
         let ops = db.recent_rule_ops(&id, 86_400).unwrap_or_default();
-        let summaries: Vec<omalook::rules::RuleSummary> = raw.iter().map(omalook::rules::summarize).collect();
-        let total = summaries.len();
+        let is_gmail = provider.eq_ignore_ascii_case("gmail");
+        // Gmail filters are not Graph rules: they are summarised by omalook::gmail_filters, not grouped as tag rules
+        let filters: Vec<omalook::gmail_filters::FilterSummary> = if is_gmail { db.filter_summaries(&id) } else { Vec::new() };
+        let summaries: Vec<omalook::rules::RuleSummary> = if is_gmail { Vec::new() } else { raw.iter().map(omalook::rules::summarize).collect() };
+        let total = if is_gmail { filters.len() } else { summaries.len() };
         let org = omalook::rules::organise(summaries);
         let groups: Vec<serde_json::Value> = org.groups.iter().map(|g| {
             let color = colors.get(&(id.clone(), g.tag.to_lowercase())).cloned()
@@ -1347,7 +1431,8 @@ fn rules_response(config_dir: &PathBuf, first_line: &str) -> String {
             "error": state.as_ref().map(|s| s.error.clone()).unwrap_or_default(),
             "fetched_at": state.as_ref().map(|s| s.fetched_at).unwrap_or(0),
             "groups": groups, "other": org.other, "system": org.system,
-            "can_write": provider == "exchange" && state.as_ref().map(|s| s.state == "ok").unwrap_or(false),
+            "can_write": (provider == "exchange" || is_gmail) && state.as_ref().map(|s| s.state == "ok").unwrap_or(false),
+            "filters": filters,
             "order": order, "ops": ops,
             "tag_pushes_pending": db.tag_pushes_pending(&id).unwrap_or(0),
         }));
@@ -1888,6 +1973,23 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                     continue;
                 }
 
+                // ── GET /tasks[?account=ID] — cached To Do tasks of every account (JSON array). ──
+                if first_line.contains("GET /tasks") {
+                    let body = match Database::open(config_dir.join("messages.db").to_str().unwrap_or("messages.db")) {
+                        Ok(db) => match db.query_tasks(query_param(first_line, "account").as_deref()) {
+                            Ok(rows) => serde_json::to_string(&rows).unwrap_or_else(|_| "[]".to_string()),
+                            Err(e) => { warn!("GET /tasks: query failed: {}", e); "[]".to_string() }
+                        },
+                        Err(e) => { warn!("GET /tasks: DB open failed: {}", e); "[]".to_string() }
+                    };
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                        body.len(), body
+                    );
+                    let _ = stream.write_all(response.as_bytes());
+                    continue;
+                }
+
                 // ── GET /contacts?view=all|favorites|lists&sort=first|last|company|recent ──
                 if first_line.contains("GET /contacts") {
                     let view = query_param(first_line, "view").unwrap_or_else(|| "all".to_string());
@@ -2190,6 +2292,15 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                     let _ = stream.write_all(response.as_bytes());
                     continue;
                 }
+                if first_line.contains("POST /calendar/tags") {
+                    let body = calendar_tags_response(config_dir, first_line);
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                        body.len(), body
+                    );
+                    let _ = stream.write_all(response.as_bytes());
+                    continue;
+                }
                 if first_line.contains("POST /calendar/event") {
                     let body = calendar_event_response(config_dir, &mut stream, &buf[..n], first_line);
                     let response = format!(
@@ -2290,10 +2401,13 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                         })
                         .unwrap_or_default();
 
+                    // `?tag=` keeps events whose tags match (same syntax as mail search: lucia, =Family, none, -lucia)
+                    let tag_filter = query_param(first_line, "tag").unwrap_or_default();
                     let body = match Database::open(config_dir.join("messages.db").to_str().unwrap_or("messages.db")) {
                         Ok(db) => match db.get_events_for_month_by_account(&month, query_param(first_line, "account").as_deref()) {
                             Ok(events) => serde_json::to_string(
-                                &events.iter().map(|(e, account_id, account_email)| serde_json::json!({
+                                &events.iter().filter(|(e, _, _)| omalook::calendar_tags::matches(&e.tags, &tag_filter)).map(|(e, account_id, account_email)| serde_json::json!({
+                                    "tags": e.tags,
                                     "account_id": account_id,
                                     "account_email": account_email,
                                     "id": e.id,
@@ -2386,6 +2500,9 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                 //   GET  /rules/run-preview?account=A[&id=R]  → {ok, preview:{scanned,matched,messages,additions,by_tag,..}, rules, left_out:[names], limit}
                 //   POST /rules/run?account=A[&id=R][&confirm=yes]  run the enabled Exchange tag rules (or one) over cached Inbox mail now; tags added
                 //                                              locally and pushed; over `limit` messages writes nothing until confirm=yes; never touches the server's rules
+                //   Gmail accounts: GET /rules lists `filters:[{id,tags,text,editable,reason,rule}]` (rule = editable local-rule JSON) and no groups.
+                //   GET  /rules/filter-preview?account=A&rule=<json>  → {ok, writable, reason, preview:{...}}  (Gmail refuses stop, several tags, subject/body, fragments)
+                //   POST /rules/filter-add?account=A&rule=<json> · /filter-edit?account=A&id=F&rule=<json> (create new, check, then delete old) · /filter-delete?account=A&id=F&confirm=yes
                 //   The write routes only queue ({ok, op}); the mail daemon does the checked write and the result shows in GET /rules `ops`
                 //   ({id,kind,state:pending|done|failed|conflict|exists,message}). Plain tag rules only.
                 if first_line.starts_with("GET /rules") || first_line.starts_with("POST /rules/") {

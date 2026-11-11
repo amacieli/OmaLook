@@ -5,6 +5,7 @@
                           (gmail.settings.basic, gmail.labels, calendar.events). Uses the app's google_client.json.
                           Token kept OUTSIDE the repo (~/.config/omalook/spike_google_token.json, mode 600); the app's
                           own stored tokens are not touched. Prints the consent URL; records scopes actually granted.
+  google_spike.py delivery  (OL-040 phase 5) filters in the gmail_filters.rs shapes, one self-sent message, which labels land.
   google_spike.py probe   filters: list before, create scratch label + filter (scratch sender), list, try a PATCH-like
                           edit (expected: none), delete both, list after (must equal before).
                           calendar: create event on primary with extendedProperties.private, read back, patch, delete.
@@ -18,7 +19,8 @@ OUT = pathlib.Path(__file__).resolve().parents[2] / "notes/spike"
 SCOPES = ["openid", "email",
           "https://www.googleapis.com/auth/gmail.settings.basic",
           "https://www.googleapis.com/auth/gmail.labels",
-          "https://www.googleapis.com/auth/calendar.events"]
+          "https://www.googleapis.com/auth/calendar.events",
+          "https://www.googleapis.com/auth/gmail.modify"]  # delivery spike: send to self, read labels, trash
 SCRATCH = "omalook-spike-nobody@example.invalid"
 LABEL = "omalook-spike-label"
 
@@ -163,5 +165,72 @@ def probe():
     print(json.dumps(res, indent=2))
 
 
+def delivery():
+    import base64, email.message
+    OUT.mkdir(parents=True, exist_ok=True)
+    tok, scope = access()
+    G = "https://gmail.googleapis.com/gmail/v1/users/me/"
+    me = ACCOUNT
+    run = secrets.token_hex(3)
+    # name -> (criteria, should the message get the label?)
+    cases = {
+        "A-address":      ({"from": me}, True),
+        "B-at-domain":    ({"from": "@gmail.com"}, True),
+        "C-bare-domain":  ({"from": "gmail.com"}, True),
+        "D-or-values":    ({"from": "nobody@example.invalid OR " + me}, True),
+        "E-exception":    ({"from": me, "negatedQuery": f"from:({me})"}, False),
+        "F-control":      ({"from": "nobody@example.invalid"}, False),
+        "G-two-senders":  ({"from": me, "query": "from:(@gmail.com)"}, True),
+        "H-to":           ({"to": me}, True),
+        "I-or-exc-miss":  ({"from": me, "negatedQuery": "from:(nobody@example.invalid) OR to:(@example.invalid)"}, True),
+        "J-attach-true":  ({"from": me, "hasAttachment": True}, False),   # the message has no attachment
+        "K-partial-word": ({"from": "teamcisco"}, None),                  # substring of the address: what does Gmail do?
+    }
+    res = {"run": run, "scope": scope, "cases": {}}
+    made = {}
+    for name, (crit, _) in cases.items():
+        st, lab = call(tok, "POST", G + "labels", {"name": f"omalook-spike-{run}-{name}", "labelListVisibility": "labelShow", "messageListVisibility": "show"})
+        if st != 200: res["cases"][name] = {"label_create": st, "body": lab}; continue
+        st, f = call(tok, "POST", G + "settings/filters", {"criteria": crit, "action": {"addLabelIds": [lab["id"]]}})
+        res["cases"][name] = {"filter_create": st, "criteria": crit}
+        if st == 200:
+            st2, got = call(tok, "GET", G + f"settings/filters/{f['id']}")
+            res["cases"][name]["stored_criteria"] = got.get("criteria")
+        made[name] = (lab["id"], f.get("id"))
+    # send one message to self
+    m = email.message.EmailMessage()
+    m["To"] = me; m["From"] = me; m["Subject"] = f"omalook spike {run}"
+    m.set_content("omalook filter delivery spike; safe to delete")
+    raw = base64.urlsafe_b64encode(m.as_bytes()).decode()
+    st, sent = call(tok, "POST", G + "messages/send", {"raw": raw})
+    res["send"] = st
+    mid = sent.get("id"); got = None
+    for _ in range(12):
+        time.sleep(5)
+        st, q = call(tok, "GET", G + "messages?" + urllib.parse.urlencode({"q": f"subject:{run}", "includeSpamTrash": "true"}))
+        # the sent copy and the received copy are two messages; take the one in INBOX
+        for it in q.get("messages", []):
+            st, g = call(tok, "GET", G + f"messages/{it['id']}?format=minimal")
+            if "INBOX" in g.get("labelIds", []): got = g
+        if got: break
+    res["received"] = bool(got)
+    if got:
+        ids = set(got["labelIds"])
+        for name, (lid, _) in made.items():
+            res["cases"][name]["labelled"] = lid in ids
+            res["cases"][name]["expected"] = cases[name][1]
+    # clean up everything made
+    for name, (lid, fid) in made.items():
+        if fid: call(tok, "DELETE", G + f"settings/filters/{fid}")
+        call(tok, "DELETE", G + f"labels/{lid}")
+    if mid:
+        for it in (q.get("messages", []) if got is not None or True else []):
+            call(tok, "POST", G + f"messages/{it['id']}/trash")
+    st, after = call(tok, "GET", G + "settings/filters")
+    res["filters_left"] = len(after.get("filter", []))
+    (OUT / "google-filter-delivery-spike.json").write_text(json.dumps(res, indent=2))
+    print(json.dumps(res, indent=2))
+
+
 if __name__ == "__main__":
-    {"login": login, "probe": probe}[sys.argv[1]]()
+    {"login": login, "probe": probe, "delivery": delivery}[sys.argv[1]]()

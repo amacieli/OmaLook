@@ -75,7 +75,11 @@ impl MsRefresher {
             ("refresh_token", refresh_token),
             ("scope", scope),
         ];
-        match ureq::post(TOKEN_URL).send_form(&params) {
+        let agent = ureq::AgentBuilder::new()
+            .timeout_connect(std::time::Duration::from_secs(5))
+            .timeout(std::time::Duration::from_secs(20))
+            .build();
+        match agent.post(TOKEN_URL).send_form(&params) {
             Ok(resp) => match resp.into_json::<TokenResponse>() {
                 Ok(t) => (RefreshOutcome::Ok(t), false),
                 Err(e) => (RefreshOutcome::Transient(format!("bad token response: {}", e)), false),

@@ -39,7 +39,7 @@ pub(crate) fn hint_for(status: u16, body: &str) -> &'static str {
 
 impl GoogleApi {
     pub fn new(account_id: &str) -> Self {
-        Self { auth: Mutex::new(AuthManager::for_account(account_id)), client: reqwest::Client::new() }
+        Self { auth: Mutex::new(AuthManager::for_account(account_id)), client: super::http_client() }
     }
 
     async fn token(&self) -> Result<String> {

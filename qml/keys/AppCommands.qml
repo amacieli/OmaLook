@@ -178,6 +178,75 @@ Item {
     return out
   }
 
+  // ---- calendar: tags on the selected event, and the tag filter (OL-040 phase 6) --------------------
+  // Tags live on the event (Exchange categories, a Google private property); a recurring event is tagged as a whole.
+  function _eventTags() { var e = content && content.selectedEvent ? content.selectedEvent : null; return e && e.raw.tags ? e.raw.tags : [] }
+  function _hasTag(tags, name) { return tags.some(function(t) { return String(t).toLowerCase() === String(name).toLowerCase() }) }
+  function _toggled(tags, name) {
+    return _hasTag(tags, name) ? tags.filter(function(t) { return String(t).toLowerCase() !== String(name).toLowerCase() }) : tags.concat([name])
+  }
+  function pickEventTags(q) {
+    var ev = content && content.selectedEvent ? content.selectedEvent : null
+    if (!ev) return [{ id: "etag.none", title: "no event selected", keys: [], run: function() {} }]
+    var acct = String(ev.raw.account_id || ""), tags = _eventTags(), query = q.trim(), out = [], exact = false
+    if (app.catAccountId !== acct) {
+      app.loadCategories(acct)
+      return [{ id: "etag.loading", title: "loading\u2026", keys: [], run: function() {} }]
+    }
+    var set = function(list) { return function() { var m = content.setSelectedTags(list); if (m) say(m) } }
+    var known = {}
+    app.catDefs.forEach(function(d) {
+      known[String(d.name).toLowerCase()] = true
+      if (String(d.name).toLowerCase() === query.toLowerCase()) exact = true
+      if (query !== "" && !_fz(query, d.name)) return
+      out.push({ id: "etag." + d.name, title: (_hasTag(tags, d.name) ? "\u2713 " : "   ") + d.name, swatch: d.color, keys: [], run: set(_toggled(tags, d.name)) })
+    })
+    // tags the event carries that are not in the account's list (set elsewhere): still removable
+    tags.forEach(function(n) {
+      if (known[String(n).toLowerCase()]) return
+      if (query !== "" && !_fz(query, n)) return
+      if (String(n).toLowerCase() === query.toLowerCase()) exact = true
+      out.push({ id: "etag.x." + n, title: "\u2713 " + n + "   (not in this account's list)", keys: [], run: set(_toggled(tags, n)) })
+    })
+    if (query !== "" && !exact) {
+      TagNames.similar(query, app.catDefs.map(function(d) { return d.name })).forEach(function(n) {
+        out.unshift({ id: "etag.like." + n, title: "\u2248 looks like \u201c" + n + "\u201d: use it", swatch: app._catColor(n), keys: [], run: set(_toggled(tags, n)) })
+      })
+      out.push({ id: "etag.new", title: "+ Use new name \u201c" + query + "\u201d on this event (no colour until it is added to the list)", keys: [], run: set(_toggled(tags, query)) })
+    }
+    if (tags.length > 0 && query === "") out.push({ id: "etag.clear", title: "   Remove all tags from this event", keys: [], run: set([]) })
+    if (out.length === 0) out.push({ id: "etag.empty", title: "no tags yet \u2014 type a name", keys: [], run: function() {} })
+    if (ev.raw.series_master_id || ev.raw.event_type === "seriesMaster" || ev.raw.event_type === "occurrence")
+      out.push({ id: "etag.series", title: "   recurring: the tag goes on the whole series", keys: [], run: function() {} })
+    return out
+  }
+  function pickEventTagFilter(q) {
+    var query = q.trim(), out = []
+    var go = function(t) { return function() { content.tagFilter = t; say(t === "" ? "Showing all events" : "Showing only events tagged: " + t) } }
+    if (content && content.tagFilter !== "") out.push({ id: "ctf.clear", title: "Show all events  (now: " + content.tagFilter + ")", keys: [], run: go("") })
+    if (query !== "") out.push({ id: "ctf.run", title: "Only events with a tag containing \u201c" + query + "\u201d", keys: [], run: go(query) })
+    app.catDefs.forEach(function(d) {
+      if (query !== "" && !_fz(query, d.name)) return
+      out.push({ id: "ctf." + d.name, title: "Only \u201c" + d.name + "\u201d", swatch: d.color, keys: [], run: go("=" + d.name) })
+    })
+    out.push({ id: "ctf.none", title: "Only untagged events", keys: [], run: go("none") })
+    out.push({ id: "ctf.tip", title: "   type text to match tag names (lucia); =Name is exact; -text excludes", keys: [], run: function() {} })
+    return out
+  }
+  function openEventTagPicker() {
+    var ev = content && content.selectedEvent ? content.selectedEvent : null
+    if (!ev) { say("No event selected"); return }
+    app.loadCategories(String(ev.raw.account_id || ""), function() { root.paletteRequested("tag ") })
+  }
+  function openEventTagFilter() {
+    var acct = ""
+    var ev = content && content.selectedEvent ? content.selectedEvent : null
+    if (ev) acct = String(ev.raw.account_id || "")
+    else if (app.accounts.length > 0) acct = String(app.accounts[0].id)
+    if (acct === "") { root.paletteRequested("tagfilter "); return }
+    app.loadCategories(acct, function() { root.paletteRequested("tagfilter ") })
+  }
+
   function pickColors(q) {
     if (app.pendingCatName === "") return []
     var out = []
@@ -504,6 +573,8 @@ Item {
     { id: "cal.refresh", title: "Refresh events", scope: "calendar/list", keys: ["r"], run: function() { content.loadEvents(true) } },
     { id: "cal.pane.widen",  title: "Widen the calendar sidebar",  scope: "calendar/list", keys: ["C-Right", "C-w >"], run: function(n) { content.resizePane(n || 1) } },
     { id: "cal.pane.narrow", title: "Narrow the calendar sidebar", scope: "calendar/list", keys: ["C-Left", "C-w <"],  run: function(n) { content.resizePane(-(n || 1)) } },
+    { id: "cal.tag",   title: "Set tags on the selected event\u2026", scope: "calendar/list", keys: ["T"], ex: ["tag", "category", "cat"], pick: pickEventTags, when: function() { return !!content && content.selectedEvent !== undefined && !!content.selectedEvent }, run: function() { openEventTagPicker() } },
+    { id: "cal.tagfilter", title: "Show only events with a tag\u2026", scope: "calendar/list", keys: ["f"], ex: ["tagfilter", "filter"], pick: pickEventTagFilter, run: function() { openEventTagFilter() } },
     { id: "cal.new",   title: "New event",       scope: "calendar/list", keys: ["c", "n"], run: function() { var m = content.newEvent(); if (m) say(m) } },
     { id: "cal.undo",  title: "Undo the event just saved (while its undo bar shows)", scope: "calendar/list", keys: ["C-z"], when: function() { return !!content && content.undoId !== undefined && content.undoId !== "" }, run: function() { var m = content.undoLast(); if (m) say(m) } },
 

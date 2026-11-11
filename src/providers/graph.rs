@@ -77,7 +77,7 @@ impl GraphEmailProvider {
     /// Id of a master category by name (ignoring case), or None when the master list lacks it.
     async fn master_category_id(&self, name: &str) -> Result<Option<String>> {
         let token = self.get_token().await?;
-        let client = reqwest::Client::new();
+        let client = super::http_client();
         let response = client
             .get("https://graph.microsoft.com/v1.0/me/outlook/masterCategories")
             .header("Authorization", format!("Bearer {}", token))
@@ -111,7 +111,7 @@ impl GraphEmailProvider {
     /// request. Ordinary mail comes back as `InviteInfo::none()`.
     pub async fn fetch_invite_info(&self, id: &str) -> Result<crate::invites::InviteInfo> {
         let token = self.get_token().await?;
-        let client = reqwest::Client::new();
+        let client = super::http_client();
         let response = client
             .get(format!(
                 "https://graph.microsoft.com/v1.0/me/messages/{}?{}",
@@ -133,7 +133,7 @@ impl GraphEmailProvider {
     /// comment, as the user chose). Graph answers 202 with no body.
     pub async fn respond_to_event(&self, event_id: &str, op: &str) -> Result<()> {
         let token = self.get_token().await?;
-        let client = reqwest::Client::new();
+        let client = super::http_client();
         let response = client
             .post(format!(
                 "https://graph.microsoft.com/v1.0/me/events/{}/{}",
@@ -154,7 +154,7 @@ impl GraphEmailProvider {
     /// sent. On an occurrence it removes that occurrence, on a series master the whole series.
     pub async fn delete_event(&self, event_id: &str) -> Result<()> {
         let token = self.get_token().await?;
-        let client = reqwest::Client::new();
+        let client = super::http_client();
         let response = client
             .delete(format!("https://graph.microsoft.com/v1.0/me/events/{}", urlencoding::encode(event_id)))
             .header("Authorization", format!("Bearer {}", token))
@@ -167,7 +167,7 @@ impl GraphEmailProvider {
     /// Full body of one message: (content type "html"|"text", content).
     pub async fn fetch_message_body(&self, id: &str) -> Result<(String, String)> {
         let token = self.get_token().await?;
-        let client = reqwest::Client::new();
+        let client = crate::providers::http_client();
         let response = client
             .get(format!(
                 "https://graph.microsoft.com/v1.0/me/messages/{}?$select=id,body",
@@ -194,7 +194,7 @@ impl GraphEmailProvider {
     /// collection (400), and `isInline` is reliable in practice.
     pub async fn fetch_attachments(&self, id: &str, body: Option<&str>) -> Result<Vec<crate::attachments::Attachment>> {
         let token = self.get_token().await?;
-        let client = reqwest::Client::new();
+        let client = super::http_client();
         let response = client
             .get(format!(
                 "https://graph.microsoft.com/v1.0/me/messages/{}/attachments?$select=id,name,size,contentType,isInline&$top=200",
@@ -307,6 +307,10 @@ impl GraphEmailProvider {
 
 #[async_trait]
 impl super::EmailProvider for GraphEmailProvider {
+    async fn fetch_body(&self, id: &str) -> Result<(String, String)> {
+        self.fetch_message_body(id).await
+    }
+
     /// Fetch emails from a specific folder (defaults to inbox)
     async fn fetch_inbox(&self, limit: usize) -> Result<Vec<EmailMessage>> {
         self.fetch_folder_messages("inbox", limit).await
@@ -315,7 +319,7 @@ impl super::EmailProvider for GraphEmailProvider {
     /// Full details of messages whose change-feed item arrived without them (see `parse_message`).
     async fn fetch_message_meta(&self, ids: &[String]) -> Vec<EmailMessage> {
         let Ok(token) = self.get_token().await else { return Vec::new() };
-        let client = reqwest::Client::new();
+        let client = super::http_client();
         let mut out = Vec::new();
         for id in ids {
             let url = format!("https://graph.microsoft.com/v1.0/me/messages/{}?$select={}", urlencoding::encode(id), MSG_SELECT);
@@ -331,7 +335,7 @@ impl super::EmailProvider for GraphEmailProvider {
     async fn fetch_folder_messages(&self, folder_id: &str, limit: usize) -> Result<Vec<EmailMessage>> {
         debug!("Fetching {} emails from Graph API folder: {}", limit, folder_id);
         let token = self.get_token().await?;
-        let client = reqwest::Client::new();
+        let client = super::http_client();
 
         // Use well-known names directly OR folder IDs
         let url = format!(
@@ -372,7 +376,7 @@ impl super::EmailProvider for GraphEmailProvider {
         tx: tokio::sync::mpsc::Sender<Vec<EmailMessage>>,
     ) -> Result<usize> {
         let token = self.get_token().await?;
-        let client = reqwest::Client::new();
+        let client = super::http_client();
 
         let mut next_url = Some(format!(
             "https://graph.microsoft.com/v1.0/me/mailFolders/{}/messages?\
@@ -437,7 +441,7 @@ impl super::EmailProvider for GraphEmailProvider {
         link: Option<String>,
         tx: tokio::sync::mpsc::Sender<DeltaPage>,
     ) -> Result<DeltaEnd> {
-        let client = reqwest::Client::new();
+        let client = super::http_client();
         let mut url = link.clone().unwrap_or_else(|| {
             format!(
                 "https://graph.microsoft.com/v1.0/me/mailFolders/{}/messages/delta?\
@@ -524,7 +528,7 @@ impl super::EmailProvider for GraphEmailProvider {
 
     async fn fetch_unread_ids(&self, folder_id: &str) -> Result<Vec<String>> {
         let token = self.get_token().await?;
-        let client = reqwest::Client::new();
+        let client = super::http_client();
         let mut ids = Vec::new();
         let mut next_url = Some(format!(
             "https://graph.microsoft.com/v1.0/me/mailFolders/{}/messages?\
@@ -555,7 +559,7 @@ impl super::EmailProvider for GraphEmailProvider {
             return Ok((Vec::new(), false));
         }
         let token = self.get_token().await?;
-        let client = reqwest::Client::new();
+        let client = super::http_client();
         let base = match folder_id {
             Some(f) => format!("https://graph.microsoft.com/v1.0/me/mailFolders/{}/messages", urlencoding::encode(f)),
             None => "https://graph.microsoft.com/v1.0/me/messages".to_string(),
@@ -619,7 +623,7 @@ impl super::EmailProvider for GraphEmailProvider {
 
     async fn set_message_read(&self, id: &str, is_read: bool) -> Result<()> {
         let token = self.get_token().await?;
-        let client = reqwest::Client::new();
+        let client = super::http_client();
         let response = client
             .patch(format!("https://graph.microsoft.com/v1.0/me/messages/{}", id))
             .header("Authorization", format!("Bearer {}", token))
@@ -633,7 +637,7 @@ impl super::EmailProvider for GraphEmailProvider {
 
     async fn fetch_categories(&self) -> Result<Vec<crate::models::CategoryDef>> {
         let token = self.get_token().await?;
-        let client = reqwest::Client::new();
+        let client = super::http_client();
         let response = client
             .get("https://graph.microsoft.com/v1.0/me/outlook/masterCategories")
             .header("Authorization", format!("Bearer {}", token))
@@ -656,7 +660,7 @@ impl super::EmailProvider for GraphEmailProvider {
 
     async fn create_category(&self, name: &str, color: &crate::models::PaletteColor) -> Result<crate::models::CategoryDef> {
         let token = self.get_token().await?;
-        let client = reqwest::Client::new();
+        let client = super::http_client();
         let response = client
             .post("https://graph.microsoft.com/v1.0/me/outlook/masterCategories")
             .header("Authorization", format!("Bearer {}", token))
@@ -670,7 +674,7 @@ impl super::EmailProvider for GraphEmailProvider {
 
     async fn fetch_message_rules(&self) -> Result<Vec<serde_json::Value>> {
         let token = self.get_token().await?;
-        let client = reqwest::Client::new();
+        let client = super::http_client();
         let mut url = "https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messageRules".to_string();
         let mut out: Vec<serde_json::Value> = Vec::new();
         for _ in 0..20 {
@@ -689,7 +693,7 @@ impl super::EmailProvider for GraphEmailProvider {
 
     async fn create_message_rule(&self, body: &serde_json::Value) -> Result<serde_json::Value> {
         let token = self.get_token().await?;
-        let response = reqwest::Client::new()
+        let response = super::http_client()
             .post("https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messageRules")
             .header("Authorization", format!("Bearer {}", token))
             .json(body).send().await
@@ -700,7 +704,7 @@ impl super::EmailProvider for GraphEmailProvider {
 
     async fn update_message_rule(&self, id: &str, patch: &serde_json::Value) -> Result<serde_json::Value> {
         let token = self.get_token().await?;
-        let response = reqwest::Client::new()
+        let response = super::http_client()
             .patch(format!("https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messageRules/{}", urlencoding::encode(id)))
             .header("Authorization", format!("Bearer {}", token))
             .json(patch).send().await
@@ -711,7 +715,7 @@ impl super::EmailProvider for GraphEmailProvider {
 
     async fn delete_message_rule(&self, id: &str) -> Result<()> {
         let token = self.get_token().await?;
-        let response = reqwest::Client::new()
+        let response = super::http_client()
             .delete(format!("https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messageRules/{}", urlencoding::encode(id)))
             .header("Authorization", format!("Bearer {}", token))
             .send().await
@@ -723,7 +727,7 @@ impl super::EmailProvider for GraphEmailProvider {
         let id = self.master_category_id(name).await?
             .ok_or_else(|| crate::errors::OmarchyError::HttpError(format!("category '{}' is not in the master list", name)))?;
         let token = self.get_token().await?;
-        let client = reqwest::Client::new();
+        let client = super::http_client();
         let url = format!("https://graph.microsoft.com/v1.0/me/outlook/masterCategories/{}", id);
         let response = client.patch(&url)
             .header("Authorization", format!("Bearer {}", token))
@@ -744,7 +748,7 @@ impl super::EmailProvider for GraphEmailProvider {
     async fn delete_category(&self, name: &str) -> Result<()> {
         let Some(id) = self.master_category_id(name).await? else { return Ok(()) };
         let token = self.get_token().await?;
-        let client = reqwest::Client::new();
+        let client = super::http_client();
         let response = client
             .delete(format!("https://graph.microsoft.com/v1.0/me/outlook/masterCategories/{}", id))
             .header("Authorization", format!("Bearer {}", token))
@@ -759,7 +763,7 @@ impl super::EmailProvider for GraphEmailProvider {
 
     async fn set_message_categories(&self, id: &str, wanted: &[String], _had: &[String]) -> Result<()> {
         let token = self.get_token().await?;
-        let client = reqwest::Client::new();
+        let client = super::http_client();
         let response = client
             .patch(format!("https://graph.microsoft.com/v1.0/me/messages/{}", id))
             .header("Authorization", format!("Bearer {}", token))
@@ -778,7 +782,7 @@ impl super::EmailProvider for GraphEmailProvider {
     ) -> Result<()> {
         use crate::models::MessageAction;
         let token = self.get_token().await?;
-        let client = reqwest::Client::new();
+        let client = super::http_client();
         let base = format!("https://graph.microsoft.com/v1.0/me/messages/{}", id);
         // `archive` and `deleteditems` are well-known folder names Graph accepts as a destination.
         let dest = match action {
@@ -906,7 +910,7 @@ impl super::EmailProvider for GraphEmailProvider {
     async fn fetch_folders(&self) -> Result<Vec<MailFolder>> {
         debug!("Fetching mail folders from Graph API");
         let token = self.get_token().await?;
-        let client = reqwest::Client::new();
+        let client = super::http_client();
 
         // Fetch top-level folders including well-known names
         let url = "https://graph.microsoft.com/v1.0/me/mailFolders?\

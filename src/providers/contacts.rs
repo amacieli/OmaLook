@@ -92,7 +92,7 @@ impl GraphContactsProvider {
 impl ContactsProvider for GraphContactsProvider {
     async fn fetch_folders(&self) -> Result<Vec<ContactFolder>> {
         let token = self.get_token().await?;
-        let client = reqwest::Client::new();
+        let client = super::http_client();
         let mut url = Some("https://graph.microsoft.com/v1.0/me/contactFolders?$top=100&$select=id,displayName,parentFolderId".to_string());
         let mut folders = vec![ContactFolder {
             id: DEFAULT_FOLDER_ID.to_string(),
@@ -116,7 +116,7 @@ impl ContactsProvider for GraphContactsProvider {
 
     async fn fetch_folder_contacts(&self, folder_id: &str, limit: usize) -> Result<Vec<Contact>> {
         let token = self.get_token().await?;
-        let client = reqwest::Client::new();
+        let client = super::http_client();
         let url = format!(
             "{}?$top={}&$select={}&$orderby=lastModifiedDateTime desc",
             folder_contacts_url(folder_id), limit, SELECT
@@ -131,7 +131,7 @@ impl ContactsProvider for GraphContactsProvider {
         tx: tokio::sync::mpsc::Sender<Vec<Contact>>,
     ) -> Result<usize> {
         let token = self.get_token().await?;
-        let client = reqwest::Client::new();
+        let client = super::http_client();
         let mut next_url = Some(format!(
             "{}?$top=50&$select={}&$orderby=lastModifiedDateTime desc",
             folder_contacts_url(folder_id), SELECT

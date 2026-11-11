@@ -69,6 +69,9 @@ pub struct EmailDaemon {
     last_meta_bump: std::sync::Mutex<Option<Instant>>,
     /// Counts non-delta sync cycles; deletions made elsewhere are reconciled every few cycles.
     sync_cycle: std::sync::atomic::AtomicU64,
+    /// Messages whose body the provider refused this run (deleted, too large, ...): not retried
+    /// every round, which would hold the queue at its head.
+    body_skip: std::sync::Mutex<std::collections::HashSet<String>>,
 }
 
 impl EmailDaemon {
@@ -82,6 +85,7 @@ impl EmailDaemon {
             seen_push: std::sync::atomic::AtomicU64::new(sync_state::read_push_serial()),
             last_meta_bump: std::sync::Mutex::new(None),
             sync_cycle: std::sync::atomic::AtomicU64::new(0),
+            body_skip: std::sync::Mutex::new(std::collections::HashSet::new()),
         }
     }
 
@@ -181,6 +185,7 @@ impl EmailDaemon {
 
                     // Message details for providers without a change feed, a slice per cycle.
                     self.backfill_meta_per_message(Duration::from_secs(60)).await;
+                    self.prefetch_bodies(Duration::from_secs(45)).await;
                     self.run_local_rules().await;
                     if self.provider.supports_delta() {
                         let still = self.db.delta_walk_incomplete().unwrap_or(0) > 0;
@@ -218,6 +223,8 @@ impl EmailDaemon {
                             _ = &mut fast => {
                                 if message_interval > Duration::from_secs(INBOX_POLL_SECS + 5) {
                                     self.poll_inbox().await;
+                                    // New mail arrives with its body already cached.
+                                    self.prefetch_bodies(Duration::from_secs(8)).await;
                                 }
                             }
                         }
@@ -525,6 +532,64 @@ impl EmailDaemon {
         }
     }
 
+    /// Fill the cache ahead of the user: full bodies (and, through `store_body`, preview
+    /// snippets that are missing) of recent messages, newest first, so selecting a message never
+    /// waits on the network. Works for at most `budget`, a few fetches at a time; stops at the
+    /// first network failure (offline) and tries again next round.
+    async fn prefetch_bodies(&self, budget: Duration) {
+        const WINDOW_DAYS: i64 = 180;
+        const CONCURRENCY: usize = 4;
+        let acct = self.db.account_id().to_string();
+        let started = Instant::now();
+        let mut filled = 0usize;
+        if let Ok(n) = self.db.fill_missing_previews() {
+            if n > 0 { info!("mail[{}] {} preview snippets rebuilt from cached bodies", acct, n); sync_state::bump_mail("previews filled in"); }
+        }
+        'rounds: while started.elapsed() < budget {
+            let ids: Vec<String> = match self.db.messages_needing_body(WINDOW_DAYS, 60) {
+                Ok(v) => {
+                    let skip = self.body_skip.lock().unwrap_or_else(|p| p.into_inner());
+                    v.into_iter().filter(|id| !skip.contains(id)).take(CONCURRENCY * 4).collect()
+                }
+                Err(e) => { warn!("Could not list messages needing bodies: {}", e); break; }
+            };
+            if ids.is_empty() { break; }
+            for chunk in ids.chunks(CONCURRENCY) {
+                let mut set = tokio::task::JoinSet::new();
+                for id in chunk {
+                    let provider = Arc::clone(&self.provider);
+                    let id = id.clone();
+                    set.spawn(async move { let r = provider.fetch_body(&id).await; (id, r) });
+                }
+                let mut results = Vec::new();
+                while let Some(j) = set.join_next().await {
+                    if let Ok(x) = j { results.push(x); }
+                }
+                let mut offline = false;
+                for (id, r) in results {
+                    match r {
+                        Ok((t, c)) => {
+                            match self.db.store_body(&id, &t, &c) {
+                                Ok(()) => filled += 1,
+                                Err(e) => warn!("Could not cache body of {}: {}", id, e),
+                            }
+                        }
+                        Err(e) if crate::compose::is_transient(&e) => { debug!("Body prefetch paused: {}", e); offline = true; }
+                        Err(e) => {
+                            debug!("Body of {} not fetched: {}", id, e);
+                            self.body_skip.lock().unwrap_or_else(|p| p.into_inner()).insert(id);
+                        }
+                    }
+                }
+                if offline || started.elapsed() >= budget { break 'rounds; }
+                sleep(Duration::from_millis(150)).await;
+            }
+        }
+        if filled > 0 {
+            debug!("mail[{}] body prefetch: cached {} bodies", acct, filled);
+        }
+    }
+
     /// Read the account's categories / labels with their colours.
     async fn sync_categories(&self) {
         match self.provider.fetch_categories().await {
@@ -555,15 +620,141 @@ impl EmailDaemon {
                 if let Err(e) = self.db.replace_rules(&rules) { warn!("Could not store mailbox rules: {}", e); }
                 else { debug!("mail[{}] mailbox rules: {}", self.db.account_id(), rules.len()); }
             }
-            Err(e) => {
-                let m = e.to_string();
-                let state = if m.contains("not supported") { "unsupported" }
-                    else if m.contains("403") || m.contains("401") || m.to_lowercase().contains("access") { "needs_signin" }
-                    else { "error" };
-                if state == "error" { warn!("Could not read mailbox rules: {}", m); } else { debug!("Mailbox rules not available: {}", m); }
-                let _ = self.db.set_rules_state(state, if state == "error" { &m } else { "" });
+            Err(e) if e.to_string().contains("not supported") => self.sync_filters().await,
+            Err(e) => self.record_rules_failure(&e.to_string()),
+        }
+    }
+
+    /// Keep the cached rules, record why the read failed (permission missing, no such feature, error).
+    fn record_rules_failure(&self, m: &str) {
+        let state = if m.contains("not supported") { "unsupported" }
+            else if m.contains("403") || m.contains("401") || m.to_lowercase().contains("access") || m.contains("insufficientPermissions") { "needs_signin" }
+            else { "error" };
+        if state == "error" { warn!("Could not read mailbox rules: {}", m); } else { debug!("Mailbox rules not available: {}", m); }
+        let _ = self.db.set_rules_state(state, if state == "error" { m } else { "" });
+    }
+
+    /// Gmail: read the account's server-side filters into the same cache (OL-040 phase 5b), each with the names
+    /// of the labels it adds. Providers with neither kind of rule end up "unsupported".
+    async fn sync_filters(&self) {
+        let read = async {
+            let filters = self.provider.fetch_mail_filters().await?;
+            let labels = self.provider.label_names().await.unwrap_or_default();
+            Ok::<_, crate::errors::OmarchyError>(crate::gmail_filters::with_tags(filters, &labels))
+        };
+        match read.await {
+            Ok(f) => {
+                if let Err(e) = self.db.replace_rules(&f) { warn!("Could not store Gmail filters: {}", e); }
+                else { debug!("mail[{}] gmail filters: {}", self.db.account_id(), f.len()); }
+            }
+            Err(e) => self.record_rules_failure(&e.to_string()),
+        }
+    }
+
+    /// Carry out the Gmail filter changes the user queued. Same discipline as `push_rule_ops`: read the server's
+    /// list, check the filter is still as the user saw it (no etag, so by fingerprint), write once, read again,
+    /// and accept only an outcome that is exactly what was asked. An edit is create-then-delete: the new filter
+    /// is created and checked first, so a failure never leaves the mailbox without the rule. A write is never
+    /// repeated; an unclear answer is reported as failed and the cache is refreshed from the server.
+    pub(crate) async fn push_filter_ops(&self) {
+        use crate::gmail_filters as gf;
+        let ops: Vec<_> = match self.db.pending_rule_ops() {
+            Ok(o) => o.into_iter().filter(|o| o.kind.starts_with("gmail_")).collect(),
+            Err(e) => { warn!("Could not read queued filter changes: {}", e); return }
+        };
+        for op in ops {
+            let fail = |state: &str, msg: String| { let _ = self.db.finish_rule_op(op.id, state, &msg); };
+            let before = match self.provider.fetch_mail_filters().await {
+                Ok(b) => b,
+                Err(e) => {
+                    let n = self.db.bump_rule_op_attempts(op.id).unwrap_or(99);
+                    if n >= 5 || e.to_string().contains("not supported") || e.to_string().contains("insufficientPermissions") {
+                        fail("failed", format!("could not read the account's Gmail filters: {}", e));
+                    }
+                    continue;
+                }
+            };
+            let id = op.payload["id"].as_str().unwrap_or_default().to_string();
+            let expect = op.payload["expect"].as_str().unwrap_or_default().to_string();
+            let rule: Option<crate::local_rules::LocalRule> = serde_json::from_value(op.payload["rule"].clone()).ok();
+            let old = before.iter().find(|f| f["id"].as_str() == Some(id.as_str())).cloned();
+            if op.kind != "gmail_add" {
+                match &old {
+                    None => { fail("conflict", "that filter no longer exists on Gmail".into()); self.refresh_filters(&before).await; continue }
+                    Some(f) if gf::fingerprint(f) != expect => { fail("conflict", "that filter was changed somewhere else since you looked; the page now shows the current version".into()); self.refresh_filters(&before).await; continue }
+                    _ => {}
+                }
+            }
+            if op.kind == "gmail_delete" {
+                let w = self.provider.delete_mail_filter(&id).await;
+                let after = self.provider.fetch_mail_filters().await;
+                self.finish_filter_op(&op, w, after.as_ref().map_err(|e| e.to_string()).and_then(|a| gf::verify_delete(&before, a, &id)), &before, after.ok()).await;
+                continue;
+            }
+            // add / edit: the tag's label first (created when missing), then the filter
+            let Some(rule) = rule else { fail("failed", "the queued rule could not be read".into()); continue };
+            let tag = rule.actions.tags.first().cloned().unwrap_or_default();
+            let lid = match self.label_for(&tag).await {
+                Ok(l) => l,
+                Err(e) if crate::compose::is_transient(&e) => { let _ = self.db.bump_rule_op_attempts(op.id); continue }
+                Err(e) => { fail("failed", format!("could not get or create the Gmail label \"{}\": {}", tag, e)); continue }
+            };
+            let body = match gf::to_gmail(&rule, &lid) { Ok(b) => b, Err(m) => { fail("failed", m); continue } };
+            if before.iter().any(|f| gf::same_effect(f, &body) && f["id"].as_str() != Some(id.as_str())) {
+                fail("exists", "an identical filter is already on Gmail".into()); continue;
+            }
+            if let Some(o) = &old { if gf::same_effect(o, &body) { fail("exists", "nothing changed in that filter".into()); continue } }
+            let w = self.provider.create_mail_filter(&body).await;
+            let after = match self.provider.fetch_mail_filters().await {
+                Ok(a) => a,
+                Err(e) => { fail("failed", format!("the change was sent but the result could not be read back ({}); check Settings -> Rules after the next sync", e)); continue }
+            };
+            let created = gf::verify_create(&before, &after, &body);
+            if op.kind == "gmail_add" || created.is_err() {
+                self.finish_filter_op(&op, w.map(|_| ()), created.map(|_| ()), &before, Some(after)).await;
+                continue;
+            }
+            // edit: the new filter is there and right; now remove the old one and prove it
+            let del = self.provider.delete_mail_filter(&id).await;
+            let after2 = self.provider.fetch_mail_filters().await;
+            let removed = after2.as_ref().map_err(|e| e.to_string()).and_then(|a| gf::verify_delete(&after, a, &id));
+            match (del, removed) {
+                (_, Ok(())) => self.finish_filter_op(&op, Ok(()), Ok(()), &before, after2.ok()).await,
+                (d, Err(why)) => {
+                    let m = format!("the new filter was created but the old one could not be removed ({}{}); both are on Gmail now, delete the old one in Settings -> Rules", why, d.err().map(|e| format!(": {e}")).unwrap_or_default());
+                    fail("failed", m);
+                    self.refresh_filters(&after2.unwrap_or(after)).await;
+                }
             }
         }
+    }
+
+    async fn refresh_filters(&self, filters: &[serde_json::Value]) {
+        let labels = self.provider.label_names().await.unwrap_or_default();
+        let _ = self.db.replace_rules(&crate::gmail_filters::with_tags(filters.to_vec(), &labels));
+    }
+
+    async fn finish_filter_op(&self, op: &crate::db::rules::RuleOp, written: Result<()>, verdict: std::result::Result<(), String>,
+                              before: &[serde_json::Value], after: Option<Vec<serde_json::Value>>) {
+        self.refresh_filters(after.as_deref().unwrap_or(before)).await;
+        match (written, verdict) {
+            (_, Ok(())) => { let _ = self.db.finish_rule_op(op.id, "done", ""); info!("mail[{}] filter change {} ({}) done", self.db.account_id(), op.id, op.kind); }
+            (Err(e), Err(_)) => { let _ = self.db.finish_rule_op(op.id, "failed", &format!("Gmail refused it: {}", e)); }
+            (Ok(()), Err(why)) => {
+                warn!("mail[{}] filter change {} ({}) did not check out: {}", self.db.account_id(), op.id, op.kind, why);
+                let _ = self.db.finish_rule_op(op.id, "failed", &format!("Gmail answered but the result is not what was asked: {}. Check Settings -> Rules", why));
+            }
+        }
+    }
+
+    /// Id of the label for `tag`, created with the palette colour OmaLook keeps for it when Gmail has none.
+    async fn label_for(&self, tag: &str) -> Result<String> {
+        if let Some(id) = self.provider.label_id_for_tag(tag).await? { return Ok(id) }
+        let hex = self.db.tag_color_hex(tag);
+        let color = crate::models::CATEGORY_PALETTE.iter().find(|c| c.hex == hex || c.gmail_bg == hex).unwrap_or(&crate::models::CATEGORY_PALETTE[6]);
+        self.provider.create_category(tag, color).await?;
+        self.provider.label_id_for_tag(tag).await?
+            .ok_or_else(|| crate::errors::OmarchyError::HttpError(format!("label '{}' was not there after creating it", tag)))
     }
 
     /// Carry out the rule changes the user queued (Settings -> Rules, `T`). Each one: read the server's rules,
@@ -572,8 +763,9 @@ impl EmailDaemon {
     /// change is reported as failed and the cache is refreshed from the server so the page shows the truth.
     async fn push_rule_ops(&self) {
         use crate::rules as r;
+        self.push_filter_ops().await;
         let ops = match self.db.pending_rule_ops() { Ok(o) => o, Err(e) => { warn!("Could not read queued rule changes: {}", e); return } };
-        for op in ops {
+        for op in ops.into_iter().filter(|o| !o.kind.starts_with("gmail_")) {
             let before = match self.provider.fetch_message_rules().await {
                 Ok(b) => b,
                 Err(e) => {
@@ -1082,5 +1274,285 @@ mod delta_tests {
         assert_eq!(d.poll_interval(), Duration::from_secs(90), "an edit applies on the next cycle");
         d.config.settings_path = None;
         assert_eq!(d.poll_interval(), Duration::from_secs(d.config.poll_interval_secs));
+    }
+}
+
+#[cfg(test)]
+mod body_prefetch_tests {
+    use super::*;
+    use crate::models::{EmailMessage, MailFolder};
+    use crate::providers::EmailProvider;
+    use async_trait::async_trait;
+    use std::sync::Mutex;
+
+    /// Serves bodies for ids in `ok`, a permanent refusal for ids in `gone`, a network error otherwise
+    /// when `offline`.
+    struct Bodies { ok: Vec<String>, gone: Vec<String>, offline: bool, asked: Mutex<Vec<String>> }
+
+    #[async_trait]
+    impl EmailProvider for Bodies {
+        async fn fetch_inbox(&self, _l: usize) -> Result<Vec<EmailMessage>> { Ok(vec![]) }
+        async fn fetch_folder_messages(&self, _f: &str, _l: usize) -> Result<Vec<EmailMessage>> { Ok(vec![]) }
+        async fn fetch_folders(&self) -> Result<Vec<MailFolder>> { Ok(vec![]) }
+        async fn is_token_valid(&self) -> Result<bool> { Ok(true) }
+        async fn fetch_body(&self, id: &str) -> Result<(String, String)> {
+            self.asked.lock().unwrap().push(id.to_string());
+            if self.offline {
+                return Err(crate::errors::OmarchyError::HttpError("error sending request for url (x): dns error".into()));
+            }
+            if self.gone.iter().any(|g| g == id) {
+                return Err(crate::errors::OmarchyError::HttpError("Graph API error: 404".into()));
+            }
+            assert!(self.ok.iter().any(|o| o == id), "unexpected fetch of {id}");
+            Ok(("html".into(), format!("<p>Hello from {id}</p>")))
+        }
+    }
+
+    fn msg(id: &str, days_ago: i64, preview: &str) -> EmailMessage {
+        let t = (chrono::Utc::now() - chrono::Duration::days(days_ago)).format("%Y-%m-%dT%H:%M:%SZ").to_string();
+        EmailMessage { id: id.into(), from: "a@b.c".into(), subject: format!("s{id}"), received: t,
+                       body: preview.into(), folder_id: Some("F".into()), is_read: false, ..Default::default() }
+    }
+    fn setup(p: Bodies, msgs: Vec<EmailMessage>) -> (EmailDaemon, Arc<Bodies>) {
+        let db = Arc::new(Database::open_for_account(":memory:", "exchange-aaaaaa").unwrap());
+        db.upsert_folder(&MailFolder { id: "F".into(), display_name: "Inbox".into(), parent_folder_id: None,
+                                       unread_item_count: None, total_item_count: None, well_known_name: Some("inbox".into()) }).unwrap();
+        db.insert_emails_batch(&msgs).unwrap();
+        let p = Arc::new(p);
+        (EmailDaemon::new(DaemonConfig::default(), db, p.clone()), p)
+    }
+    fn run<F: std::future::Future>(f: F) -> F::Output {
+        tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(f)
+    }
+
+    #[test]
+    fn recent_bodies_are_cached_and_missing_previews_filled() {
+        let (d, p) = setup(
+            Bodies { ok: vec!["1".into(), "2".into()], gone: vec![], offline: false, asked: Mutex::new(vec![]) },
+            vec![msg("1", 1, "snippet"), msg("2", 2, ""), msg("old", 400, "")],
+        );
+        run(d.prefetch_bodies(Duration::from_secs(10)));
+        assert_eq!(d.db.cached_body("1").unwrap().unwrap().1, "<p>Hello from 1</p>");
+        assert!(d.db.cached_body("2").unwrap().is_some());
+        assert!(d.db.cached_body("old").unwrap().is_none(), "outside the window: left alone");
+        assert_eq!(d.db.message_preview("1").unwrap(), "snippet", "an existing preview is kept");
+        assert_eq!(d.db.message_preview("2").unwrap(), "Hello from 2", "a missing preview is built from the body");
+        assert!(!p.asked.lock().unwrap().contains(&"old".to_string()));
+    }
+
+    #[test]
+    fn offline_stops_at_once_and_leaves_the_queue_intact() {
+        let (d, p) = setup(
+            Bodies { ok: vec![], gone: vec![], offline: true, asked: Mutex::new(vec![]) },
+            (0..30).map(|i| msg(&format!("m{i}"), 1, "x")).collect(),
+        );
+        run(d.prefetch_bodies(Duration::from_secs(10)));
+        assert!(p.asked.lock().unwrap().len() <= 4, "one batch, then it gives up");
+        assert_eq!(d.db.messages_needing_body(180, 100).unwrap().len(), 30);
+        assert!(d.body_skip.lock().unwrap().is_empty(), "a network error is not a refusal");
+    }
+
+    #[test]
+    fn a_refused_message_is_skipped_not_retried_forever() {
+        let (d, p) = setup(
+            Bodies { ok: vec!["2".into()], gone: vec!["1".into()], offline: false, asked: Mutex::new(vec![]) },
+            vec![msg("1", 0, "a"), msg("2", 1, "b")],
+        );
+        run(d.prefetch_bodies(Duration::from_secs(10)));
+        run(d.prefetch_bodies(Duration::from_secs(10)));
+        let asked = p.asked.lock().unwrap().clone();
+        assert_eq!(asked.iter().filter(|a| *a == "1").count(), 1, "asked once only: {asked:?}");
+        assert!(d.db.cached_body("2").unwrap().is_some());
+    }
+}
+
+#[cfg(test)]
+mod gmail_filter_tests {
+    use super::*;
+    use crate::db::gmail_filters::FilterChange;
+    use crate::gmail_filters as gf;
+    use crate::local_rules::{Actions, LocalRule, Pred};
+    use crate::models::{CategoryDef, EmailMessage, MailFolder, PaletteColor};
+    use crate::providers::EmailProvider;
+    use async_trait::async_trait;
+    use serde_json::{json, Value};
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+
+    /// A Gmail stand-in: label list, filter list, and switches for the ways a server can misbehave.
+    #[derive(Default)]
+    struct St { filters: Vec<Value>, labels: HashMap<String, String>, next: u32, fail_delete: bool, drop_create: bool, no_scope: bool, writes: u32 }
+    struct FakeGmail(Mutex<St>);
+
+    #[async_trait]
+    impl EmailProvider for FakeGmail {
+        async fn fetch_inbox(&self, _l: usize) -> Result<Vec<EmailMessage>> { Ok(vec![]) }
+        async fn fetch_folder_messages(&self, _f: &str, _l: usize) -> Result<Vec<EmailMessage>> { Ok(vec![]) }
+        async fn fetch_folders(&self) -> Result<Vec<MailFolder>> { Ok(vec![]) }
+        async fn is_token_valid(&self) -> Result<bool> { Ok(true) }
+        async fn fetch_mail_filters(&self) -> Result<Vec<Value>> {
+            let s = self.0.lock().unwrap();
+            if s.no_scope { return Err(crate::errors::OmarchyError::HttpError("Google API error: 403 Forbidden (scope not granted: sign in to this account again) — insufficientPermissions".into())) }
+            Ok(s.filters.clone())
+        }
+        async fn create_mail_filter(&self, body: &Value) -> Result<Value> {
+            let mut s = self.0.lock().unwrap();
+            s.writes += 1;
+            s.next += 1;
+            let mut f = body.clone();
+            f["id"] = json!(format!("F{}", s.next));
+            if !s.drop_create { s.filters.push(f.clone()); }
+            Ok(f)
+        }
+        async fn delete_mail_filter(&self, id: &str) -> Result<()> {
+            let mut s = self.0.lock().unwrap();
+            s.writes += 1;
+            if s.fail_delete { return Err(crate::errors::OmarchyError::HttpError("Google API error: 500".into())) }
+            s.filters.retain(|f| f["id"].as_str() != Some(id));
+            Ok(())
+        }
+        async fn label_names(&self) -> Result<HashMap<String, String>> { Ok(self.0.lock().unwrap().labels.clone()) }
+        async fn label_id_for_tag(&self, name: &str) -> Result<Option<String>> {
+            Ok(self.0.lock().unwrap().labels.iter().find(|(_, n)| n.eq_ignore_ascii_case(name)).map(|(i, _)| i.clone()))
+        }
+        async fn create_category(&self, name: &str, color: &PaletteColor) -> Result<CategoryDef> {
+            let mut s = self.0.lock().unwrap();
+            s.next += 1;
+            let id = format!("Label_{}", s.next);
+            s.labels.insert(id, name.to_string());
+            Ok(CategoryDef { name: name.into(), color: color.gmail_bg.into(), provider_color: Some(color.gmail_bg.into()) })
+        }
+    }
+
+    fn rule(from: &str, tag: &str) -> LocalRule {
+        LocalRule { id: "r".into(), name: "n".into(), enabled: true, sequence: 1, applies_to: vec![],
+            conditions: vec![Pred::FromAddresses(vec![from.into()])], exceptions: vec![], actions: Actions { tags: vec![tag.into()], stop: false } }
+    }
+    fn setup() -> (EmailDaemon, Arc<FakeGmail>) {
+        let db = Arc::new(Database::open_for_account(":memory:", "gmail-aaaaaa").unwrap());
+        db.conn_for_tests().execute("INSERT INTO accounts (id, provider, email, created_at) VALUES ('gmail-aaaaaa', 'gmail', 'me@gmail.com', 1)", []).unwrap();
+        let p = Arc::new(FakeGmail(Mutex::new(St::default())));
+        (EmailDaemon::new(DaemonConfig::default(), db, p.clone()), p)
+    }
+    fn run<F: std::future::Future>(f: F) -> F::Output {
+        tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(f)
+    }
+    fn ops(d: &EmailDaemon) -> Vec<(String, String)> {
+        d.db.recent_rule_ops("gmail-aaaaaa", 60).unwrap().into_iter().rev().map(|o| (o.kind, o.state)).collect()
+    }
+    fn froms(p: &FakeGmail) -> Vec<String> {
+        p.0.lock().unwrap().filters.iter().filter_map(|f| f["criteria"]["from"].as_str().map(String::from)).collect()
+    }
+
+    #[test]
+    fn sync_caches_filters_with_tag_names_and_reports_a_missing_scope() {
+        let (d, p) = setup();
+        {
+            let mut s = p.0.lock().unwrap();
+            s.labels.insert("Label_1".into(), "Family".into());
+            s.filters.push(json!({ "id": "F1", "criteria": { "from": "a@x.com" }, "action": { "addLabelIds": ["Label_1"] } }));
+        }
+        run(d.sync_rules());
+        assert_eq!(d.db.rules_state("gmail-aaaaaa").unwrap().unwrap().state, "ok");
+        let sm = d.db.filter_summaries("gmail-aaaaaa");
+        assert_eq!((sm.len(), sm[0].tags.clone(), sm[0].editable), (1, vec!["Family".to_string()], true));
+        p.0.lock().unwrap().no_scope = true;
+        run(d.sync_rules());
+        assert_eq!(d.db.rules_state("gmail-aaaaaa").unwrap().unwrap().state, "needs_signin");
+        assert_eq!(d.db.filter_summaries("gmail-aaaaaa").len(), 1, "the cached filters stay");
+    }
+
+    #[test]
+    fn add_creates_the_label_when_missing_and_the_filter_and_checks_it() {
+        let (d, p) = setup();
+        run(d.sync_rules());
+        d.db.queue_filter_change(&FilterChange::Add(rule("a@x.com", "Family"))).unwrap();
+        run(d.push_rule_ops());
+        assert_eq!(ops(&d), vec![("gmail_add".into(), "done".into())]);
+        assert_eq!(froms(&p), vec!["a@x.com".to_string()]);
+        let s = p.0.lock().unwrap();
+        let lid = s.filters[0]["action"]["addLabelIds"][0].as_str().unwrap().to_string();
+        assert_eq!(s.labels.get(&lid).map(String::as_str), Some("Family"));
+        drop(s);
+        assert_eq!(d.db.filter_summaries("gmail-aaaaaa")[0].tags, vec!["Family".to_string()], "cache refreshed from the server");
+        // the same rule again is recognised, not duplicated
+        d.db.queue_filter_change(&FilterChange::Add(rule("a@x.com", "Family"))).unwrap();
+        run(d.push_rule_ops());
+        assert_eq!(ops(&d).last().unwrap().1, "exists");
+        assert_eq!(froms(&p).len(), 1);
+    }
+
+    #[test]
+    fn edit_creates_the_new_filter_first_then_removes_the_old_one() {
+        let (d, p) = setup();
+        run(d.sync_rules());
+        d.db.queue_filter_change(&FilterChange::Add(rule("a@x.com", "Family"))).unwrap();
+        run(d.push_rule_ops());
+        let id = d.db.filter_summaries("gmail-aaaaaa")[0].id.clone();
+        d.db.queue_filter_change(&FilterChange::Edit { id, rule: rule("b@y.org", "Family") }).unwrap();
+        run(d.push_rule_ops());
+        assert_eq!(ops(&d).last().unwrap(), &("gmail_edit".to_string(), "done".to_string()));
+        assert_eq!(froms(&p), vec!["b@y.org".to_string()]);
+    }
+
+    #[test]
+    fn a_failed_delete_after_an_edit_leaves_both_filters_and_says_so() {
+        let (d, p) = setup();
+        run(d.sync_rules());
+        d.db.queue_filter_change(&FilterChange::Add(rule("a@x.com", "Family"))).unwrap();
+        run(d.push_rule_ops());
+        let id = d.db.filter_summaries("gmail-aaaaaa")[0].id.clone();
+        p.0.lock().unwrap().fail_delete = true;
+        d.db.queue_filter_change(&FilterChange::Edit { id, rule: rule("b@y.org", "Family") }).unwrap();
+        run(d.push_rule_ops());
+        let last = d.db.recent_rule_ops("gmail-aaaaaa", 60).unwrap().remove(0);
+        assert_eq!(last.state, "failed");
+        assert!(last.message.contains("both are on Gmail"), "{}", last.message);
+        assert_eq!(froms(&p).len(), 2, "never without the rule");
+        assert_eq!(d.db.filter_summaries("gmail-aaaaaa").len(), 2, "the page shows the truth");
+    }
+
+    #[test]
+    fn a_filter_changed_elsewhere_is_a_conflict_and_nothing_is_written() {
+        let (d, p) = setup();
+        run(d.sync_rules());
+        d.db.queue_filter_change(&FilterChange::Add(rule("a@x.com", "Family"))).unwrap();
+        run(d.push_rule_ops());
+        let id = d.db.filter_summaries("gmail-aaaaaa")[0].id.clone();
+        d.db.queue_filter_change(&FilterChange::Delete { id }).unwrap();
+        let writes = p.0.lock().unwrap().writes;
+        p.0.lock().unwrap().filters[0]["criteria"]["from"] = json!("changed@elsewhere.com"); // edited in Gmail's own settings
+        run(d.push_rule_ops());
+        assert_eq!(ops(&d).last().unwrap().1, "conflict");
+        assert_eq!(p.0.lock().unwrap().writes, writes, "no write was made");
+        assert_eq!(froms(&p), vec!["changed@elsewhere.com".to_string()]);
+    }
+
+    #[test]
+    fn a_server_that_does_not_keep_the_filter_is_reported_not_trusted() {
+        let (d, p) = setup();
+        run(d.sync_rules());
+        p.0.lock().unwrap().drop_create = true;
+        d.db.queue_filter_change(&FilterChange::Add(rule("a@x.com", "Family"))).unwrap();
+        run(d.push_rule_ops());
+        let last = d.db.recent_rule_ops("gmail-aaaaaa", 60).unwrap().remove(0);
+        assert_eq!(last.state, "failed");
+        assert!(last.message.contains("not what was asked"), "{}", last.message);
+    }
+
+    #[test]
+    fn delete_removes_one_filter_and_proves_nothing_else_moved() {
+        let (d, p) = setup();
+        run(d.sync_rules());
+        for f in ["a@x.com", "b@y.org"] {
+            d.db.queue_filter_change(&FilterChange::Add(rule(f, "Family"))).unwrap();
+            run(d.push_rule_ops());
+        }
+        let id = d.db.filter_summaries("gmail-aaaaaa").iter().find(|s| s.text == "from a@x.com").unwrap().id.clone();
+        d.db.queue_filter_change(&FilterChange::Delete { id }).unwrap();
+        run(d.push_rule_ops());
+        assert_eq!(ops(&d).last().unwrap().1, "done");
+        assert_eq!(froms(&p), vec!["b@y.org".to_string()]);
+        let _ = gf::fingerprint(&json!({}));
     }
 }

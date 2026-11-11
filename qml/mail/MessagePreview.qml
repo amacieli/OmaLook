@@ -124,7 +124,7 @@ Item {
     : (root.body.state === "loading" ? "loading message…"
       : (root.body.state === "error" ? String(root.body.reason || "could not load the message body") : ""))
   // What is shown under a load error: the cached preview, if there is one.
-  readonly property string fallbackText: !!root.body && root.body.state === "error" ? String(root.body.preview || "") : ""
+  readonly property string fallbackText: !!root.body && (root.body.state === "error" || root.body.state === "loading") ? String(root.body.preview || "") : ""
 
   property bool renderPending: false
   property string plainText: ""

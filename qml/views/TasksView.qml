@@ -76,17 +76,19 @@ Rectangle {
         } catch(e) { return root.dimColor }
     }
 
+    property string _lastJson: ""
     function loadTasks() {
-        loading = true
+        if (root.tasks.length === 0) loading = true
         var xhr = new XMLHttpRequest()
         xhr.onreadystatechange = function() {
             if (xhr.readyState !== XMLHttpRequest.DONE) return
             loading = false
             if (xhr.status === 200) {
-                try { root.tasks = JSON.parse(xhr.responseText) }
-                catch(e) { root.tasks = [] }
-            } else {
-                root.tasks = []
+                // Unchanged answers must not rebuild the list (it would collapse the open row).
+                if (xhr.responseText !== root._lastJson) {
+                    try { root.tasks = JSON.parse(xhr.responseText); root._lastJson = xhr.responseText }
+                    catch(e) { root.tasks = [] }
+                }
             }
         }
         xhr.open("GET", "http://127.0.0.1:27182/tasks")
@@ -410,4 +412,6 @@ Rectangle {
     }
 
     Component.onCompleted: loadTasks()
+    // The daemon fills the cache in the background; pick up what it found.
+    Timer { interval: 20000; running: root.visible; repeat: true; onTriggered: root.loadTasks() }
 }

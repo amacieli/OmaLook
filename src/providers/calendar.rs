@@ -10,7 +10,7 @@ use chrono::{Local, NaiveDate, TimeZone, Utc};
 use log::{debug, error};
 use tokio::sync::Mutex;
 
-const SELECT: &str = "id,subject,body,start,end,isAllDay,type,seriesMasterId,location,attendees,organizer,isOrganizer,responseStatus,showAs,isOnlineMeeting,onlineMeeting,onlineMeetingProvider,isReminderOn,reminderMinutesBeforeStart,webLink,sensitivity,recurrence";
+const SELECT: &str = "id,subject,body,start,end,isAllDay,type,seriesMasterId,location,attendees,organizer,isOrganizer,responseStatus,showAs,isOnlineMeeting,onlineMeeting,onlineMeetingProvider,isReminderOn,reminderMinutesBeforeStart,webLink,sensitivity,recurrence,categories";
 
 /// Graph attendees -> `[{name,email,role,response}]` JSON ("" when there are none).
 pub(crate) fn attendees_json(attendees: &serde_json::Value) -> String {
@@ -45,6 +45,13 @@ pub trait CalendarProvider: Send + Sync {
     async fn fetch_window(&self, from: NaiveDate, to: NaiveDate) -> Result<Vec<CalendarEvent>>;
 
     async fn is_token_valid(&self) -> Result<bool>;
+
+    /// Set the tags of an event and return what the provider holds afterwards (read back, never assumed).
+    /// `id` is the cache id of the event; a recurring event is tagged as a whole, so the caller passes the
+    /// series master (OL-040 phase 6, decision Q8). Err("... not supported") for providers that cannot.
+    async fn set_event_tags(&self, _id: &str, _tags: &[String]) -> Result<Vec<String>> {
+        Err(OmarchyError::HttpError("set_event_tags not supported".into()))
+    }
 
     /// Create an event (docs/PLAN-calendar-events.md section 4). Providers that cannot yet say so.
     async fn create_event(&self, _draft: &crate::calendar_write::EventDraft) -> Result<crate::calendar_write::CreatedEvent> {
@@ -148,6 +155,7 @@ impl GraphCalendarProvider {
             sensitivity: ev["sensitivity"].as_str().unwrap_or("").to_string(),
             recurrence_json: if ev["recurrence"].is_object() { ev["recurrence"].to_string() } else { String::new() },
             calendar_id: String::new(),
+            tags: crate::calendar_tags::from_graph(&ev["categories"]),
         }
     }
 
@@ -164,7 +172,7 @@ impl CalendarProvider for GraphCalendarProvider {
     async fn fetch_events(&self, limit: usize) -> Result<Vec<CalendarEvent>> {
         debug!("Fetching {} calendar events from Graph API", limit);
         let token = self.get_token().await?;
-        let client = reqwest::Client::new();
+        let client = super::http_client();
         let url = format!(
             "https://graph.microsoft.com/v1.0/me/events?$top={}&$select={}&$orderby=start/dateTime desc",
             limit, SELECT
@@ -178,7 +186,7 @@ impl CalendarProvider for GraphCalendarProvider {
         tx: tokio::sync::mpsc::Sender<Vec<CalendarEvent>>,
     ) -> Result<usize> {
         let token = self.get_token().await?;
-        let client = reqwest::Client::new();
+        let client = super::http_client();
 
         let mut next_url = Some(format!(
             "https://graph.microsoft.com/v1.0/me/events?$top=50&$select={}&$orderby=start/dateTime desc",
@@ -206,7 +214,7 @@ impl CalendarProvider for GraphCalendarProvider {
 
     async fn fetch_window(&self, from: NaiveDate, to: NaiveDate) -> Result<Vec<CalendarEvent>> {
         let token = self.get_token().await?;
-        let client = reqwest::Client::new();
+        let client = super::http_client();
         let mut next_url = Some(window_url(from, to));
         let mut all = Vec::new();
         while let Some(url) = next_url.take() {
@@ -222,7 +230,7 @@ impl CalendarProvider for GraphCalendarProvider {
     async fn create_event(&self, draft: &crate::calendar_write::EventDraft) -> Result<crate::calendar_write::CreatedEvent> {
         let body = draft.to_graph_json().map_err(|e| OmarchyError::HttpError(format!("Invalid event: {}", e)))?;
         let token = self.get_token().await?;
-        let response = reqwest::Client::new()
+        let response = super::http_client()
             .post("https://graph.microsoft.com/v1.0/me/events")
             .header("Authorization", format!("Bearer {}", token))
             .header("Content-Type", "application/json")
@@ -249,6 +257,23 @@ impl CalendarProvider for GraphCalendarProvider {
             is_series: raw["type"].as_str() == Some("seriesMaster"),
             raw,
         })
+    }
+
+    async fn set_event_tags(&self, id: &str, tags: &[String]) -> Result<Vec<String>> {
+        let url = format!("https://graph.microsoft.com/v1.0/me/events/{}", urlencoding::encode(id));
+        let call = |method: reqwest::Method, token: String, body: Option<serde_json::Value>, url: String| async move {
+            let mut req = super::http_client().request(method, url).header("Authorization", format!("Bearer {}", token));
+            if let Some(b) = body { req = req.header("Content-Type", "application/json").body(b.to_string()); }
+            let resp = req.send().await.map_err(|e| OmarchyError::HttpError(e.to_string()))?;
+            let status = resp.status();
+            let text = resp.text().await.map_err(|e| OmarchyError::HttpError(e.to_string()))?;
+            if !status.is_success() { return Err(OmarchyError::HttpError(format!("Graph API error: {} — {}", status, text))); }
+            serde_json::from_str::<serde_json::Value>(&text).map_err(|e| OmarchyError::HttpError(e.to_string()))
+        };
+        let token = self.get_token().await?;
+        call(reqwest::Method::PATCH, token.clone(), Some(serde_json::json!({ "categories": crate::calendar_tags::clean(tags.iter().cloned()) })), url.clone()).await?;
+        let back = call(reqwest::Method::GET, token, None, format!("{}?$select=categories", url)).await?;
+        Ok(crate::calendar_tags::from_graph(&back["categories"]))
     }
 
     async fn is_token_valid(&self) -> Result<bool> {
@@ -323,5 +348,14 @@ mod tests {
         let bare = p.parse_event(&serde_json::json!({"id": "y", "start": {"dateTime": "2026-10-05T09:00:00"}, "end": {"dateTime": "2026-10-05T10:00:00"},
             "isReminderOn": false, "reminderMinutesBeforeStart": 15, "isOnlineMeeting": false, "onlineMeeting": null, "attendees": []}));
         assert_eq!((bare.reminder_minutes, bare.attendees_json.as_str(), bare.online_provider.as_str(), bare.online_url.as_str()), (None, "", "", ""));
+    }
+
+    #[test]
+    fn graph_categories_become_tags_and_the_select_asks_for_them() {
+        assert!(SELECT.split(',').any(|f| f == "categories"));
+        let p = GraphCalendarProvider::new(AuthManager::new());
+        let ev = |cats: serde_json::Value| p.parse_event(&serde_json::json!({"id": "x", "start": {"dateTime": "2026-10-05T09:00:00"}, "end": {"dateTime": "2026-10-05T10:00:00"}, "categories": cats}));
+        assert_eq!(ev(serde_json::json!(["Family", "Saint Lucia"])).tags, vec!["Family".to_string(), "Saint Lucia".to_string()]);
+        assert!(ev(serde_json::json!([])).tags.is_empty() && ev(serde_json::Value::Null).tags.is_empty());
     }
 }
