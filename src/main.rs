@@ -3368,6 +3368,17 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                     let _ = stream.write_all(response.as_bytes());
                     continue;
                 }
+                // ── GET /calendar/meeting-options?account=ID — the editor's Online meeting rows (OL-021 track B);
+                // GET|POST /settings/meetings — the [meetings] block of Settings -> Accounts ──
+                if first_line.contains("GET /calendar/meeting-options") || first_line.contains("GET /settings/meetings") || first_line.contains("POST /settings/meetings") {
+                    let body = meetings_response(config_dir, &mut stream, &buf[..n], first_line);
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                        body.len(), body
+                    );
+                    let _ = stream.write_all(response.as_bytes());
+                    continue;
+                }
                 if first_line.contains("POST /calendar/tags") {
                     let body = calendar_tags_response(config_dir, first_line);
                     let response = format!(
@@ -3389,17 +3400,6 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                 }
                 if first_line.contains("POST /calendar/event") {
                     let body = calendar_event_response(config_dir, &mut stream, &buf[..n], first_line);
-                    let response = format!(
-                        "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
-                        body.len(), body
-                    );
-                    let _ = stream.write_all(response.as_bytes());
-                    continue;
-                }
-                // ── GET /calendar/meeting-options?account=ID — the editor's Online meeting rows (OL-021 track B);
-                // GET|POST /settings/meetings — the [meetings] block of Settings -> Accounts ──
-                if first_line.contains("GET /calendar/meeting-options") || first_line.contains("GET /settings/meetings") || first_line.contains("POST /settings/meetings") {
-                    let body = meetings_response(config_dir, &mut stream, &buf[..n], first_line);
                     let response = format!(
                         "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                         body.len(), body

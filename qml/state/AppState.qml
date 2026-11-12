@@ -1562,19 +1562,6 @@ Item {
     })
   }
 
-  function loadMailSettings() {
-    request("GET", "/settings/mail", function(xhr) {
-      if (xhr.status !== 200) return
-      try { applyMailSettings(JSON.parse(xhr.responseText)) } catch (e) { console.log("[MailSettings] parse error:", e) }
-    })
-  }
-
-  // Called on every stepper change; the save is debounced so rapid clicks send one request.
-  function setSendDelay(secs) {
-    sendDelaySecs = secs
-    mailSettingsSave.restart()
-  }
-
   // ---- online meetings (Settings -> Accounts; `[meetings]`, docs/PLAN-calendar-events.md 7.5) ----
   // { teams_enabled, meet_enabled, jitsi_enabled, personal_enabled, personal_label, personal_link, jitsi_server,
   //   default_provider: { accountId: providerId }, providers: [{ id, label }] }
@@ -1606,6 +1593,19 @@ Item {
     for (var k in cur) d[k] = cur[k]
     d[accountId] = providerId
     saveMeetingSettings({ default_provider: d })
+  }
+
+  function loadMailSettings() {
+    request("GET", "/settings/mail", function(xhr) {
+      if (xhr.status !== 200) return
+      try { applyMailSettings(JSON.parse(xhr.responseText)) } catch (e) { console.log("[MailSettings] parse error:", e) }
+    })
+  }
+
+  // Called on every stepper change; the save is debounced so rapid clicks send one request.
+  function setSendDelay(secs) {
+    sendDelaySecs = secs
+    mailSettingsSave.restart()
   }
 
   Timer {
