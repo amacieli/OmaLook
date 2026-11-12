@@ -83,8 +83,11 @@ public:
     Q_INVOKABLE bool insertImage(const QString &path, const QString &cid);
     Q_INVOKABLE bool registerImage(const QString &path, const QString &cid);
     Q_INVOKABLE void removeImage(const QString &cid);
-    // Replace the document with HTML / plain text. Remote and local <img> sources are dropped
-    // before the document sees them: the editor never fetches anything (AGENTS.md).
+    // Replace the document with HTML / plain text. Local and other non-cid <img> sources are
+    // dropped before the document sees them. Remote (http, https, //) <img> tags are replaced by
+    // a grey placeholder picture named "omalook-remote:N" and their original tag text is kept;
+    // html() puts each original tag back byte-for-byte, so a saved body keeps its remote images.
+    // The editor never fetches anything (AGENTS.md).
     Q_INVOKABLE void setHtml(const QString &html);
     Q_INVOKABLE void setPlainText(const QString &text);
     // Raw QTextDocument output. The Rust side's compose_html::clean() tidies it for sending.
@@ -106,7 +109,13 @@ private:
     void toggleList(QTextListFormat::Style style);
     bool listIs(QTextListFormat::Style style) const;
     QTextCharFormat charFormat() const;
+    // Remote <img> tags -> placeholder names (filled into m_remoteTags); returns the HTML to load.
+    QString takeRemoteImages(const QString &html);
+    // Original <img> text for each placeholder name in `html` (the output of toHtml()).
+    QString restoreRemoteImages(const QString &html) const;
 
     QQuickTextDocument *m_doc = nullptr;
     int m_cursor = 0, m_start = 0, m_end = 0;
+    // placeholder name ("omalook-remote:N") -> the original <img ...> text, for the current setHtml().
+    QHash<QString, QString> m_remoteTags;
 };

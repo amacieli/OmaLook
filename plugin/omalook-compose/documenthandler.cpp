@@ -1,5 +1,7 @@
 #include "documenthandler.h"
 #include <QFont>
+#include <QFontMetrics>
+#include <QPainter>
 #include <QTextBlock>
 #include <QTextCharFormat>
 #include <QTextDocument>
@@ -18,23 +20,42 @@ constexpr int kPictureMaxWidth = 480;
 // "cid:" + Content-ID, the name a picture has in the document and in the HTML.
 QString cidName(const QString &cid) { return QStringLiteral("cid:") + cid; }
 
-// Drops every <img> whose src is not a cid: reference. Nothing else is touched.
-QString keepOnlyCidImages(const QString &html) {
-    static const QRegularExpression tag(QStringLiteral("<img\\b[^>]*>"), QRegularExpression::CaseInsensitiveOption);
-    static const QRegularExpression src(QStringLiteral("\\ssrc\\s*=\\s*[\"']?([^\"'\\s>]*)"), QRegularExpression::CaseInsensitiveOption);
-    QString out;
-    int last = 0;
-    auto it = tag.globalMatch(html);
-    while (it.hasNext()) {
-        const auto m = it.next();
-        out += html.mid(last, m.capturedStart() - last);
-        last = m.capturedEnd();
-        const auto s = src.match(m.captured(0));
-        if (s.hasMatch() && s.captured(1).trimmed().startsWith(QStringLiteral("cid:"), Qt::CaseInsensitive))
-            out += m.captured(0);
-    }
-    out += html.mid(last);
-    return out;
+const QRegularExpression &imgTagRe() {
+    static const QRegularExpression re(QStringLiteral("<img\\b[^>]*>"), QRegularExpression::CaseInsensitiveOption);
+    return re;
+}
+
+// The src value of an <img> tag (quoted or bare), or empty.
+QString srcOf(const QString &tag) {
+    static const QRegularExpression re(
+        QStringLiteral("\\ssrc\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s\"'>]+))"), QRegularExpression::CaseInsensitiveOption);
+    const auto m = re.match(tag);
+    return m.hasMatch() ? (m.captured(1) + m.captured(2) + m.captured(3)).trimmed() : QString();
+}
+
+// The alt text of an <img> tag (quoted), or empty.
+QString altOf(const QString &tag) {
+    static const QRegularExpression re(QStringLiteral("\\salt\\s*=\\s*[\"']([^\"']*)[\"']"), QRegularExpression::CaseInsensitiveOption);
+    const auto m = re.match(tag);
+    return m.hasMatch() ? m.captured(1).simplified() : QString();
+}
+
+// A remote picture: http(s) or protocol-relative. These are never loaded by the editor.
+bool isRemoteSrc(const QString &src) {
+    const QString s = src.toLower();
+    return s.startsWith(QStringLiteral("http://")) || s.startsWith(QStringLiteral("https://")) || s.startsWith(QStringLiteral("//"));
+}
+
+// Grey box with the alt text, drawn in-process: nothing is loaded for it.
+QImage remotePlaceholder(const QString &alt) {
+    QImage img(160, 36, QImage::Format_RGB32);
+    img.fill(QColor(0xdd, 0xdd, 0xdd));
+    QPainter p(&img);
+    p.setPen(QColor(0x44, 0x44, 0x44));
+    const QString label = QStringLiteral("[image: %1]").arg(alt.isEmpty() ? QStringLiteral("remote") : alt);
+    const QRect box = img.rect().adjusted(6, 0, -6, 0);
+    p.drawText(box, Qt::AlignCenter, QFontMetrics(p.font()).elidedText(label, Qt::ElideRight, box.width()));
+    return img;
 }
 
 // Every picture fragment of the document: (block-independent) position, length, name.
@@ -46,7 +67,9 @@ QVector<PictureSpan> pictureSpans(const QTextDocument *d) {
             const QTextFragment fr = it.fragment();
             if (!fr.isValid()) continue;
             const QTextCharFormat f = fr.charFormat();
-            if (f.isImageFormat()) out.append({fr.position(), fr.length(), f.toImageFormat().name()});
+            // Only pictures the user has (cid:). Remote placeholders are not pictures for the send mode.
+            if (f.isImageFormat() && f.toImageFormat().name().startsWith(QStringLiteral("cid:")))
+                out.append({fr.position(), fr.length(), f.toImageFormat().name()});
         }
     }
     return out;
@@ -311,8 +334,60 @@ bool DocumentHandler::hasFormatting() const {
     return false;
 }
 
-void DocumentHandler::setHtml(const QString &h) { if (doc()) doc()->setHtml(keepOnlyCidImages(h)); }
+void DocumentHandler::setHtml(const QString &h) {
+    if (!doc()) return;
+    m_remoteTags.clear();
+    const QString safe = takeRemoteImages(h);
+    // Placeholders are registered before AND after the load, so the importer finds the in-process
+    // picture and never falls back to the document's network loader.
+    for (auto it = m_remoteTags.cbegin(); it != m_remoteTags.cend(); ++it)
+        doc()->addResource(QTextDocument::ImageResource, QUrl(it.key()), remotePlaceholder(altOf(it.value())));
+    doc()->setHtml(safe);
+    for (auto it = m_remoteTags.cbegin(); it != m_remoteTags.cend(); ++it)
+        doc()->addResource(QTextDocument::ImageResource, QUrl(it.key()), remotePlaceholder(altOf(it.value())));
+}
+
+QString DocumentHandler::takeRemoteImages(const QString &h) {
+    QString out;
+    int last = 0;
+    auto it = imgTagRe().globalMatch(h);
+    while (it.hasNext()) {
+        const auto m = it.next();
+        out += h.mid(last, m.capturedStart() - last);
+        last = m.capturedEnd();
+        const QString tag = m.captured(0);
+        const QString src = srcOf(tag);
+        if (src.startsWith(QStringLiteral("cid:"), Qt::CaseInsensitive)) {
+            out += tag;
+        } else if (isRemoteSrc(src)) {
+            const QString name = QStringLiteral("omalook-remote:%1").arg(m_remoteTags.size() + 1);
+            m_remoteTags.insert(name, tag);
+            out += QStringLiteral("<img src=\"%1\">").arg(name);
+        }
+        // Anything else (local file, data:, relative) is dropped, as before.
+    }
+    out += h.mid(last);
+    return out;
+}
+
+QString DocumentHandler::restoreRemoteImages(const QString &h) const {
+    if (m_remoteTags.isEmpty()) return h;
+    static const QRegularExpression name(QStringLiteral("\\ssrc\\s*=\\s*[\"']?(omalook-remote:\\d+)[\"']?"),
+                                         QRegularExpression::CaseInsensitiveOption);
+    QString out;
+    int last = 0;
+    auto it = imgTagRe().globalMatch(h);
+    while (it.hasNext()) {
+        const auto m = it.next();
+        out += h.mid(last, m.capturedStart() - last);
+        last = m.capturedEnd();
+        const auto n = name.match(m.captured(0));
+        out += (n.hasMatch() && m_remoteTags.contains(n.captured(1))) ? m_remoteTags.value(n.captured(1)) : m.captured(0);
+    }
+    out += h.mid(last);
+    return out;
+}
 void DocumentHandler::setPlainText(const QString &t) { if (doc()) doc()->setPlainText(t); }
-QString DocumentHandler::html() const { return doc() ? doc()->toHtml() : QString(); }
+QString DocumentHandler::html() const { return doc() ? restoreRemoteImages(doc()->toHtml()) : QString(); }
 QString DocumentHandler::plainText() const { return doc() ? doc()->toPlainText() : QString(); }
 QString DocumentHandler::qtVersion() const { return QString::fromLatin1(qVersion()); }
