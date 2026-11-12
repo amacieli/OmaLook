@@ -5,6 +5,12 @@ IDs are stable (never reused). Status: `open` | `investigating` | `planned` | `i
 
 ## Issues
 
+### OL-043 — Contacts: full keyboard-driven address book (view, create, edit, organise) and a two-way list link (planned 2026-11-11; plan in docs/PLAN-contacts.md; nothing built)
+- **Wanted (user, 2026-11-11):** a two-way link for distribution lists; keyboard-friendly, reusing the keys and habits of the message view; create and edit contacts with every field Graph allows; a full keyboard path for updating and adding contacts; the functions Outlook's contacts cover. Gmail reconciliation is a later, separate phase.
+- **Found (code read 2026-11-11):** contacts are read-only today (no create/update/delete); the model is lossy (emails without names, addresses flattened to one line, 16 fields read), so a naive write would erase data; `PeopleView` has no keyboard cursor and still has hard-coded colours; the second Graph account's default folder id collides with the first; no delta sync; no changeKey handling.
+- **Plan:** phase 0 spikes + sync fixes + full-fidelity cache (`data`, `change_key`) -> 1 read side with a real cursor, detail pane, search, marks -> 2 create/edit/delete through a contact outbox with undo and changeKey conflicts (`ContactEditor.qml`) -> 3 two-way lists link (Graph category mirror, three-way merge from the list plan) -> 4 folders, move, categories, bulk -> 5 Outlook-parity (photos, quick create, duplicates merge, vCard/CSV, birthdays) -> 6 directory/autocomplete + MAPI-backed fields -> 7 MCP and settings. Gmail later track.
+- **Open questions:** see section 10 of the plan (list mirror naming `OL: <list>`, move semantics, editor defaults, undo window, directory consent, favourites, birthdays).
+
 ### OL-041 — Message preview shows nothing without internet, so the preview cache does not help offline (fixed in tree 2026-11-10, needs `./build.sh --live`)
 - **Seen (user, 2026-11-10):** with no internet connectivity the message preview pane displays nothing, even for messages already cached. This defeats the work done on the preview/message cache, which is meant to let a cached message show without the network.
 - **Likely cause (unconfirmed, no code read yet):** the preview path still depends on the network somewhere, for example fetching the body from the provider on selection instead of reading the cached copy, treating a failed fetch as an empty body, or the render step waiting on remote content. Related: OL-028 (render cache), OL-001/OL-004 (remote-image fetch failures), backlog item 9 (offline untested).
@@ -275,6 +281,7 @@ IDs are stable (never reused). Status: `open` | `investigating` | `planned` | `i
 
 | Plan | File | Status |
 |---|---|---|
+| Contacts: keyboard-driven view/create/edit, Graph fields, two-way lists link (OL-043, OL-012) | `docs/PLAN-contacts.md` | planned (plan written 2026-11-11; open questions in section 10; nothing built) |
 | Tags and tagging rules: tags page, Exchange rules managed in OmaLook, Gmail filters, local engine, calendar tags (OL-040, OL-025) | `docs/PLAN-tags-and-rules.md` | planned (plan written 2026-11-04; Q1-Q3, Q5, Q6 decided; Q4 open; phase 0 complete; phase 1 built 2026-11-06, provider push not yet checked live) |
 | New calendar entries: personal + meetings, attendees, free-time finder, Teams/Zoom/other (OL-021) | `docs/PLAN-calendar-events.md` | planned (plan written 2026-10-25, decisions recorded; user to choose next phases) |
 | Compose: system-font / HTML modes, drafts, send | `docs/PLAN-compose.md` | planned; Phase D spike passed 2026-10-07; UI first draft + Phase A (send, outbox, undo delay) built 2026-10-08 |
