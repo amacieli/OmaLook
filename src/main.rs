@@ -1753,6 +1753,59 @@ fn contacts_route(config_dir: &PathBuf, stream: &mut std::net::TcpStream, initia
     None
 }
 
+/// GET /calendar/meeting-options?account=ID answers `{ok, options:[{id,label,kind,available,reason,default}]}` for that
+/// calendar account (docs/PLAN-calendar-events.md 7.2). GET /settings/meetings answers the `[meetings]` settings;
+/// POST /settings/meetings (JSON body, the same keys) stores them and answers what was stored, or `{ok:false,error}`.
+fn meetings_response(config_dir: &PathBuf, stream: &mut std::net::TcpStream, initial: &[u8], first_line: &str) -> String {
+    use omalook::online_meeting as om;
+    let path = config_dir.join("settings.toml");
+    let err = |m: &str| serde_json::json!({ "ok": false, "error": m }).to_string();
+    let cfg_json = |c: &om::MeetingConfig| serde_json::json!({
+        "ok": true, "teams_enabled": c.teams_enabled, "meet_enabled": c.meet_enabled, "jitsi_enabled": c.jitsi_enabled,
+        "personal_enabled": c.personal_enabled, "personal_label": c.personal_label, "personal_link": c.personal_link,
+        "jitsi_server": c.jitsi_server, "default_provider": c.default_provider,
+        "providers": om::registry().iter().map(|p| serde_json::json!({ "id": p.id(), "label": p.label() })).collect::<Vec<_>>(),
+    }).to_string();
+    if first_line.contains("GET /calendar/meeting-options") {
+        let account = query_param(first_line, "account").unwrap_or_default();
+        if account.is_empty() {
+            return err("no calendar account selected");
+        }
+        return serde_json::json!({ "ok": true, "options": om::options(&account, &om::read_config(&path)) }).to_string();
+    }
+    if first_line.contains("POST /settings/meetings") {
+        let raw = match read_post_body(stream, initial, 16 * 1024) {
+            Ok(b) => b,
+            Err(e) => return err(&e),
+        };
+        let v: serde_json::Value = match serde_json::from_str(&raw) {
+            Ok(v) => v,
+            Err(e) => return err(&format!("unreadable settings: {}", e)),
+        };
+        let cur = om::read_config(&path);
+        let flag = |k: &str, d: bool| v[k].as_bool().unwrap_or(d);
+        let text = |k: &str, d: &str| v[k].as_str().map(String::from).unwrap_or_else(|| d.to_string());
+        let wanted = om::MeetingConfig {
+            teams_enabled: flag("teams_enabled", cur.teams_enabled),
+            meet_enabled: flag("meet_enabled", cur.meet_enabled),
+            jitsi_enabled: flag("jitsi_enabled", cur.jitsi_enabled),
+            personal_enabled: flag("personal_enabled", cur.personal_enabled),
+            personal_label: text("personal_label", &cur.personal_label),
+            personal_link: text("personal_link", &cur.personal_link),
+            jitsi_server: text("jitsi_server", &cur.jitsi_server),
+            default_provider: match v["default_provider"].as_object() {
+                Some(o) => o.iter().filter_map(|(k, x)| Some((k.clone(), x.as_str()?.to_string()))).collect(),
+                None => cur.default_provider.clone(),
+            },
+        };
+        return match om::write_config(&path, &wanted) {
+            Ok(stored) => cfg_json(&stored),
+            Err(e) => err(&e.to_string()),
+        };
+    }
+    cfg_json(&om::read_config(&path))
+}
+
 /// POST /calendar/event — queue a new calendar event from the editor (docs/PLAN-calendar-events.md
 /// sections 6 and 10). Body: the editor's JSON (`EventDraft::from_request`) plus `account_id` and an
 /// optional `transaction_id` (the editor makes one per draft, so a repeated press is one event).
@@ -1785,6 +1838,12 @@ fn calendar_event_response(config_dir: &PathBuf, stream: &mut std::net::TcpStrea
         Some(t) => t.to_string(),
         None => format!("ol-{:x}-{:03x}", now, COUNTER.fetch_add(1, Ordering::Relaxed) & 0xfff),
     };
+    // Online meeting (OL-021 track B): a personal / Jitsi link becomes text in the body and location here, once, so the
+    // queued payload (and a retry) carries the same link; Teams / Meet stay as `online_provider` for the body builders.
+    let meeting_url = match omalook::online_meeting::prepare_request(&mut req, &account_id, &omalook::online_meeting::read_config(&config_dir.join("settings.toml")), &tx) {
+        Ok(u) => u,
+        Err(e) => return err(&e.to_string()),
+    };
     let draft = match EventDraft::from_request(&req, &tx) {
         Ok(d) => d,
         Err(e) => return err(&e),
@@ -1797,7 +1856,7 @@ fn calendar_event_response(config_dir: &PathBuf, stream: &mut std::net::TcpStrea
     };
     if query_param(first_line, "dry_run").as_deref() == Some("1") {
         let key = if google { "google" } else { "graph" };
-        return serde_json::json!({ "ok": true, "dry_run": true, "provider": key, key: graph_body }).to_string();
+        return serde_json::json!({ "ok": true, "dry_run": true, "provider": key, key: graph_body, "online_provider": draft.online_provider, "join_url": meeting_url }).to_string();
     }
     // A signed-out account has no worker, so the event would sit unsaved without anyone knowing.
     if !SCHEDULER.get().map(|s| s.is_running(&account_id)).unwrap_or(false) {
@@ -1815,7 +1874,7 @@ fn calendar_event_response(config_dir: &PathBuf, stream: &mut std::net::TcpStrea
     }
     omalook::sync_state::request_cal_outbox_run();
     info!("Calendar: queued {} ({}, {} attendee(s)), saves in {}s", id, account_id, draft.attendees.len(), delay);
-    serde_json::json!({ "ok": true, "id": id, "delay_secs": delay, "attendees": draft.attendees.len() }).to_string()
+    serde_json::json!({ "ok": true, "id": id, "delay_secs": delay, "attendees": draft.attendees.len(), "join_url": meeting_url }).to_string()
 }
 
 /// PATCH /calendar/event?id=ID&scope=occurrence|series[&dry_run=1] — edit an event (phase 3): the body is the editor's
@@ -1895,6 +1954,10 @@ fn calendar_change_response(config_dir: &PathBuf, stream: &mut std::net::TcpStre
     let delay = omalook::settings::read_send_delay(&config_dir.join("settings.toml"));
     let out_id = format!("cu-{:x}-{:03x}", now, COUNTER.fetch_add(1, Ordering::Relaxed) & 0xfff);
     let payload = if update {
+        // An edit never adds a Teams / Meet room (the patch builders drop it); a personal / Jitsi link is text, so it can change.
+        if let Err(e) = omalook::online_meeting::prepare_request(&mut req, &account_id, &omalook::online_meeting::read_config(&config_dir.join("settings.toml")), &tx) {
+            return err(&e.to_string());
+        }
         req["account_id"] = serde_json::json!(account_id);
         req["transaction_id"] = serde_json::json!(tx);
         req["series"] = serde_json::json!(target.series);
@@ -3289,6 +3352,17 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                     let body = calendar_event_response(config_dir, &mut stream, &buf[..n], first_line);
                     let response = format!(
                         "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                        "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                        body.len(), body
+                    );
+                    let _ = stream.write_all(response.as_bytes());
+                    continue;
+                }
+                // ── GET /calendar/meeting-options?account=ID — the editor's Online meeting rows (OL-021 track B);
+                // GET|POST /settings/meetings — the [meetings] block of Settings -> Accounts ──
+                if first_line.contains("GET /calendar/meeting-options") || first_line.contains("GET /settings/meetings") || first_line.contains("POST /settings/meetings") {
+                    let body = meetings_response(config_dir, &mut stream, &buf[..n], first_line);
+                    let response = format!(
                         body.len(), body
                     );
                     let _ = stream.write_all(response.as_bytes());
