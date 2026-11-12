@@ -868,7 +868,7 @@ Item {
   // [{ id, name, members: [{ email, name }] }] from GET /lists. The backend expands a list chip into
   // its members when the message is queued.
   property var dlLists: []
-  readonly property var composeLists: dlLists.map(function(l) { return { id: l.id, name: l.name, count: l.members.length } })
+  readonly property var composeLists: dlLists.map(function(l) { return { id: l.id, name: l.name, count: l.members.length, members: l.members } })
   property string listNotice: ""
   property int largeAudienceConfirm: 20
 

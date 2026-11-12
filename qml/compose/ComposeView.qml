@@ -10,6 +10,7 @@ import "../common"
 import "modes.js" as Modes
 import "attach.js" as Att
 import "../mail/format.js" as Fmt
+import "external.js" as External
 
 // Compose pane. Takes the reading pane's slot in MailView (PLAN-compose.md decision Q3).
 //
@@ -88,6 +89,13 @@ FocusScope {
     var a = accounts.filter(function(x) { return x.id === root.accountId })
     return a.length > 0 ? a[0] : null
   }
+  // OL-023: recipients outside the From account's organisation (Exchange work/school accounts only).
+  readonly property var _inside: External.bannerDomains(_account)
+  readonly property var _externals: _inside ? External.externalRecipients(
+      header.to.recipients.concat(header.cc.recipients, header.bcc.recipients),
+      function(id) { var l = root.lists.filter(function(x) { return x.id === id }); return l.length > 0 ? (l[0].members || []) : [] },
+      _inside) : []
+
   // What the From account's provider accepts. Starts from the built-in figures so the meter is right
   // at once; the daemon's answer (`GET /attach/limits`) replaces it, and a From switch asks again.
   property var fetchLimits: null              // function(accountId, cb(limits)), from the owner
@@ -436,6 +444,31 @@ else if (ctrl && !shift && e.key === Qt.Key_V) { root.startPaste(); e.accepted =
       contacts: root.contacts
       lists: root.lists
       onAccountPicked: function(id) { root.accountId = id }
+    }
+
+    // ---- OL-023: external recipients. No close button: it stays while any external recipient is in
+    // To, Cc or Bcc, and goes when the last one is removed. It never blocks or asks before sending.
+    Rectangle {
+      id: externalBanner
+      visible: root._externals.length > 0
+      Layout.fillWidth: true
+      Layout.leftMargin: Style.spacing.lg
+      Layout.rightMargin: Style.spacing.lg
+      Layout.topMargin: Style.spacing.md
+      implicitHeight: externalText.implicitHeight + Style.spacing.md * 2
+      color: "transparent"
+      border.color: Commons.Color.urgent
+      border.width: 1
+      UiText {
+        id: externalText
+        x: Style.spacing.md
+        y: Style.spacing.md
+        width: parent.width - Style.spacing.md * 2
+        wrapMode: Text.WordWrap
+        font.pixelSize: Style.font.caption
+        foreground: Commons.Color.urgent
+        text: root._externals.length > 0 ? External.bannerText(root._inside, root._externals) : ""
+      }
     }
 
     PanelSeparator { Layout.fillWidth: true }

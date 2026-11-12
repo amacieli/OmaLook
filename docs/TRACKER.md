@@ -163,11 +163,19 @@ IDs are stable (never reused). Status: `open` | `investigating` | `planned` | `i
 - **Second cause, found while deploying (2026-10-25):** the first launch after an upgrade has every sync thread migrating the database at once; the losers hit `duplicate column name`, `Database::open_for_account` failed and that account's mail / calendar / outbox workers quit silently, so sends were refused. The calendar detail columns (phase 1) made it likelier (14 new columns). Fixed: `Database::add_column` treats "duplicate column name" as success, used by every `ALTER TABLE ADD COLUMN`; test `concurrent_first_opens_of_an_old_database_all_succeed` (8 threads, fails without the fix on every run). After redeploying, the live process has the `mail-`, `cal-`, `contacts-` and `outbox-` threads for the account. Why the 15:09 launch (before any of this) also lacked them is not explained.
 - **Previously open note (cause of the rejection itself):** at the time the live process had no mail/calendar/outbox sync threads for `exchange-8e9b95` even though the keyring token exists (service `omarchylook`), which is what makes the backend refuse a send. The real error text will show once the fix is deployed; then find why the account's workers are not running.
 
-### OL-023 — External-recipient warning banner for mail and calendar invitations (open, not started)
-- **Wanted (user, 2026-10-25):** for work/school accounts, or any account on a custom email domain, show a warning when people **outside the organization** are (a) invited to a calendar entry or (b) emailed (compose, reply, reply all, forward).
-- **Behaviour asked for:** a notification banner only. It cannot be clicked away or dismissed; it stays while any external recipient is present and goes when the last one is removed. It does not block sending or ask for confirmation.
-- **To do (design before code):** decide what counts as "inside" (the account's own email domain; whether Graph can also list the tenant's verified domains, and with which permission, unverified); how consumer domains (gmail.com, outlook.com, etc.) are told apart from custom domains, so consumer accounts get no banner; which recipient fields count in mail (To, Cc, Bcc) and calendar (Required, Optional); wording, including naming the external addresses; where it sits in `ComposeView` and in the event editor (`docs/PLAN-calendar-events.md` 5.3, attendees 5.5). Add the calendar half to that plan's phase 3 (attendees) when the user schedules it.
-- **Not started; no code written.**
+### OL-023 — External-recipient warning banner in compose, Exchange work/school accounts only (built 2026-11-12, needs `./build.sh --live`; not seen on screen)
+- **Wanted (user, 2026-10-25; narrowed 2026-11-12):** compose only (new, reply, reply all, forward). Only Exchange (Graph) work or school accounts. Gmail and personal Microsoft accounts get no banner. The calendar half (event attendees) is not in this item: OL-021 owns attendees, and the calendar check goes there once attendee rows exist.
+- **Behaviour:** a banner in the compose pane, no close button. It stays while any To, Cc or Bcc recipient is outside and goes when the last one is removed. It names the external addresses. It never blocks sending or asks for confirmation.
+- **Inside = the account's own address domain only.** The app does not request a permission that lists the tenant's verified domains (that would need `Domain.Read.All` or `Organization.Read.All`), so other verified domains of the same tenant show as external. Adding that permission is a re-consent and is not done.
+- **Consumer domains** (list in `qml/compose/external.js`) are external on a work account. A Graph account on a consumer domain is a personal Microsoft account and gets no banner.
+- **Lists:** a list chip counts its members (from the list in the backend cache).
+- **Code:** `qml/compose/external.js` (pure), `tests/external.test.js` (node, passes), banner in `qml/compose/ComposeView.qml`, `composeLists` carries members (`qml/state/AppState.qml`).
+- **Not verified:** rendering on screen; qmllint reports no errors.
+
+### OL-049 — Compose extras: umbrella for mutt-parity backlog item 7 (planned 2026-11-12)
+- **Wanted (user, 2026-11-12):** signatures (OL-050), aliases / send-as (OL-051), bounce / redirect (OL-052), reply-to-list (OL-053). Each is its own item with its own commit. External `$EDITOR` for the body is **cancelled by the user**; do not build it.
+- **Status:** OL-023 is separate and not part of this umbrella.
+
 
 ### OL-022 — New mail takes the first signed-in account instead of the viewed or last-used one (done in tree 2026-10-30, needs `./build.sh --live`)
 - **Done (2026-10-30):** `AppState.newMailAccountId()`: the account of the folder being viewed when the list is filtered to one account, else `last_mail_account` (written to `view_state.json` when a message is queued for sending), else the first signed-in account; a stored account that is no longer signed in is skipped. Replies/forwards unchanged. Not run in the live UI.
@@ -321,7 +329,7 @@ WebKit helper, undo-send, rebindable keys with which-key and a palette. Mutt's e
 4. [ ] **Bulk operations**: act on all marked messages, mark by pattern.
 5. [ ] **Drafts** (PLAN-compose.md Phase B2): save, resume, sync to the provider, crash recovery.
 6. [ ] **Gmail attachments** (send): MIME multipart in `build_mime`; the UI currently refuses them for Gmail.
-7. [ ] **Compose extras**: signatures, external `$EDITOR`, forward-as-attachment, bounce, reply-to-list, aliases.
+7. [ ] **Compose extras** (OL-049): signatures (OL-050), aliases (OL-051), bounce (OL-052), reply-to-list (OL-053). External `$EDITOR` cancelled by the user. Forward-as-attachment is not in this item.
 8. [ ] **Security**: GPG / S/MIME sign and encrypt.
 9. [ ] **Offline**: test and harden use without a network (SQLite cache exists, untested offline).
 10. [ ] **Automation**: per-account / per-folder hooks and macros.
