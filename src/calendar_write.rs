@@ -474,6 +474,144 @@ impl EventDraft {
     }
 }
 
+/// Graph's `YYYY-MM-DD` date (a recurrence `startDate` / `endDate`).
+fn graph_date(v: &Value) -> Option<NaiveDate> {
+    NaiveDate::parse_from_str(v.as_str()?.get(..10)?, "%Y-%m-%d").ok()
+}
+
+/// "This and following" (plan 5.7, track D): the `recurrence` object that ends a series the day before
+/// `occurrence`. `recurrence` is the master's Graph `recurrence`. The pattern is kept; the range keeps the start
+/// and ends the day before. Refused: the first occurrence (the whole series is the same change), an occurrence
+/// after the series ends, and a series that ends after a count (a count cannot be cut without changing it).
+pub fn series_end_recurrence(recurrence: &Value, occurrence: NaiveDate) -> Result<Value, String> {
+    let range = &recurrence["range"];
+    let first = graph_date(&range["startDate"]).ok_or("the series has no start date")?;
+    if occurrence <= first {
+        return Err("this is the first occurrence: change the whole series instead".into());
+    }
+    let day_before = occurrence.pred_opt().ok_or("the date is out of range")?;
+    let end = match range["type"].as_str() {
+        Some("noEnd") => day_before,
+        Some("endDate") => {
+            let old_end = graph_date(&range["endDate"]).ok_or("the series end date is not a date")?;
+            if occurrence > old_end {
+                return Err("that occurrence is after the series ends".into());
+            }
+            day_before.min(old_end)
+        }
+        _ => return Err("a series that ends after a set number of occurrences cannot be split: change the whole series or repeat in Outlook".into()),
+    };
+    let mut new_range = json!({
+        "type": "endDate",
+        "startDate": first.format("%Y-%m-%d").to_string(),
+        "endDate": end.format("%Y-%m-%d").to_string(),
+    });
+    if let Some(z) = range["recurrenceTimeZone"].as_str() {
+        new_range["recurrenceTimeZone"] = json!(z);
+    }
+    Ok(json!({ "pattern": recurrence["pattern"].clone(), "range": new_range }))
+}
+
+/// The recurrence of the new series that "this and following" creates: the master's pattern, starting at
+/// `from`, ending where the master ends (never, or the same end date).
+pub fn tail_recurrence(recurrence: &Value, from: NaiveDate) -> Result<Value, String> {
+    let range = &recurrence["range"];
+    let mut new_range = json!({ "type": range["type"].clone(), "startDate": from.format("%Y-%m-%d").to_string() });
+    match range["type"].as_str() {
+        Some("noEnd") => {}
+        Some("endDate") => new_range["endDate"] = range["endDate"].clone(),
+        _ => return Err("a series that ends after a set number of occurrences cannot be split: change the whole series or repeat in Outlook".into()),
+    }
+    if let Some(z) = range["recurrenceTimeZone"].as_str() {
+        new_range["recurrenceTimeZone"] = json!(z);
+    }
+    Ok(json!({ "pattern": recurrence["pattern"].clone(), "range": new_range }))
+}
+
+/// The first occurrence date of a Graph `recurrence` (its range start).
+pub fn series_first_date(recurrence: &Value) -> Option<NaiveDate> {
+    graph_date(&recurrence["range"]["startDate"])
+}
+
+/// Read a Graph `{pattern, range}` recurrence into the typed form (the same shape the editor posts).
+pub fn recurrence_from_graph(v: &Value) -> Result<Option<Recurrence>, String> {
+    parse_recurrence(v)
+}
+
+#[cfg(test)]
+mod following_tests {
+    use super::*;
+
+    fn d(y: i32, m: u32, day: u32) -> NaiveDate {
+        NaiveDate::from_ymd_opt(y, m, day).unwrap()
+    }
+
+    fn weekly(range: Value) -> Value {
+        json!({
+            "pattern": { "type": "weekly", "interval": 1, "daysOfWeek": ["tuesday"], "firstDayOfWeek": "sunday" },
+            "range": range,
+        })
+    }
+
+    #[test]
+    fn ending_a_no_end_series_keeps_the_pattern_and_stops_the_day_before() {
+        let rec = weekly(json!({ "type": "noEnd", "startDate": "2026-10-06", "recurrenceTimeZone": "America/New_York" }));
+        let p = series_end_recurrence(&rec, d(2026, 11, 3)).unwrap();
+        assert_eq!(p["pattern"], rec["pattern"]);
+        assert_eq!(p["range"]["type"], "endDate");
+        assert_eq!(p["range"]["startDate"], "2026-10-06");
+        assert_eq!(p["range"]["endDate"], "2026-11-02");
+        assert_eq!(p["range"]["recurrenceTimeZone"], "America/New_York");
+    }
+
+    #[test]
+    fn an_end_date_is_never_extended() {
+        let rec = weekly(json!({ "type": "endDate", "startDate": "2026-10-06", "endDate": "2026-12-29" }));
+        assert_eq!(series_end_recurrence(&rec, d(2026, 11, 10)).unwrap()["range"]["endDate"], "2026-11-09");
+        // an occurrence after the series end is refused, not turned into a longer series
+        assert!(series_end_recurrence(&rec, d(2027, 1, 5)).unwrap_err().contains("after the series ends"));
+    }
+
+    #[test]
+    fn the_first_occurrence_and_counted_series_are_refused() {
+        let rec = weekly(json!({ "type": "noEnd", "startDate": "2026-10-06" }));
+        assert!(series_end_recurrence(&rec, d(2026, 10, 6)).unwrap_err().contains("first occurrence"));
+        let counted = weekly(json!({ "type": "numbered", "startDate": "2026-10-06", "numberOfOccurrences": 5 }));
+        assert!(series_end_recurrence(&counted, d(2026, 10, 20)).unwrap_err().contains("set number"));
+        assert!(tail_recurrence(&counted, d(2026, 10, 20)).is_err());
+    }
+
+    #[test]
+    fn the_new_series_starts_at_the_occurrence_with_the_same_pattern_and_end() {
+        let open = weekly(json!({ "type": "noEnd", "startDate": "2026-10-06" }));
+        let t = tail_recurrence(&open, d(2026, 11, 3)).unwrap();
+        assert_eq!(t["range"], json!({ "type": "noEnd", "startDate": "2026-11-03" }));
+        assert_eq!(t["pattern"], open["pattern"]);
+        let ended = weekly(json!({ "type": "endDate", "startDate": "2026-10-06", "endDate": "2026-12-29" }));
+        assert_eq!(tail_recurrence(&ended, d(2026, 11, 3)).unwrap()["range"]["endDate"], "2026-12-29");
+    }
+
+    #[test]
+    fn the_old_and_new_halves_round_trip_through_the_typed_form() {
+        let open = weekly(json!({ "type": "noEnd", "startDate": "2026-10-06" }));
+        let tail = recurrence_from_graph(&tail_recurrence(&open, d(2026, 11, 3)).unwrap()).unwrap().unwrap();
+        assert_eq!(tail.range, Range::NoEnd);
+        assert_eq!(tail.pattern, Pattern::Weekly { interval: 1, days: vec![Weekday::Tue] });
+        assert_eq!(series_first_date(&open), Some(d(2026, 10, 6)));
+        // the new series' body carries the occurrence's date as its range start
+        let draft = EventDraft {
+            subject: "Moved".into(), body_text: String::new(),
+            start: d(2026, 11, 3).and_hms_opt(14, 0, 0).unwrap(), end: d(2026, 11, 3).and_hms_opt(15, 0, 0).unwrap(),
+            time_zone: "America/New_York".into(), is_all_day: false, location: None, attendees: vec![],
+            reminder_minutes: Some(15), show_as: "busy".into(), recurrence: Some(tail), transaction_id: "tx-f".into(),
+            online_provider: None,
+        };
+        let body = draft.to_graph_json().unwrap();
+        assert_eq!(body["recurrence"]["range"]["startDate"], "2026-11-03");
+        assert_eq!(body["recurrence"]["pattern"]["type"], "weekly");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

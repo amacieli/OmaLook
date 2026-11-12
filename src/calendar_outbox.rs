@@ -12,7 +12,7 @@
 //! (the few days around a single event, the whole configured window for a series).
 
 use crate::calendar_daemon::{CalendarDaemon, CalendarDaemonConfig};
-use crate::calendar_write::EventDraft;
+use crate::calendar_write::{recurrence_from_graph, series_end_recurrence, series_first_date, tail_recurrence, EventDraft};
 use crate::compose::{is_transient, retry_delay_secs, MAX_ATTEMPTS};
 use crate::db::Database;
 use crate::providers::CalendarProvider;
@@ -173,6 +173,36 @@ impl CalendarOutboxWorker {
         }
     }
 
+    /// "This and following" (plan 5.7): the new series is created first, with the same transactionId so a retry
+    /// finds it, and only then does the old series end the day before. A retry repeats both steps safely. Picking
+    /// the first occurrence is the whole series. A removal ends the series and creates nothing.
+    async fn run_following(&self, op: &str, v: &serde_json::Value, tx: &str, master: &str) -> crate::errors::Result<Option<EventDraft>> {
+        use crate::errors::OmarchyError;
+        let bad = |e: String| OmarchyError::HttpError(e);
+        let occ = v["occurrence"].as_str().and_then(|d| chrono::NaiveDate::parse_from_str(d.get(..10)?, "%Y-%m-%d").ok())
+            .ok_or_else(|| OmarchyError::HttpError("the occurrence date of the queued change is missing".into()))?;
+        let rec = self.provider.series_recurrence(master).await?;
+        if series_first_date(&rec) == Some(occ) {
+            return match op {
+                "update" => {
+                    let draft = EventDraft::from_request(v, tx).map_err(bad)?;
+                    self.provider.update_event(master, &draft, true).await.map(|_| Some(draft))
+                }
+                _ => self.provider.delete_event(master).await.map(|_| None),
+            };
+        }
+        let end = series_end_recurrence(&rec, occ).map_err(bad)?;
+        if op == "delete" {
+            self.provider.set_series_recurrence(master, &end).await?;
+            return Ok(None);
+        }
+        let mut draft = EventDraft::from_request(v, tx).map_err(bad)?;
+        draft.recurrence = recurrence_from_graph(&tail_recurrence(&rec, occ).map_err(bad)?).map_err(bad)?;
+        self.provider.create_event(&draft).await?;
+        self.provider.set_series_recurrence(master, &end).await?;
+        Ok(Some(draft))
+    }
+
     /// One edit, cancel, decline or delete (plan phase 3). The same rules as a create: a transient failure retries
     /// with the same pending mark; a refusal fails with the provider's words. All four are safe to repeat.
     async fn run_change(&self, id: &str, op: &str, payload: &str, tx: &str, attempt: i64) {
@@ -188,7 +218,10 @@ impl CalendarOutboxWorker {
         let day = v["start"].as_str().and_then(|s| s.get(..10)).and_then(|d| chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").ok());
         let comment = v["comment"].as_str().unwrap_or_default().to_string();
         // `Some(draft)` for an update, which changes the cache by its new time; `None` for the removals.
-        let outcome: crate::errors::Result<Option<EventDraft>> = match op {
+        let following = v["following"].as_bool() == Some(true);
+        let outcome: crate::errors::Result<Option<EventDraft>> = if following && (op == "update" || op == "delete") {
+            self.run_following(op, &v, tx, &target).await
+        } else { match op {
             "update" => match EventDraft::from_request(&v, tx) {
                 Ok(draft) => self.provider.update_event(&target, &draft, series).await.map(|_| Some(draft)),
                 Err(e) => Err(crate::errors::OmarchyError::HttpError(format!("the queued event could not be read: {e}"))),
@@ -197,7 +230,7 @@ impl CalendarOutboxWorker {
             "decline" => self.provider.decline_event(&target, &comment).await.map(|_| None),
             "delete" => self.provider.delete_event(&target).await.map(|_| None),
             other => Err(crate::errors::OmarchyError::HttpError(format!("unknown operation: {other}"))),
-        };
+        } };
         match outcome {
             Ok(draft) => {
                 info!("Calendar outbox {}: {} of {} done (attempt {})", self.account_id, op, id, attempt);
@@ -479,6 +512,20 @@ mod tests {
         async fn delete_event(&self, target: &str) -> Result<()> { self.seen.lock().unwrap().push(format!("delete {target}")); self.script.lock().unwrap().remove(0) }
         async fn cancel_event(&self, target: &str, comment: &str) -> Result<()> { self.seen.lock().unwrap().push(format!("cancel {target} [{comment}]")); self.script.lock().unwrap().remove(0) }
         async fn decline_event(&self, target: &str, _c: &str) -> Result<()> { self.seen.lock().unwrap().push(format!("decline {target}")); self.script.lock().unwrap().remove(0) }
+        async fn create_event(&self, d: &EventDraft) -> Result<crate::calendar_write::CreatedEvent> {
+            self.seen.lock().unwrap().push(format!("create {} recurrence={}", d.start.date(), d.recurrence.is_some()));
+            self.script.lock().unwrap().remove(0)?;
+            Ok(crate::calendar_write::CreatedEvent { id: "NEW".into(), ..Default::default() })
+        }
+        async fn series_recurrence(&self, master: &str) -> Result<serde_json::Value> {
+            self.seen.lock().unwrap().push(format!("recurrence {master}"));
+            Ok(serde_json::json!({ "pattern": { "type": "weekly", "interval": 1, "daysOfWeek": ["tuesday"], "firstDayOfWeek": "sunday" },
+                "range": { "type": "noEnd", "startDate": "2026-10-06" } }))
+        }
+        async fn set_series_recurrence(&self, master: &str, rec: &serde_json::Value) -> Result<()> {
+            self.seen.lock().unwrap().push(format!("end {master} {}", rec["range"]["endDate"].as_str().unwrap_or_default()));
+            self.script.lock().unwrap().remove(0)
+        }
     }
 
     fn change_setup(script: Vec<Result<()>>) -> (CalendarOutboxWorker, Arc<ChangeFake>, Arc<Database>) {
@@ -498,6 +545,40 @@ mod tests {
 
     fn change_payload(subject: &str) -> serde_json::Value {
         serde_json::json!({"subject": subject, "start": "2026-10-05T09:00", "end": "2026-10-05T10:00", "time_zone": "America/New_York"})
+    }
+
+    #[tokio::test]
+    async fn this_and_following_creates_the_new_series_then_ends_the_old_one() {
+        let (w, fake, db) = change_setup(vec![Ok(()), Ok(())]);
+        let p = serde_json::json!({ "subject": "Standup", "start": "2026-11-03T10:00:00", "end": "2026-11-03T10:15:00",
+            "time_zone": "America/New_York", "following": true, "occurrence": "2026-11-03" });
+        db.cal_queue_event_change("f1", "update", "M", &p, 0, 0).unwrap();
+        assert_eq!(w.drain().await, 1);
+        assert_eq!(fake.seen.lock().unwrap().as_slice(),
+            &["recurrence M", "create 2026-11-03 recurrence=true", "end M 2026-11-02"],
+            "the new series is created before the old one is cut, so a retry never loses the series");
+        assert_eq!(db.cal_outbox_status("f1").unwrap().unwrap().0, "sent");
+    }
+
+    #[tokio::test]
+    async fn a_refused_create_leaves_the_old_series_whole() {
+        let (w, fake, db) = change_setup(vec![Err(OmarchyError::HttpError("Graph API error: 400 Bad Request — {}".into()))]);
+        let p = serde_json::json!({ "subject": "Standup", "start": "2026-11-03T10:00:00", "end": "2026-11-03T10:15:00",
+            "time_zone": "America/New_York", "following": true, "occurrence": "2026-11-03" });
+        db.cal_queue_event_change("f2", "update", "M", &p, 0, 0).unwrap();
+        w.drain().await;
+        assert_eq!(fake.seen.lock().unwrap().as_slice(), &["recurrence M", "create 2026-11-03 recurrence=true"]);
+        assert_eq!(db.cal_outbox_status("f2").unwrap().unwrap().0, "failed");
+    }
+
+    #[tokio::test]
+    async fn deleting_from_the_first_occurrence_deletes_the_whole_series() {
+        let (w, fake, db) = change_setup(vec![Ok(())]);
+        let p = serde_json::json!({ "account_id": "exchange-test", "start": "2026-10-06T10:00:00", "end": "2026-10-06T10:15:00",
+            "comment": "", "following": true, "occurrence": "2026-10-06" });
+        db.cal_queue_event_change("f3", "delete", "M", &p, 0, 0).unwrap();
+        w.drain().await;
+        assert_eq!(fake.seen.lock().unwrap().as_slice(), &["recurrence M", "delete M"]);
     }
 
     #[test]

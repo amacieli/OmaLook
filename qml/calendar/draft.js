@@ -125,11 +125,32 @@ function attendeeList(required, optional, kept, ownEmail) {
 function inviteeCount(list) { return (list || []).filter(function(a) { return a.role !== "resource" }).length }
 
 // The footer line: who the save reaches and when (plan 12: the undo window is the safety net).
-function reachLine(n, mode) {
+function reachLine(n, mode, scope, day) {
     var people = n + (n === 1 ? " person" : " people")
+    if (mode === "edit" && scope === "following") return followingLine("update", n, day)
     if (mode === "edit") return n === 0 ? "No attendees: nobody is told about the change."
                                         : "Invitations with the update go out to " + people + " when the undo window ends."
     return n === 0 ? "Personal entry. No invitations." : people + " will be invited when the undo window ends."
+}
+
+// The day before an ISO date (YYYY-MM-DD), as YYYY-MM-DD.
+function dayBefore(iso) {
+    var d = new Date(String(iso || "").slice(0, 10) + "T12:00:00")
+    d.setDate(d.getDate() - 1)
+    return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0")
+}
+
+// The day of an event as the cache holds it (its start, YYYY-MM-DD).
+function dayOf(raw) { return String((raw && raw.start) || "").slice(0, 10) }
+
+// The confirm / footer line for "this and following" (plan 5.7). day = the picked occurrence's date.
+// n = invitees from the dry run (-1 while counting). The old series ends the day before; a new series starts on day.
+function followingLine(op, n, day) {
+    if (op === "delete") return "Removes this and the following occurrences from your calendar when the undo window ends. Nobody is told."
+    if (n < 0) return "Counting who is invited\u2026"
+    var people = n + (n === 1 ? " person" : " people")
+    var reach = n === 0 ? "personal" : "sent to " + people + " when the undo window ends"
+    return "The series ends " + dayBefore(day) + ". A new series from " + day + " is " + reach + "."
 }
 
 // Merge suggestion lists, first one wins; each entry becomes {name, email}. Entries without an address are dropped.
@@ -214,14 +235,15 @@ function removeKind(raw, account) {
 
 // Path for an edit (PATCH) or a cancel / decline / delete (POST), with dry_run=1 for the invitee count.
 function changePath(op, id, scope, kind, dry) {
-    var q = "id=" + encodeURIComponent(id) + "&scope=" + (scope === "series" ? "series" : "occurrence")
+    var known = scope === "series" || scope === "following" ? scope : "occurrence"
+    var q = "id=" + encodeURIComponent(id) + "&scope=" + known
     if (op === "update") return "/calendar/event?" + q + (dry ? "&dry_run=1" : "")
     return "/calendar/event/cancel?" + q + "&kind=" + kind + (dry ? "&dry_run=1" : "")
 }
 
 // The undo bar's line once the server has queued the change.
-function changeMessage(op, n, series) {
-    var whole = series ? " on the whole series" : ""
+function changeMessage(op, n, series, following) {
+    var whole = following ? " on this and following occurrences" : series ? " on the whole series" : ""
     if (op === "update") return "Change queued" + whole + (n > 0 ? " for " + n + (n === 1 ? " person" : " people") : " (personal)")
     if (op === "cancel") return "Cancellation queued for " + n + (n === 1 ? " person" : " people") + whole
     if (op === "decline") return "Decline queued (the organiser is told)" + whole
@@ -229,8 +251,9 @@ function changeMessage(op, n, series) {
 }
 
 // The confirm line for cancel / decline / delete. n = invitees from the dry run, -1 while it is counting.
-function removeLine(op, n) {
+function removeLine(op, n, following, day) {
     if (op === "decline") return "Your decline goes to the organiser only. Nothing else is sent."
+    if (following) return followingLine(op, n, day)
     if (op === "delete") return "Removed from your calendar when the undo window ends. Nobody is told."
     if (n < 0) return "Counting who is invited\u2026"
     return "The cancellation goes to " + n + (n === 1 ? " person" : " people") + " when the undo window ends."
@@ -254,7 +277,11 @@ function applyChanges(rawEvents, items) {
             if (t === "" || !(r.id === t || (it.series === true && r.series_master_id === t))) continue
             var out = Object.assign({}, r), failed = it.state === "failed"
             out.pendingOp = it.op; out.failed = failed; out.pending = !failed; out.error = it.error || ""
-            if (it.op === "update") {
+            // "this and following": the mark lands on the picked occurrence and the ones after it; no new times yet.
+            if (it.following === true) {
+                if (dayOf(r) < String(it.occurrence || "")) continue
+                out.subject = changeMark("update", failed) + r.subject
+            } else if (it.op === "update") {
                 out.subject = changeMark("update", failed) + (it.subject || r.subject)
                 out.start = it.start || r.start
                 out.end = it.end || r.end

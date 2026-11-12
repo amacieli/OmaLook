@@ -91,7 +91,9 @@ FocusScope {
     readonly property var keptRooms: editing ? (original.raw.attendees || []).filter(function(a) { return a.role === "resource" }) : []
     readonly property var people: Draft.attendeeList(reqField.recipients, optField.recipients, keptRooms, ownEmail)
     readonly property int inviteeCount: Draft.inviteeCount(people.list)
-    readonly property string reachText: Draft.reachLine(inviteeCount, editing ? "edit" : "create")
+    property string editScope: "occurrence"  // edit: occurrence | series | following (set by CalendarView)
+    property string occurrenceDay: ""         // edit: the day of the occurrence picked (YYYY-MM-DD)
+    readonly property string reachText: Draft.reachLine(inviteeCount, editing ? "edit" : "create", editScope, occurrenceDay)
 
     // Edit: the original as the editor would have it, compared with the form. Only changed keys are sent.
     readonly property var originalRows: editing ? (original.raw.attendees || []) : []

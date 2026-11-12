@@ -314,7 +314,7 @@ Item {
             if (!r.ok) { editorStatus = r.error || "could not save"; return }
             editorOpen = false
             editorStatus = ""
-            _queued(r, "update", scope === "series", r.invitees || 0)
+            _queued(r, "update", scope !== "occurrence", r.invitees || 0, scope === "following")
         })
     }
 
@@ -351,25 +351,25 @@ Item {
     }
     function confirmRemove(message) {
         if (actionCount < 0) { actionStatus = "Still counting who is invited. One moment."; return }
-        var raw = actionRaw, kind = actionKind, series = actionScope === "series"
+        var raw = actionRaw, kind = actionKind, series = actionScope !== "occurrence"
         var acct = accountOfRaw(raw)
         actionStatus = ""
         _post("POST", Draft.changePath("cancel", raw.id, actionScope, kind, false),
               JSON.stringify({ account_id: acct ? acct.id : raw.account_id, comment: message || "" }), function(r) {
             if (!r.ok) { actionStatus = r.error || "not queued"; return }
             cancelAsk()
-            _queued(r, kind, series, r.invitees || 0)
+            _queued(r, kind, series, r.invitees || 0, actionScope === "following")
         })
     }
     function cancelAsk() { askMode = ""; action = ""; actionRaw = null; actionStatus = ""; actionCount = -1 }
 
     // A queued change: the undo bar takes it, and the outbox target is kept so the pending mark lands on the right row.
-    function _queued(r, op, series, count) {
+    function _queued(r, op, series, count, following) {
         _changeTargets[r.id] = { target: r.target || "", series: series === true }
         undoKind = "change"
         undoId = r.id
         undoState = "pending"
-        undoMessage = Draft.changeMessage(op, count, series)
+        undoMessage = Draft.changeMessage(op, count, series, following === true)
         pollOutbox()
         outboxTimer.start()
     }
@@ -648,6 +648,8 @@ Item {
                         defaultSeriesMonths: root.eventDefaults.seriesMonths
                         accounts: root.appAccounts.filter(Draft.canCreate)
                         accountId: root.editorAccount
+                        editScope: root.editorScope
+                        occurrenceDay: root.editorOriginal ? Draft.dayOf(root.editorOriginal.raw) : ""
                         events: root.events
                         status: root.editorStatus
                         restore: root.editorRestore
@@ -700,10 +702,12 @@ Item {
                 heading: root.action === "edit" ? (root.askMode === "scope" ? "Edit a repeating event" : "Edit this event")
                     : root.actionKind === "cancel" ? "Cancel this meeting"
                     : root.actionKind === "decline" ? "Decline this invitation" : "Delete this event"
-                askLine: root.action === "edit" ? "Change only this occurrence, or the whole series?"
+                askLine: root.action === "edit" ? "Change only this occurrence, this and following, or the whole series?"
                     : root.actionKind === "decline" ? "Decline only this occurrence, or the whole series?"
-                    : "Cancel or delete only this occurrence, or the whole series?"
-                detail: root.askMode === "confirm" ? Draft.removeLine(root.actionKind, root.actionCount) : ""
+                    : root.actionKind === "delete" ? "Delete only this occurrence, this and following, or the whole series?"
+                    : "Cancel only this occurrence, or the whole series?"
+                allowFollowing: root.action === "edit" || root.actionKind === "delete"
+                detail: root.askMode === "confirm" ? Draft.removeLine(root.actionKind, root.actionCount, root.actionScope === "following", Draft.dayOf(root.actionRaw)) : ""
                 allowMessage: root.askMode === "confirm" && root.actionKind === "cancel"
                 status: root.actionStatus
                 onScopePicked: function(scope) { root.pickScope(scope) }

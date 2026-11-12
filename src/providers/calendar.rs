@@ -78,6 +78,16 @@ pub trait CalendarProvider: Send + Sync {
     async fn decline_event(&self, _target: &str, _comment: &str) -> Result<()> {
         Err(OmarchyError::HttpError("declining meetings is not supported for this account type yet".to_string()))
     }
+
+    /// "This and following" (plan 5.7): the series master's Graph `recurrence` object.
+    async fn series_recurrence(&self, _master: &str) -> Result<serde_json::Value> {
+        Err(OmarchyError::HttpError("splitting a series is not supported for this account type yet".to_string()))
+    }
+
+    /// "This and following": replace a series master's `recurrence` (pattern and range) without touching the rest.
+    async fn set_series_recurrence(&self, _master: &str, _recurrence: &serde_json::Value) -> Result<()> {
+        Err(OmarchyError::HttpError("splitting a series is not supported for this account type yet".to_string()))
+    }
 }
 
 /// Local midnight of `date` as an RFC 3339 instant with its UTC offset.
@@ -402,6 +412,20 @@ impl CalendarProvider for GraphCalendarProvider {
 
     async fn decline_event(&self, target: &str, comment: &str) -> Result<()> {
         self.graph_call(reqwest::Method::POST, &format!("me/events/{}/decline", urlencoding::encode(target)), Some(serde_json::json!({ "comment": comment, "sendResponse": true })), None).await?;
+        Ok(())
+    }
+
+    async fn series_recurrence(&self, master: &str) -> Result<serde_json::Value> {
+        let text = self.graph_call(reqwest::Method::GET, &format!("me/events/{}?$select=recurrence", urlencoding::encode(master)), None, None).await?;
+        let raw: serde_json::Value = serde_json::from_str(&text).unwrap_or(serde_json::Value::Null);
+        if !raw["recurrence"].is_object() {
+            return Err(OmarchyError::HttpError("this event does not repeat".to_string()));
+        }
+        Ok(raw["recurrence"].clone())
+    }
+
+    async fn set_series_recurrence(&self, master: &str, recurrence: &serde_json::Value) -> Result<()> {
+        self.graph_call(reqwest::Method::PATCH, &format!("me/events/{}", urlencoding::encode(master)), Some(serde_json::json!({ "recurrence": recurrence })), None).await?;
         Ok(())
     }
 

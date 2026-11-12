@@ -1882,9 +1882,10 @@ fn calendar_event_response(config_dir: &PathBuf, stream: &mut std::net::TcpStrea
     serde_json::json!({ "ok": true, "id": id, "delay_secs": delay, "attendees": draft.attendees.len(), "join_url": meeting_url }).to_string()
 }
 
-/// PATCH /calendar/event?id=ID&scope=occurrence|series[&dry_run=1] — edit an event (phase 3): the body is the editor's
+/// PATCH /calendar/event?id=ID&scope=occurrence|series|following[&dry_run=1] — edit an event (phase 3): the body is the editor's
 /// JSON (as for a create) with `account_id`. `scope=series` changes the whole series (the id resolves to its master);
-/// `occurrence` makes one exception. POST /calendar/event/cancel?id=ID&scope=…&kind=cancel|decline|delete[&dry_run=1] —
+/// `occurrence` makes one exception; `following` ends the series the day before the picked occurrence and starts a new
+/// series from it (plan 5.7). POST /calendar/event/cancel?id=ID&scope=…&kind=cancel|decline|delete[&dry_run=1] —
 /// cancel a meeting you organise (sends the cancellation), decline one you were invited to, or delete an entry; the
 /// body is `{account_id, comment}`. Every one waits the undo window (`POST /calendar/event/undo?id=`) and is sent by
 /// the account's calendar outbox. `invitees` counts the people the change reaches, shown before the user confirms.
@@ -1911,7 +1912,9 @@ fn calendar_change_response(config_dir: &PathBuf, stream: &mut std::net::TcpStre
     if event_id.is_empty() {
         return err("missing id");
     }
-    let whole_series = query_param(first_line, "scope").as_deref() == Some("series");
+    let scope = query_param(first_line, "scope").unwrap_or_default();
+    let whole_series = scope == "series";
+    let following = scope == "following";
     let update = first_line.starts_with("PATCH ");
     let kind = if update { "update".to_string() } else { query_param(first_line, "kind").unwrap_or_else(|| "cancel".into()) };
     if !matches!(kind.as_str(), "update" | "cancel" | "decline" | "delete") {
@@ -1923,22 +1926,54 @@ fn calendar_change_response(config_dir: &PathBuf, stream: &mut std::net::TcpStre
         Ok(db) => db,
         Err(e) => return err(&format!("database: {}", e)),
     };
-    let target = match db.cal_event_ref(&event_id, whole_series) {
+    let target = match db.cal_event_ref(&event_id, whole_series || following) {
         Ok(Some(r)) => r,
         Ok(None) => return err("that event is not in the calendar cache; refresh the calendar and try again"),
         Err(e) => return err(&e),
+    };
+    // "This and following" (plan 5.7): the target is the series master; the picked occurrence's date is where the
+    // new series starts. Only an edit and a personal delete split a series; a cancel of the rest is not built yet.
+    let occurrence = if following {
+        let picked = match db.cal_event_ref(&event_id, false) {
+            Ok(Some(r)) => r,
+            _ => return err("that event is not in the calendar cache; refresh the calendar and try again"),
+        };
+        if !target.series {
+            return err("this event does not repeat");
+        }
+        if omalook::accounts::provider_of(&account_id) == "gmail" {
+            return err("Google calendars cannot split a series yet: change this occurrence or the whole series");
+        }
+        if kind == "cancel" || kind == "decline" {
+            return err("cancelling the rest of a series is not built yet: cancel this occurrence or the whole series");
+        }
+        if kind == "delete" && target.invitees > 0 {
+            return err("this series has invitees: cancel this occurrence or the whole series");
+        }
+        picked.start.get(..10).unwrap_or_default().to_string()
+    } else {
+        String::new()
     };
     // What the change reaches, and (for an edit) what it will send to the provider, checked before anything queues.
     let (invitees, graph) = if update {
         if req["time_zone"].as_str().unwrap_or("").is_empty() {
             req["time_zone"] = serde_json::json!(omalook::providers::calendar::local_time_zone());
         }
+        // An edit never adds a Teams / Meet room (the patch builders drop it); a personal / Jitsi link is text, so it can change.
+        if let Err(e) = omalook::online_meeting::prepare_request(&mut req, &account_id, &omalook::online_meeting::read_config(&config_dir.join("settings.toml")), &tx) {
+            return err(&e.to_string());
+        }
         let draft = match EventDraft::from_request(&req, &tx) {
             Ok(d) => d,
             Err(e) => return err(&e),
         };
+        if !draft.attendees.is_empty() {
+            if let Some(m) = omalook::accounts::personal_refusal(&account_id, omalook::accounts::PersonalLimit::Invite) {
+                return err(m);
+            }
+        }
         let google = omalook::accounts::provider_of(&account_id) == "gmail";
-        let graph = match if google { omalook::providers::google_calendar_write::patch_body(&draft, target.series) } else { draft.to_graph_patch_json(target.series) } {
+        let graph = match if google { omalook::providers::google_calendar_write::patch_body(&draft, target.series) } else if following { draft.to_graph_json() } else { draft.to_graph_patch_json(target.series) } {
             Ok(b) => b,
             Err(e) => return err(&e.to_string()),
         };
@@ -1951,7 +1986,7 @@ fn calendar_change_response(config_dir: &PathBuf, stream: &mut std::net::TcpStre
         let google = omalook::accounts::provider_of(&account_id) == "gmail";
         let key = if google { "google" } else { "graph" };
         return serde_json::json!({ "ok": true, "dry_run": true, "provider": key, "kind": kind, "id": event_id, "target": target.target,
-            "series": target.series, "invitees": invitees, key: graph }).to_string();
+            "series": target.series, "invitees": invitees, "following": following, "occurrence": occurrence, key: graph }).to_string();
     }
     if !SCHEDULER.get().map(|s| s.is_running(&account_id)).unwrap_or(false) {
         return err("that account is not signed in, so it cannot change events");
@@ -1959,23 +1994,17 @@ fn calendar_change_response(config_dir: &PathBuf, stream: &mut std::net::TcpStre
     let delay = omalook::settings::read_send_delay(&config_dir.join("settings.toml"));
     let out_id = format!("cu-{:x}-{:03x}", now, COUNTER.fetch_add(1, Ordering::Relaxed) & 0xfff);
     let payload = if update {
-        // An edit never adds a Teams / Meet room (the patch builders drop it); a personal / Jitsi link is text, so it can change.
-        if let Err(e) = omalook::online_meeting::prepare_request(&mut req, &account_id, &omalook::online_meeting::read_config(&config_dir.join("settings.toml")), &tx) {
-            return err(&e.to_string());
-        }
         req["account_id"] = serde_json::json!(account_id);
         req["transaction_id"] = serde_json::json!(tx);
         req["series"] = serde_json::json!(target.series);
+        req["following"] = serde_json::json!(following);
+        req["occurrence"] = serde_json::json!(occurrence);
         req.clone()
-        if !draft.attendees.is_empty() {
-            if let Some(m) = omalook::accounts::personal_refusal(&account_id, omalook::accounts::PersonalLimit::Invite) {
-                return err(m);
-            }
-        }
     } else {
         serde_json::json!({ "account_id": account_id, "comment": req["comment"].as_str().unwrap_or(""),
             "subject": target.subject, "start": target.start, "end": target.end, "all_day": target.all_day,
-            "location": target.location, "transaction_id": tx, "series": target.series })
+            "location": target.location, "transaction_id": tx, "series": target.series,
+            "following": following, "occurrence": occurrence })
     };
     if let Err(e) = db.cal_queue_event_change(&out_id, &kind, &target.target, &payload, invitees, now + delay as i64 * 1000) {
         return err(&e);
@@ -1983,7 +2012,7 @@ fn calendar_change_response(config_dir: &PathBuf, stream: &mut std::net::TcpStre
     omalook::sync_state::request_cal_outbox_run();
     info!("Calendar: queued {} {} of {} ({} invitee(s)), runs in {}s", kind, out_id, target.target, invitees, delay);
     serde_json::json!({ "ok": true, "id": out_id, "kind": kind, "target": target.target, "series": target.series,
-        "invitees": invitees, "delay_secs": delay }).to_string()
+        "following": following, "invitees": invitees, "delay_secs": delay }).to_string()
 }
 
 /// POST /calendar/event/undo?id=ID (take a queued write back while it is inside its undo window),
@@ -2004,7 +2033,7 @@ fn calendar_outbox_response(config_dir: &PathBuf, first_line: &str) -> String {
                     "error": error, "due_at": due_at, "result_id": result,
                     "subject": p["subject"], "start": p["start"], "end": p["end"], "all_day": p["all_day"],
                     "location": p["location"], "transaction_id": p["transaction_id"],
-                    "target": p["target"], "series": p["series"],
+                    "target": p["target"], "series": p["series"], "following": p["following"], "occurrence": p["occurrence"],
                 })
             }).collect::<Vec<_>>() }).to_string(),
             Err(e) => err(&e.to_string()),

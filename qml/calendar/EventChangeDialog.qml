@@ -19,8 +19,9 @@ FocusScope {
     property string askLine: ""        // the scope question (scope mode)
     property bool   allowMessage: false
     property string status: ""         // a refusal from the owner, shown in red
+    property bool   allowFollowing: false  // "this and following" offered (edits, personal deletes)
 
-    signal scopePicked(string scope)   // "occurrence" | "series"
+    signal scopePicked(string scope)   // "occurrence" | "following" | "series"
     signal confirmed(string message)
     signal dismissed()
     onVisibleChanged: if (visible) focusFirst()
@@ -39,6 +40,7 @@ FocusScope {
         if (e.key === Qt.Key_Escape) { dismissed(); e.accepted = true; return }
         if (mode === "scope") {
             if (e.key === Qt.Key_O) { scopePicked("occurrence"); e.accepted = true }
+            else if (e.key === Qt.Key_F && root.allowFollowing) { scopePicked("following"); e.accepted = true }
             else if (e.key === Qt.Key_S) { scopePicked("series"); e.accepted = true }
             return
         }
@@ -72,7 +74,7 @@ FocusScope {
             UiText {
                 visible: root.mode === "scope"
                 Layout.fillWidth: true
-                text: "o   this occurrence only\ns   the whole series\nEsc   back"
+                text: (root.allowFollowing ? "o   this occurrence only\nf   this and following\n" : "o   this occurrence only\n") + "s   the whole series\nEsc   back"
                 dim: true; font.pixelSize: Style.font.bodySmall
             }
 
