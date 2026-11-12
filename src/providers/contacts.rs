@@ -1,18 +1,23 @@
 //! Microsoft Graph contacts provider (mirrors providers/graph.rs for mail: contact
 //! folders play the role of mail folders, contacts the role of messages).
 //!
-//! Needs the `Contacts.Read` delegated permission.
+//! Reading needs `Contacts.Read`; creating, changing and deleting needs `Contacts.ReadWrite`
+//! (the full scope tier; an account on the base tier gets a 403, which the callers turn into
+//! "sign in again to allow editing"). Facts below were checked live on 2026-11-11
+//! (tools/spike/contacts_spike.py, docs/PLAN-contacts.md section 2).
 
 use crate::auth::AuthManager;
 use crate::errors::{OmarchyError, Result};
-use crate::models::{Contact, ContactAddress, ContactFolder, ContactPhone};
+use crate::models::{Contact, ContactAddress, ContactDeltaPage, ContactFolder, ContactPhone};
 use async_trait::async_trait;
 use log::{debug, error};
 use tokio::sync::Mutex;
 
-/// Pseudo folder id for the user's default Contacts folder. Graph does NOT list it under
-/// `/me/contactFolders` (that returns only the folders beneath it); its contacts are served
-/// from `/me/contacts`. Without this entry an address book with no extra folders syncs nothing.
+/// Old pseudo id of the user's default Contacts folder. Graph does NOT list that folder under
+/// `/me/contactFolders` (it returns only the folders beneath it), and the pseudo id collided
+/// between two Graph accounts in one database. The default folder now carries its real id
+/// (read from `/me/contactFolders/contacts`), so every folder id is unique across accounts.
+/// The constant stays so old cached rows and the URL helper still make sense.
 pub const DEFAULT_FOLDER_ID: &str = "contacts";
 
 fn folder_contacts_url(folder_id: &str) -> String {
@@ -23,9 +28,10 @@ fn folder_contacts_url(folder_id: &str) -> String {
     }
 }
 
-const SELECT: &str = "id,displayName,givenName,surname,companyName,jobTitle,emailAddresses,homePhones,\
-                      businessPhones,mobilePhone,homeAddress,businessAddress,otherAddress,\
-                      createdDateTime,lastModifiedDateTime,parentFolderId";
+const GRAPH: &str = "https://graph.microsoft.com/v1.0";
+
+/// How a folder delta read ends: the link to ask next time.
+pub type DeltaLink = String;
 
 #[async_trait]
 pub trait ContactsProvider: Send + Sync {
@@ -43,10 +49,76 @@ pub trait ContactsProvider: Send + Sync {
     ) -> Result<usize>;
 
     async fn is_token_valid(&self) -> Result<bool>;
+
+    // ---- change tracking and writes (Graph only; the defaults refuse) -------------------------
+
+    /// True when `fetch_delta` works (the daemon then syncs by delta).
+    fn supports_delta(&self) -> bool { false }
+
+    /// Delta read of one folder: with `link` None the whole folder (every contact, full data);
+    /// with a stored link only the changes since. Each page goes to `tx` as it arrives; the
+    /// result is the link to store. A stale link is an Err (the caller starts again without one).
+    async fn fetch_delta(&self, _folder_id: &str, _link: Option<&str>, _tx: tokio::sync::mpsc::Sender<ContactDeltaPage>) -> Result<DeltaLink> {
+        Err(OmarchyError::HttpError("contact delta not supported".into()))
+    }
+
+    /// One contact, fresh from the server, as the provider's own JSON (with `@odata.etag`).
+    async fn fetch_contact(&self, _id: &str) -> Result<serde_json::Value> {
+        Err(OmarchyError::HttpError("fetch_contact not supported".into()))
+    }
+
+    /// Create a contact in a folder; returns the stored contact (JSON).
+    async fn create_contact(&self, _folder_id: &str, _body: &serde_json::Value) -> Result<serde_json::Value> {
+        Err(OmarchyError::HttpError("create_contact not supported".into()))
+    }
+
+    /// Change a contact (PATCH of only the keys in `body`). `if_match` is the `@odata.etag` the caller saw:
+    /// a changed contact answers 412. Returns the stored contact.
+    async fn update_contact(&self, _id: &str, _body: &serde_json::Value, _if_match: Option<&str>) -> Result<serde_json::Value> {
+        Err(OmarchyError::HttpError("update_contact not supported".into()))
+    }
+
+    /// Delete a contact (to Deleted Items, or for good when `permanent`).
+    async fn delete_contact(&self, _id: &str, _permanent: bool) -> Result<()> {
+        Err(OmarchyError::HttpError("delete_contact not supported".into()))
+    }
+
+    async fn create_folder(&self, _parent_id: Option<&str>, _name: &str) -> Result<ContactFolder> {
+        Err(OmarchyError::HttpError("create_folder not supported".into()))
+    }
+    async fn rename_folder(&self, _id: &str, _name: &str) -> Result<()> {
+        Err(OmarchyError::HttpError("rename_folder not supported".into()))
+    }
+    async fn delete_folder(&self, _id: &str) -> Result<()> {
+        Err(OmarchyError::HttpError("delete_folder not supported".into()))
+    }
+
+    /// The contact's photo bytes (None when it has none).
+    async fn get_photo(&self, _id: &str) -> Result<Option<Vec<u8>>> {
+        Err(OmarchyError::HttpError("get_photo not supported".into()))
+    }
+    async fn set_photo(&self, _id: &str, _jpeg: &[u8]) -> Result<()> {
+        Err(OmarchyError::HttpError("set_photo not supported".into()))
+    }
+
+    /// Read the MAPI single-value properties named by `ids` (`"String 0x3A23"`) of a contact.
+    async fn get_extended(&self, _id: &str, _ids: &[&str]) -> Result<Vec<(String, String)>> {
+        Err(OmarchyError::HttpError("get_extended not supported".into()))
+    }
 }
 
 pub struct GraphContactsProvider {
     auth: Mutex<AuthManager>,
+}
+
+/// The status code inside an error made by this provider (`"Graph API error: 412 ..."`).
+pub fn error_status(e: &OmarchyError) -> Option<u16> {
+    static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let re = RE.get_or_init(|| regex::Regex::new(r"(?:Graph|Google) API error: (\d{3})").unwrap());
+    match e {
+        OmarchyError::HttpError(m) => re.captures(m).and_then(|c| c[1].parse().ok()),
+        _ => None,
+    }
 }
 
 impl GraphContactsProvider {
@@ -65,26 +137,75 @@ impl GraphContactsProvider {
         Ok(token)
     }
 
-    async fn get_page(client: &reqwest::Client, token: &str, url: &str) -> Result<serde_json::Value> {
-        let response = client
-            .get(url)
-            .header("Authorization", format!("Bearer {}", token))
-            .send()
-            .await
-            .map_err(|e| OmarchyError::HttpError(e.to_string()))?;
+    /// One request; a non-2xx answer is `HttpError("Graph API error: <status> <hint> — <body>")`.
+    /// `body` is sent as JSON; `extra` are added headers. An empty answer is `Value::Null`.
+    async fn request(
+        client: &reqwest::Client,
+        token: &str,
+        method: reqwest::Method,
+        url: &str,
+        body: Option<&serde_json::Value>,
+        extra: &[(&str, String)],
+    ) -> Result<serde_json::Value> {
+        let mut rb = client.request(method, url).header("Authorization", format!("Bearer {}", token));
+        for (k, v) in extra {
+            rb = rb.header(*k, v);
+        }
+        if let Some(b) = body {
+            rb = rb.json(b);
+        }
+        let response = rb.send().await.map_err(|e| OmarchyError::HttpError(e.to_string()))?;
         if !response.status().is_success() {
             let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            error!("Graph contacts API returned status: {} — {}", status, body);
+            let text = response.text().await.unwrap_or_default();
+            error!("Graph contacts API returned status: {} — {}", status, text);
             let hint = if status.as_u16() == 403 {
-                " (Contacts.Read not granted: log this account in again to consent)"
+                " (Contacts.ReadWrite not granted: log this account in again to consent)"
             } else {
                 ""
             };
-            return Err(OmarchyError::HttpError(format!("Graph API error: {}{} — {}", status, hint, body)));
+            return Err(OmarchyError::HttpError(format!("Graph API error: {}{} — {}", status.as_u16(), hint, text)));
         }
         let text = response.text().await.map_err(|e| OmarchyError::HttpError(e.to_string()))?;
+        if text.trim().is_empty() {
+            return Ok(serde_json::Value::Null);
+        }
         serde_json::from_str(&text).map_err(|e| OmarchyError::HttpError(e.to_string()))
+    }
+
+    async fn get_page(client: &reqwest::Client, token: &str, url: &str) -> Result<serde_json::Value> {
+        Self::request(client, token, reqwest::Method::GET, url, None, &[]).await
+    }
+
+    /// The real id of the default Contacts folder.
+    async fn default_folder_id(client: &reqwest::Client, token: &str) -> Result<String> {
+        let json = Self::get_page(client, token, &format!("{}/me/contactFolders/contacts?$select=id", GRAPH)).await?;
+        json["id"].as_str().map(|s| s.to_string()).ok_or_else(|| OmarchyError::HttpError("the default contacts folder has no id".into()))
+    }
+
+    /// `folder` and everything beneath it (depth-limited), appended to `out`.
+    async fn collect_children(client: &reqwest::Client, token: &str, parent: &str, depth: u8, out: &mut Vec<ContactFolder>) -> Result<()> {
+        if depth == 0 {
+            return Ok(());
+        }
+        let mut url = Some(format!("{}/me/contactFolders/{}/childFolders?$top=100&$select=id,displayName,parentFolderId", GRAPH, parent));
+        while let Some(u) = url.take() {
+            let json = Self::get_page(client, token, &u).await?;
+            for f in json["value"].as_array().cloned().unwrap_or_default() {
+                let id = f["id"].as_str().unwrap_or("").to_string();
+                if id.is_empty() {
+                    continue;
+                }
+                out.push(ContactFolder {
+                    id: id.clone(),
+                    display_name: f["displayName"].as_str().unwrap_or("").to_string(),
+                    parent_folder_id: f["parentFolderId"].as_str().map(|s| s.to_string()),
+                });
+                Box::pin(Self::collect_children(client, token, &id, depth - 1, out)).await?;
+            }
+            url = json["@odata.nextLink"].as_str().map(|s| s.to_string());
+        }
+        Ok(())
     }
 }
 
@@ -93,23 +214,10 @@ impl ContactsProvider for GraphContactsProvider {
     async fn fetch_folders(&self) -> Result<Vec<ContactFolder>> {
         let token = self.get_token().await?;
         let client = super::http_client();
-        let mut url = Some("https://graph.microsoft.com/v1.0/me/contactFolders?$top=100&$select=id,displayName,parentFolderId".to_string());
-        let mut folders = vec![ContactFolder {
-            id: DEFAULT_FOLDER_ID.to_string(),
-            display_name: "Contacts".to_string(),
-            parent_folder_id: None,
-        }];
-        while let Some(u) = url.take() {
-            let json = Self::get_page(&client, &token, &u).await?;
-            for f in json["value"].as_array().cloned().unwrap_or_default() {
-                folders.push(ContactFolder {
-                    id: f["id"].as_str().unwrap_or("").to_string(),
-                    display_name: f["displayName"].as_str().unwrap_or("").to_string(),
-                    parent_folder_id: f["parentFolderId"].as_str().map(|s| s.to_string()),
-                });
-            }
-            url = json["@odata.nextLink"].as_str().map(|s| s.to_string());
-        }
+        let default_id = Self::default_folder_id(&client, &token).await?;
+        let mut folders = vec![ContactFolder { id: default_id.clone(), display_name: "Contacts".to_string(), parent_folder_id: None }];
+        Self::collect_children(&client, &token, &default_id, 5, &mut folders).await?;
+        // Folders beside the default one (listed by /me/contactFolders) are its children in Graph's model.
         debug!("Fetched {} contact folders", folders.len());
         Ok(folders)
     }
@@ -117,10 +225,7 @@ impl ContactsProvider for GraphContactsProvider {
     async fn fetch_folder_contacts(&self, folder_id: &str, limit: usize) -> Result<Vec<Contact>> {
         let token = self.get_token().await?;
         let client = super::http_client();
-        let url = format!(
-            "{}?$top={}&$select={}&$orderby=lastModifiedDateTime desc",
-            folder_contacts_url(folder_id), limit, SELECT
-        );
+        let url = format!("{}?$top={}&$orderby=lastModifiedDateTime desc", folder_contacts_url(folder_id), limit);
         let json = Self::get_page(&client, &token, &url).await?;
         Ok(parse_page(&json))
     }
@@ -132,10 +237,7 @@ impl ContactsProvider for GraphContactsProvider {
     ) -> Result<usize> {
         let token = self.get_token().await?;
         let client = super::http_client();
-        let mut next_url = Some(format!(
-            "{}?$top=50&$select={}&$orderby=lastModifiedDateTime desc",
-            folder_contacts_url(folder_id), SELECT
-        ));
+        let mut next_url = Some(format!("{}?$top=50&$orderby=lastModifiedDateTime desc", folder_contacts_url(folder_id)));
         let mut total = 0usize;
         while let Some(url) = next_url.take() {
             let json = Self::get_page(&client, &token, &url).await?;
@@ -157,6 +259,173 @@ impl ContactsProvider for GraphContactsProvider {
         let token = auth.get_token().map_err(|_| OmarchyError::AuthError("Token check failed".to_string()));
         Ok(token.is_ok() && !token.unwrap_or_default().is_empty())
     }
+
+    fn supports_delta(&self) -> bool { true }
+
+    async fn fetch_delta(&self, folder_id: &str, link: Option<&str>, tx: tokio::sync::mpsc::Sender<ContactDeltaPage>) -> Result<DeltaLink> {
+        let token = self.get_token().await?;
+        let client = super::http_client();
+        // $select / $top / $filter are refused on a contact delta (checked live); the page size is a header.
+        let mut next = Some(match link {
+            Some(l) => l.to_string(),
+            None => format!("{}/me/contactFolders/{}/contacts/delta", GRAPH, folder_id),
+        });
+        let prefer = [("Prefer", "odata.maxpagesize=100".to_string())];
+        loop {
+            let url = next.take().ok_or_else(|| OmarchyError::HttpError("contact delta ended without a link".into()))?;
+            let json = Self::request(&client, &token, reqwest::Method::GET, &url, None, &prefer).await?;
+            let page = parse_delta_page(&json);
+            if (!page.upserts.is_empty() || !page.removed.is_empty()) && tx.send(page).await.is_err() {
+                return Err(OmarchyError::HttpError("contact delta: receiver dropped".into()));
+            }
+            if let Some(n) = json["@odata.nextLink"].as_str() {
+                next = Some(n.to_string());
+                tokio::task::yield_now().await;
+            } else if let Some(d) = json["@odata.deltaLink"].as_str() {
+                return Ok(d.to_string());
+            } else {
+                return Err(OmarchyError::HttpError("contact delta page has neither a next nor a delta link".into()));
+            }
+        }
+    }
+
+    async fn fetch_contact(&self, id: &str) -> Result<serde_json::Value> {
+        let token = self.get_token().await?;
+        let client = super::http_client();
+        Self::get_page(&client, &token, &format!("{}/me/contacts/{}", GRAPH, id)).await
+    }
+
+    async fn create_contact(&self, folder_id: &str, body: &serde_json::Value) -> Result<serde_json::Value> {
+        let token = self.get_token().await?;
+        let client = super::http_client();
+        let url = format!("{}/me/contactFolders/{}/contacts", GRAPH, folder_id);
+        Self::request(&client, &token, reqwest::Method::POST, &url, Some(body), &[]).await
+    }
+
+    async fn update_contact(&self, id: &str, body: &serde_json::Value, if_match: Option<&str>) -> Result<serde_json::Value> {
+        let token = self.get_token().await?;
+        let client = super::http_client();
+        let url = format!("{}/me/contacts/{}", GRAPH, id);
+        let extra: Vec<(&str, String)> = if_match.map(|e| vec![("If-Match", e.to_string())]).unwrap_or_default();
+        Self::request(&client, &token, reqwest::Method::PATCH, &url, Some(body), &extra).await
+    }
+
+    async fn delete_contact(&self, id: &str, permanent: bool) -> Result<()> {
+        let token = self.get_token().await?;
+        let client = super::http_client();
+        let r = if permanent {
+            Self::request(&client, &token, reqwest::Method::POST, &format!("{}/me/contacts/{}/permanentDelete", GRAPH, id), None, &[]).await
+        } else {
+            Self::request(&client, &token, reqwest::Method::DELETE, &format!("{}/me/contacts/{}", GRAPH, id), None, &[]).await
+        };
+        match r {
+            Ok(_) => Ok(()),
+            // Already gone is the state that was asked for.
+            Err(e) if error_status(&e) == Some(404) => Ok(()),
+            Err(e) => Err(e),
+        }
+    }
+
+    async fn create_folder(&self, parent_id: Option<&str>, name: &str) -> Result<ContactFolder> {
+        let token = self.get_token().await?;
+        let client = super::http_client();
+        let url = match parent_id {
+            Some(p) => format!("{}/me/contactFolders/{}/childFolders", GRAPH, p),
+            None => format!("{}/me/contactFolders", GRAPH),
+        };
+        let json = Self::request(&client, &token, reqwest::Method::POST, &url, Some(&serde_json::json!({ "displayName": name })), &[]).await?;
+        Ok(ContactFolder {
+            id: json["id"].as_str().unwrap_or("").to_string(),
+            display_name: json["displayName"].as_str().unwrap_or(name).to_string(),
+            parent_folder_id: json["parentFolderId"].as_str().map(|s| s.to_string()),
+        })
+    }
+
+    async fn rename_folder(&self, id: &str, name: &str) -> Result<()> {
+        let token = self.get_token().await?;
+        let client = super::http_client();
+        Self::request(&client, &token, reqwest::Method::PATCH, &format!("{}/me/contactFolders/{}", GRAPH, id), Some(&serde_json::json!({ "displayName": name })), &[]).await?;
+        Ok(())
+    }
+
+    async fn delete_folder(&self, id: &str) -> Result<()> {
+        let token = self.get_token().await?;
+        let client = super::http_client();
+        match Self::request(&client, &token, reqwest::Method::DELETE, &format!("{}/me/contactFolders/{}", GRAPH, id), None, &[]).await {
+            Ok(_) => Ok(()),
+            Err(e) if error_status(&e) == Some(404) => Ok(()),
+            Err(e) => Err(e),
+        }
+    }
+
+    async fn get_photo(&self, id: &str) -> Result<Option<Vec<u8>>> {
+        let token = self.get_token().await?;
+        let client = super::http_client();
+        let resp = client
+            .get(format!("{}/me/contacts/{}/photo/$value", GRAPH, id))
+            .header("Authorization", format!("Bearer {}", token))
+            .send()
+            .await
+            .map_err(|e| OmarchyError::HttpError(e.to_string()))?;
+        if resp.status().as_u16() == 404 {
+            return Ok(None);
+        }
+        if !resp.status().is_success() {
+            return Err(OmarchyError::HttpError(format!("Graph API error: {} — photo", resp.status().as_u16())));
+        }
+        Ok(Some(resp.bytes().await.map_err(|e| OmarchyError::HttpError(e.to_string()))?.to_vec()))
+    }
+
+    async fn set_photo(&self, id: &str, jpeg: &[u8]) -> Result<()> {
+        let token = self.get_token().await?;
+        let client = super::http_client();
+        let resp = client
+            .put(format!("{}/me/contacts/{}/photo/$value", GRAPH, id))
+            .header("Authorization", format!("Bearer {}", token))
+            .header("Content-Type", "image/jpeg")
+            .body(jpeg.to_vec())
+            .send()
+            .await
+            .map_err(|e| OmarchyError::HttpError(e.to_string()))?;
+        if !resp.status().is_success() {
+            let st = resp.status().as_u16();
+            let t = resp.text().await.unwrap_or_default();
+            return Err(OmarchyError::HttpError(format!("Graph API error: {} — {}", st, t)));
+        }
+        Ok(())
+    }
+
+    async fn get_extended(&self, id: &str, ids: &[&str]) -> Result<Vec<(String, String)>> {
+        if ids.is_empty() {
+            return Ok(vec![]);
+        }
+        let token = self.get_token().await?;
+        let client = super::http_client();
+        let filter = ids.iter().map(|i| format!("id eq '{}'", i)).collect::<Vec<_>>().join(" or ");
+        let url = format!("{}/me/contacts/{}?$expand=singleValueExtendedProperties($filter={})&$select=id", GRAPH, id, filter);
+        let json = Self::get_page(&client, &token, &url).await?;
+        Ok(json["singleValueExtendedProperties"]
+            .as_array()
+            .map(|a| a.iter().filter_map(|p| Some((p["id"].as_str()?.to_string(), p["value"].as_str()?.to_string()))).collect())
+            .unwrap_or_default())
+    }
+}
+
+/// What a delta page holds: contacts to store, ids to drop (`"@removed"`).
+fn parse_delta_page(json: &serde_json::Value) -> ContactDeltaPage {
+    let mut page = ContactDeltaPage::default();
+    for item in json["value"].as_array().into_iter().flatten() {
+        let id = item["id"].as_str().unwrap_or("");
+        if id.is_empty() {
+            continue;
+        }
+        if item.get("@removed").is_some() {
+            page.removed.push(id.to_string());
+        } else {
+            page.upserts.push(parse_contact(item));
+        }
+    }
+    page
 }
 
 fn parse_page(json: &serde_json::Value) -> Vec<Contact> {
@@ -240,7 +509,45 @@ pub fn parse_contact(c: &serde_json::Value) -> Contact {
         folder_id: c["parentFolderId"].as_str().map(|s| s.to_string()),
         created_at: text(&c["createdDateTime"]),
         modified_at: text(&c["lastModifiedDateTime"]),
+        raw: {
+            let mut keep = c.clone();
+            if let Some(o) = keep.as_object_mut() {
+                o.remove("@odata.context");
+            }
+            keep.to_string()
+        },
+        change_key: text(&c["changeKey"]),
+        categories: c["categories"].as_array().map(|a| a.iter().map(text).filter(|s| !s.is_empty()).collect()).unwrap_or_default(),
     }
+}
+
+/// Lower-case text the People search looks in: every name part, address (with its display name), phone,
+/// IM address, postal address, company/work field, personal field, note and category of the contact.
+pub fn search_text(c: &serde_json::Value) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    for k in [
+        "displayName", "title", "givenName", "middleName", "surname", "generation", "nickName", "fileAs", "initials",
+        "companyName", "department", "jobTitle", "officeLocation", "profession", "manager", "assistantName",
+        "spouseName", "personalNotes", "businessHomePage", "mobilePhone", "yomiGivenName", "yomiSurname", "yomiCompanyName",
+    ] {
+        let t = text(&c[k]);
+        if !t.is_empty() {
+            parts.push(t);
+        }
+    }
+    for e in c["emailAddresses"].as_array().into_iter().flatten() {
+        parts.push(text(&e["address"]));
+        parts.push(text(&e["name"]));
+    }
+    for k in ["businessPhones", "homePhones", "imAddresses", "children", "categories"] {
+        for v in c[k].as_array().into_iter().flatten() {
+            parts.push(text(v));
+        }
+    }
+    for k in ["homeAddress", "businessAddress", "otherAddress"] {
+        parts.push(format_address(&c[k]));
+    }
+    parts.into_iter().filter(|p| !p.is_empty()).collect::<Vec<_>>().join("\n").to_lowercase()
 }
 
 #[cfg(test)]
@@ -310,5 +617,50 @@ mod tests {
     fn contacts_without_an_id_are_dropped() {
         let page = json!({"value": [{"displayName": "No Id"}, {"id": "ok", "displayName": "Has Id"}]});
         assert_eq!(parse_page(&page).len(), 1);
+    }
+
+    #[test]
+    fn keeps_the_whole_contact_the_version_and_the_categories() {
+        let c = parse_contact(&json!({
+            "@odata.context": "x", "@odata.etag": "W/\"abc\"", "id": "1", "changeKey": "CK1", "displayName": "A",
+            "categories": ["OL: Family", "", "Friends"], "nickName": "Al", "spouseName": "B"
+        }));
+        let raw: serde_json::Value = serde_json::from_str(&c.raw).unwrap();
+        assert_eq!(raw["nickName"], "Al");
+        assert_eq!(raw["@odata.etag"], "W/\"abc\"");
+        assert!(raw.get("@odata.context").is_none(), "the response envelope is not kept");
+        assert_eq!(c.change_key, "CK1");
+        assert_eq!(c.categories, vec!["OL: Family", "Friends"]);
+    }
+
+    #[test]
+    fn search_text_covers_names_addresses_phones_notes_and_categories() {
+        let t = search_text(&json!({
+            "displayName": "Ada Lovelace", "emailAddresses": [{"name": "Countess A", "address": "Ada@X.com"}],
+            "businessPhones": ["555-0103"], "homeAddress": {"city": "London"}, "personalNotes": "Met at the Engine",
+            "categories": ["OL: Family"], "companyName": "Analytical", "imAddresses": ["ada@im"]
+        }));
+        for needle in ["ada lovelace", "ada@x.com", "countess a", "555-0103", "london", "met at the engine", "ol: family", "analytical", "ada@im"] {
+            assert!(t.contains(needle), "missing {needle:?} in {t:?}");
+        }
+        assert_eq!(t, t.to_lowercase());
+    }
+
+    #[test]
+    fn delta_pages_split_into_contacts_and_removals() {
+        let page = parse_delta_page(&json!({"value": [
+            {"id": "a", "displayName": "A"},
+            {"id": "b", "@removed": {"reason": "deleted"}},
+            {"displayName": "no id"}
+        ]}));
+        assert_eq!(page.upserts.len(), 1);
+        assert_eq!(page.removed, vec!["b"]);
+    }
+
+    #[test]
+    fn status_codes_are_read_back_out_of_an_error() {
+        let e = OmarchyError::HttpError("Graph API error: 412 — {\"error\":{}}".into());
+        assert_eq!(error_status(&e), Some(412));
+        assert_eq!(error_status(&OmarchyError::HttpError("timed out".into())), None);
     }
 }

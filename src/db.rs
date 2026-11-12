@@ -86,6 +86,7 @@ pub fn categories_from_json(s: Option<&str>) -> Vec<String> {
 
 pub mod sms;
 pub mod lists;
+pub mod contacts;
 pub mod tags;
 pub mod rules;
 pub mod local_rules;
@@ -501,6 +502,7 @@ impl Database {
             [],
         )?;
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_contacts_folder ON contacts(folder_id)", [])?;
+        self.init_contacts_ext_schema()?;
         Ok(())
     }
 
@@ -2086,25 +2088,10 @@ impl Database {
         Ok(rows)
     }
 
-    /// Insert or update a contact. Local-only state (is_favorite) is never overwritten by sync.
+    /// Insert or update a contact from a pull. Local-only state (is_favorite) is never overwritten, and a
+    /// row with a write of ours in flight (`sync_state` not `ok`) is left alone.
     pub fn upsert_contact(&self, c: &Contact) -> Result<()> {
-        self.conn.execute(
-            "INSERT INTO contacts (id, display_name, given_name, surname, company, job_title, emails, phones, addresses,
-                                   folder_id, created_at, modified_at, cached_at, account_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, CURRENT_TIMESTAMP, ?13)
-             ON CONFLICT(id) DO UPDATE SET
-               display_name = excluded.display_name, given_name = excluded.given_name,
-               surname = excluded.surname, company = excluded.company, job_title = excluded.job_title,
-               emails = excluded.emails, phones = excluded.phones, addresses = excluded.addresses,
-               folder_id = excluded.folder_id, created_at = excluded.created_at,
-               modified_at = excluded.modified_at, cached_at = CURRENT_TIMESTAMP",
-            params![
-                c.id, c.display_name, c.given_name, c.surname, c.company, c.job_title,
-                serde_json::to_string(&c.emails)?, serde_json::to_string(&c.phones)?,
-                serde_json::to_string(&c.addresses)?, c.folder_id, c.created_at, c.modified_at,
-                self.account_id,
-            ],
-        )?;
+        self.write_contact_row(c, "ok", true)?;
         Ok(())
     }
 
@@ -2119,7 +2106,7 @@ impl Database {
         };
         let mut n = 0;
         for id in ids.into_iter().filter(|i| !seen.contains(i)) {
-            n += self.conn.execute("DELETE FROM contacts WHERE id = ?1 AND account_id = ?2", params![id, self.account_id])?;
+            n += self.conn.execute("DELETE FROM contacts WHERE id = ?1 AND account_id = ?2 AND sync_state = 'ok'", params![id, self.account_id])?;
         }
         Ok(n)
     }
@@ -2138,6 +2125,21 @@ impl Database {
 
     /// As `query_contacts`, optionally limited to one account (its id or its email address).
     pub fn query_contacts_for(&self, view: &str, sort: &str, account: Option<&str>) -> Result<Vec<ContactRow>> {
+        self.query_contacts_full(view, sort, account, None, None, None)
+    }
+
+    /// The People view's query. `search`: every word must appear in the contact's search text (names,
+    /// addresses, phones, company, notes, categories...); `folder`: one contact folder id; `category`:
+    /// contacts carrying that category (exact, ignoring case). Contacts with a delete queued are hidden.
+    pub fn query_contacts_full(
+        &self,
+        view: &str,
+        sort: &str,
+        account: Option<&str>,
+        search: Option<&str>,
+        folder: Option<&str>,
+        category: Option<&str>,
+    ) -> Result<Vec<ContactRow>> {
         // `x = ''` sorts empty values after real ones.
         let key = match sort {
             "last"    => "(c.surname = ''), lower(c.surname), lower(c.given_name), lower(c.display_name)",
@@ -2145,27 +2147,50 @@ impl Database {
             "recent"  => "c.created_at DESC, lower(c.display_name)",
             _         => "(c.given_name = ''), lower(c.given_name), lower(c.surname), lower(c.display_name)",
         };
-        let account_cond = "(?1 IS NULL OR c.account_id = ?1 OR lower(a.email) = lower(?1))";
-        let (filter, order) = match view {
-            "favorites" => (format!("WHERE c.is_favorite = 1 AND {}", account_cond), key.to_string()),
-            "lists"     => (format!("WHERE {}", account_cond), format!("lower(COALESCE(f.display_name, 'Contacts')), {}", key)),
-            _           => (format!("WHERE {}", account_cond), key.to_string()),
+        let mut conds = vec![
+            "(?1 IS NULL OR c.account_id = ?1 OR lower(a.email) = lower(?1))".to_string(),
+            "c.sync_state <> 'deleted'".to_string(),
+        ];
+        let mut args: Vec<rusqlite::types::Value> = vec![match account {
+            Some(a) => rusqlite::types::Value::Text(a.to_string()),
+            None => rusqlite::types::Value::Null,
+        }];
+        if view == "favorites" {
+            conds.push("c.is_favorite = 1".to_string());
+        }
+        if let Some(f) = folder.filter(|f| !f.is_empty()) {
+            args.push(f.to_string().into());
+            conds.push(format!("c.folder_id = ?{}", args.len()));
+        }
+        if let Some(cat) = category.filter(|c| !c.is_empty()) {
+            args.push(format!("%\"{}\"%", cat.replace('"', "").to_lowercase()).into());
+            conds.push(format!("lower(c.categories) LIKE ?{}", args.len()));
+        }
+        for word in search.unwrap_or("").split_whitespace() {
+            args.push(format!("%{}%", word.to_lowercase().replace('\\', "").replace('%', "").replace('_', "")).into());
+            conds.push(format!("c.search_text LIKE ?{}", args.len()));
+        }
+        let order = if view == "lists" {
+            format!("lower(COALESCE(f.display_name, 'Contacts')), {}", key)
+        } else {
+            key.to_string()
         };
         let sql = format!(
             "SELECT c.id, c.display_name, c.given_name, c.surname, c.company, c.job_title, c.emails, c.phones,
                     c.addresses, c.folder_id, c.created_at, c.modified_at, COALESCE(f.display_name, 'Contacts'), c.is_favorite,
-                    COALESCE(c.account_id, ''), COALESCE(a.email, '')
+                    COALESCE(c.account_id, ''), COALESCE(a.email, ''), c.categories, c.sync_state
              FROM contacts c LEFT JOIN contact_folders f ON f.id = c.folder_id
                              LEFT JOIN accounts a ON a.id = c.account_id
-             {} ORDER BY {}",
-            filter, order
+             WHERE {} ORDER BY {}",
+            conds.join(" AND "), order
         );
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt
-            .query_map(params![account], |r| {
+            .query_map(rusqlite::params_from_iter(args.iter()), |r| {
                 let emails: String = r.get(6)?;
                 let phones: String = r.get(7)?;
                 let addresses: String = r.get(8)?;
+                let categories: String = r.get(16)?;
                 Ok(ContactRow {
                     contact: Contact {
                         id: r.get(0)?, display_name: r.get(1)?, given_name: r.get(2)?, surname: r.get(3)?,
@@ -2174,11 +2199,14 @@ impl Database {
                         phones: serde_json::from_str::<Vec<ContactPhone>>(&phones).unwrap_or_default(),
                         addresses: serde_json::from_str::<Vec<ContactAddress>>(&addresses).unwrap_or_default(),
                         folder_id: r.get(9)?, created_at: r.get(10)?, modified_at: r.get(11)?,
+                        categories: serde_json::from_str(&categories).unwrap_or_default(),
+                        ..Default::default()
                     },
                     folder_name: r.get(12)?,
                     is_favorite: r.get(13)?,
                     account_id: r.get(14)?,
                     account_email: r.get(15)?,
+                    sync_state: r.get(17)?,
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -2898,6 +2926,38 @@ mod contact_tests {
             created_at: created.into(), ..Default::default()
         }
     }
+    #[test]
+    fn the_old_pseudo_default_folder_row_is_removed_and_two_accounts_keep_their_own_folders() {
+        let db = Database::open_for_account(":memory:", "exchange-aaaaaa").unwrap();
+        db.upsert_contact_folder(&ContactFolder { id: "contacts".into(), display_name: "Contacts".into(), parent_folder_id: None }).unwrap();
+        db.upsert_contact_folder(&ContactFolder { id: "AQM-real-a".into(), display_name: "Contacts".into(), parent_folder_id: None }).unwrap();
+        db.init_contacts_ext_schema().unwrap();
+        let names: Vec<String> = db.get_contact_folders().unwrap().into_iter().map(|f| f.id).collect();
+        assert_eq!(names, vec!["AQM-real-a"], "the colliding pseudo id is gone");
+    }
+
+    #[test]
+    fn contact_search_filters_by_every_word_folder_and_category_and_hides_deleted_rows() {
+        let db = Database::open_for_account(":memory:", "exchange-aaaaaa").unwrap();
+        let mk = |id: &str, raw: serde_json::Value, folder: &str| {
+            let mut v = raw; v["id"] = id.into();
+            db.put_contact_json(&v, Some(folder), "ok").unwrap();
+        };
+        mk("1", serde_json::json!({"displayName": "Ada Lovelace", "companyName": "Engines", "categories": ["OL: Family"]}), "f1");
+        mk("2", serde_json::json!({"displayName": "Bob Engine", "personalNotes": "likes ada"}), "f2");
+        mk("3", serde_json::json!({"displayName": "Gone Person"}), "f1");
+        db.set_contact_state("3", "deleted").unwrap();
+        let q = |s: Option<&str>, f: Option<&str>, c: Option<&str>| -> Vec<String> {
+            db.query_contacts_full("all", "first", None, s, f, c).unwrap().into_iter().map(|r| r.contact.id).collect()
+        };
+        assert_eq!(q(None, None, None).len(), 2, "deleted row hidden");
+        assert_eq!(q(Some("ada"), None, None), vec!["1", "2"], "word matches names and notes");
+        assert_eq!(q(Some("ada engines"), None, None), vec!["1"], "every word must match");
+        assert_eq!(q(None, Some("f2"), None), vec!["2"]);
+        assert_eq!(q(None, None, Some("ol: family")), vec!["1"], "category is exact, ignoring case");
+        assert!(q(Some("100%"), None, None).is_empty(), "LIKE wildcards in the query are not wildcards");
+    }
+
     fn ids(rows: &[ContactRow]) -> Vec<&str> { rows.iter().map(|r| r.contact.id.as_str()).collect() }
 
     fn seeded() -> Database {

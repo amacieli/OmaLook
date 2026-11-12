@@ -4,14 +4,16 @@
 //! - Polls on the same schedule as mail: contacts every 2 minutes, folders every 10
 //! - First authenticated run: full paginated sync of every folder, each ~50-contact page
 //!   written as it arrives, until the whole address book is loaded
-//! - Later polls: the 50 most recently modified contacts per folder
+//! - Later polls: a delta read per folder (only what changed, deletions included) where the provider
+//!   has one; otherwise the 50 most recently modified contacts per folder
+//! - Every 6 hours the delta links are dropped and every folder is read in full again (safety net)
 //! - Contacts are upserted (edits propagate); the local favorite flag is never overwritten
 //! - Independent of the mail and calendar daemons: own provider, own DB handle, own loop
 //!   (they only share the account's token broker)
 
 use crate::db::Database;
 use crate::errors::Result;
-use crate::models::{Contact, ContactFolder};
+use crate::models::{Contact, ContactDeltaPage, ContactFolder};
 use crate::providers::ContactsProvider;
 use crate::perf;
 use log::{debug, error, info, warn};
@@ -120,8 +122,8 @@ impl ContactsDaemon {
     }
 
     /// `full`: walk every contact of every folder (and drop the ones deleted elsewhere); an Err
-    /// then means the walk did not finish, so the caller tries again. Otherwise the 50 most
-    /// recently changed per folder.
+    /// then means the walk did not finish, so the caller tries again. Otherwise only the changes:
+    /// a delta read where the provider has one, else the 50 most recently changed per folder.
     async fn sync_contacts(&self, full: bool) -> Result<usize> {
         let folders: Vec<ContactFolder> = self.db.get_contact_folders()?;
         if full && folders.is_empty() {
@@ -130,7 +132,12 @@ impl ContactsDaemon {
         let mut total = 0;
         let mut failed = 0;
         for folder in &folders {
-            match self.sync_folder(&folder.id, full).await {
+            let r = if self.provider.supports_delta() {
+                self.sync_folder_delta(&folder.id, full).await
+            } else {
+                self.sync_folder(&folder.id, full).await
+            };
+            match r {
                 Ok(n) => total += n,
                 Err(e) => { failed += 1; error!("Failed to sync contact folder {}: {}", folder.display_name, e); }
             }
@@ -139,6 +146,66 @@ impl ContactsDaemon {
             return Err(crate::errors::OmarchyError::HttpError(format!("{} contact folder(s) not fully read", failed)));
         }
         Ok(total)
+    }
+
+    /// One folder by delta. With a stored link only the changes come back. With none (first run, a
+    /// forced full walk, or a link the server no longer knows) every contact does, and what that
+    /// walk did not see is dropped at its end (a walk that failed half way drops nothing).
+    async fn sync_folder_delta(&self, folder_id: &str, reset: bool) -> Result<usize> {
+        if reset {
+            self.db.clear_contact_delta_link(folder_id)?;
+        }
+        let mut link = self.db.contact_delta_link(folder_id)?;
+        loop {
+            let walking_all = link.is_none();
+            match self.run_delta(folder_id, link.as_deref(), walking_all).await {
+                Ok((n, new_link)) => {
+                    self.db.set_contact_delta_link(folder_id, &new_link)?;
+                    return Ok(n);
+                }
+                // A stored link that fails is dropped once and the folder is read in full: the link may
+                // simply be too old. A failure of the full read itself is the caller's to report.
+                Err(e) if !walking_all => {
+                    warn!("Contacts delta link of folder {} failed ({}); reading the folder in full", folder_id, e);
+                    self.db.clear_contact_delta_link(folder_id)?;
+                    link = None;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+    }
+
+    async fn run_delta(&self, folder_id: &str, link: Option<&str>, collect_seen: bool) -> Result<(usize, String)> {
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<ContactDeltaPage>(4);
+        let provider = Arc::clone(&self.provider);
+        let (folder_owned, link_owned) = (folder_id.to_string(), link.map(|s| s.to_string()));
+        let fetch = tokio::spawn(async move { provider.fetch_delta(&folder_owned, link_owned.as_deref(), tx).await });
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut written = 0usize;
+        while let Some(page) = rx.recv().await {
+            if collect_seen {
+                seen.extend(page.upserts.iter().map(|c| c.id.clone()));
+            }
+            match self.db.apply_contact_delta_page(&page) {
+                Ok((stored, removed)) => {
+                    written += stored + removed;
+                    if removed > 0 { info!("Removed {} contacts deleted elsewhere (folder {})", removed, folder_id); }
+                }
+                Err(e) => error!("Failed to store a page of contacts: {}", e),
+            }
+            tokio::task::yield_now().await;
+        }
+        let new_link = match fetch.await {
+            Ok(Ok(l)) => l,
+            Ok(Err(e)) => return Err(e),
+            Err(e) => return Err(crate::errors::OmarchyError::HttpError(format!("contacts task failed: {}", e))),
+        };
+        if collect_seen {
+            // Only a walk that reached its end may say what is gone.
+            let purged = self.db.purge_contacts_unseen(folder_id, &seen)?;
+            if purged > 0 { info!("Removed {} contacts deleted elsewhere (folder {})", purged, folder_id); }
+        }
+        Ok((written, new_link))
     }
 
     async fn sync_folder(&self, folder_id: &str, full: bool) -> Result<usize> {
@@ -269,5 +336,108 @@ mod tests {
         let favs = d.db.query_contacts("favorites", "first").unwrap();
         assert_eq!(favs.len(), 1);
         assert_eq!(favs[0].contact.id, "f1-1");
+    }
+
+    // ---- delta ---------------------------------------------------------------------------------
+
+    /// A provider with a delta feed: `script` holds the answers in order; a stored link is `"link-N"`.
+    struct DeltaProvider {
+        script: Mutex<Vec<std::result::Result<(Vec<ContactDeltaPage>, String), String>>>,
+        seen_links: Mutex<Vec<Option<String>>>,
+    }
+    #[async_trait]
+    impl ContactsProvider for DeltaProvider {
+        async fn fetch_folders(&self) -> Result<Vec<ContactFolder>> {
+            Ok(vec![ContactFolder { id: "f1".into(), display_name: "Contacts".into(), parent_folder_id: None }])
+        }
+        async fn fetch_folder_contacts(&self, _f: &str, _l: usize) -> Result<Vec<Contact>> { Ok(vec![]) }
+        async fn fetch_all_folder_contacts(&self, _f: &str, _tx: tokio::sync::mpsc::Sender<Vec<Contact>>) -> Result<usize> { Ok(0) }
+        async fn is_token_valid(&self) -> Result<bool> { Ok(true) }
+        fn supports_delta(&self) -> bool { true }
+        async fn fetch_delta(&self, _f: &str, link: Option<&str>, tx: tokio::sync::mpsc::Sender<ContactDeltaPage>) -> Result<String> {
+            self.seen_links.lock().unwrap().push(link.map(|l| l.to_string()));
+            let step = self.script.lock().unwrap().remove(0);
+            match step {
+                Ok((pages, new_link)) => {
+                    for p in pages { let _ = tx.send(p).await; }
+                    Ok(new_link)
+                }
+                Err(m) => Err(crate::errors::OmarchyError::HttpError(m)),
+            }
+        }
+    }
+    fn page(ids: &[&str], removed: &[&str]) -> ContactDeltaPage {
+        ContactDeltaPage {
+            upserts: ids.iter().map(|i| Contact { id: i.to_string(), display_name: format!("N-{}", i), folder_id: Some("f1".into()), ..Default::default() }).collect(),
+            removed: removed.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+    fn delta_daemon(script: Vec<std::result::Result<(Vec<ContactDeltaPage>, String), String>>) -> (ContactsDaemon, Arc<DeltaProvider>) {
+        let p = Arc::new(DeltaProvider { script: Mutex::new(script), seen_links: Mutex::new(vec![]) });
+        let db = Arc::new(Database::open_for_account(":memory:", "exchange-aaaaaa").unwrap());
+        (ContactsDaemon::new(ContactsDaemonConfig::default(), db, p.clone()), p)
+    }
+    fn ids(d: &ContactsDaemon) -> Vec<String> {
+        let mut v: Vec<String> = d.db.query_contacts_full("all", "first", None, None, None, None).unwrap().into_iter().map(|r| r.contact.id).collect();
+        v.sort();
+        v
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn first_delta_read_is_a_full_walk_that_stores_the_link_and_drops_what_it_did_not_see() {
+        let (d, p) = delta_daemon(vec![Ok((vec![page(&["a", "b"], &[]), page(&["c"], &[])], "link-1".into()))]);
+        d.sync_folders().await.unwrap();
+        // A contact cached earlier that the server no longer has.
+        d.db.upsert_contact(&Contact { id: "gone".into(), display_name: "Gone".into(), folder_id: Some("f1".into()), ..Default::default() }).unwrap();
+        d.sync_contacts(false).await.unwrap();
+        assert_eq!(ids(&d), vec!["a", "b", "c"], "walk stored everything and purged the unseen row");
+        assert_eq!(d.db.contact_delta_link("f1").unwrap().as_deref(), Some("link-1"));
+        assert_eq!(p.seen_links.lock().unwrap().clone(), vec![None]);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn later_reads_use_the_link_and_apply_changes_and_removals_without_a_purge() {
+        let (d, p) = delta_daemon(vec![
+            Ok((vec![page(&["a", "b", "c"], &[])], "link-1".into())),
+            Ok((vec![page(&["d"], &["b"])], "link-2".into())),
+        ]);
+        d.sync_folders().await.unwrap();
+        d.sync_contacts(false).await.unwrap();
+        d.sync_contacts(false).await.unwrap();
+        assert_eq!(ids(&d), vec!["a", "c", "d"], "b removed, d added, a and c untouched (no purge on a delta read)");
+        assert_eq!(p.seen_links.lock().unwrap().clone(), vec![None, Some("link-1".to_string())]);
+        assert_eq!(d.db.contact_delta_link("f1").unwrap().as_deref(), Some("link-2"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_dead_link_falls_back_to_one_full_read_and_a_failed_full_read_is_reported() {
+        let (d, p) = delta_daemon(vec![
+            Ok((vec![page(&["a"], &[])], "link-1".into())),
+            Err("Graph API error: 410 — SyncStateNotFound".into()),
+            Ok((vec![page(&["a", "x"], &[])], "link-9".into())),
+            Err("Graph API error: 503 — down".into()),
+        ]);
+        d.sync_folders().await.unwrap();
+        d.sync_contacts(false).await.unwrap();
+        d.sync_contacts(false).await.unwrap();
+        assert_eq!(ids(&d), vec!["a", "x"]);
+        assert_eq!(p.seen_links.lock().unwrap().clone(), vec![None, Some("link-1".to_string()), None]);
+        // A forced full walk that fails keeps what is cached and says so.
+        assert!(d.sync_contacts(true).await.is_err());
+        assert_eq!(ids(&d), vec!["a", "x"], "a failed walk deletes nothing");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_pull_never_overwrites_or_deletes_a_row_with_a_write_in_flight() {
+        let (d, _p) = delta_daemon(vec![Ok((vec![page(&["a", "b"], &["b"])], "link-1".into()))]);
+        d.sync_folders().await.unwrap();
+        for id in ["a", "b"] {
+            d.db.write_contact_row(&Contact { id: id.into(), display_name: format!("mine-{}", id), folder_id: Some("f1".into()), ..Default::default() }, "pending", false).unwrap();
+        }
+        d.sync_contacts(false).await.unwrap();
+        let rows = d.db.query_contacts_full("all", "first", None, None, None, None).unwrap();
+        let names: Vec<_> = rows.iter().map(|r| r.contact.display_name.clone()).collect();
+        assert_eq!(rows.len(), 2, "the pending rows survive the pull and the removal");
+        assert!(names.iter().all(|n| n.starts_with("mine-")), "and keep the user's edit: {:?}", names);
     }
 }

@@ -283,6 +283,23 @@ pub struct Contact {
     pub folder_id: Option<String>,
     pub created_at: String,
     pub modified_at: String,
+    /// The whole provider object as last read (Graph JSON text); empty for providers that do not
+    /// keep it. Never sent to the list view (the detail route builds its own answer from it).
+    #[serde(skip)]
+    pub raw: String,
+    /// Graph `changeKey`: the version the cached copy is (checked before every write).
+    #[serde(skip)]
+    pub change_key: String,
+    /// Graph categories on the contact (OmaLook list mirrors are `OL: <list>`).
+    #[serde(default)]
+    pub categories: Vec<String>,
+}
+
+/// One page of a contact delta read: what to store and what is gone.
+#[derive(Debug, Clone, Default)]
+pub struct ContactDeltaPage {
+    pub upserts: Vec<Contact>,
+    pub removed: Vec<String>,
 }
 
 /// A contact folder ("contact list" in the UI)
@@ -303,6 +320,8 @@ pub struct ContactRow {
     /// Which account the contact belongs to (opaque id, and that account's email address)
     pub account_id: String,
     pub account_email: String,
+    /// `ok` | `pending` (a write is queued or running) | `failed` | `conflict`.
+    pub sync_state: String,
 }
 
 /// A configured mail/calendar account (see `accounts.rs` for the id scheme)

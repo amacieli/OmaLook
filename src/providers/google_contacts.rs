@@ -77,6 +77,7 @@ pub(crate) fn parse_person(account_id: &str, user_groups: &HashSet<String>, p: &
         folder_id: Some(folder),
         created_at: stamp.clone(),
         modified_at: stamp,
+        ..Default::default()
     })
 }
 
