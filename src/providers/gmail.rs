@@ -650,18 +650,10 @@ impl super::EmailProvider for GmailProvider {
         }
         // JSON `raw` (drafts.create / drafts.update take no resumable upload here): fine up to the
         // sizes the draft worker pushes; larger drafts are only pushed on close or send.
-        let raw = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(std::fs::read(&eml)?);
-        let mut message = serde_json::json!({ "raw": raw });
-        if let Some(t) = &thread_id {
-            message["threadId"] = serde_json::json!(t);
-        }
-        let resp = match remote_id {
-            Some(id) => {
-                let body = serde_json::json!({ "id": id, "message": message });
-                self.api.put(&format!("{}/drafts/{}", BASE, urlencoding::encode(id)), &body).await?
-            }
-            None => self.api.post(&format!("{}/drafts", BASE), &serde_json::json!({ "message": message })).await?,
-        };
+        let raw = std::fs::read(&eml)?;
+        let message = gmail_draft_message(&raw, thread_id.as_deref());
+        let (update, url, body) = gmail_draft_request(remote_id, message);
+        let resp = if update { self.api.put(&url, &body).await? } else { self.api.post(&url, &body).await? };
         let id = resp["id"].as_str().ok_or_else(|| crate::errors::OmarchyError::HttpError("Gmail did not return a draft id".into()))?;
         Ok(crate::providers::RemoteDraft { id: id.to_string(), version: resp["message"]["id"].as_str().map(str::to_string) })
     }
@@ -904,6 +896,105 @@ impl super::EmailProvider for GmailProvider {
 
     async fn is_token_valid(&self) -> Result<bool> {
         self.api.is_token_valid().await
+    }
+}
+
+/// The `message` of a Gmail draft save: the whole MIME message as URL-safe base64 `raw`, in the
+/// thread of the original when it is a reply.
+pub fn gmail_draft_message(raw_mime: &[u8], thread_id: Option<&str>) -> serde_json::Value {
+    let raw = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(raw_mime);
+    let mut message = serde_json::json!({ "raw": raw });
+    if let Some(t) = thread_id {
+        message["threadId"] = serde_json::json!(t);
+    }
+    message
+}
+
+/// The request of a Gmail draft save: `(update, url, body)`. An existing draft is replaced with
+/// `drafts.update` (PUT, whole message), a new one is made with `drafts.create` (POST).
+pub fn gmail_draft_request(remote_id: Option<&str>, message: serde_json::Value) -> (bool, String, serde_json::Value) {
+    match remote_id {
+        Some(id) => (true, format!("{}/drafts/{}", BASE, urlencoding::encode(id)), serde_json::json!({ "id": id, "message": message })),
+        None => (false, format!("{}/drafts", BASE), serde_json::json!({ "message": message })),
+    }
+}
+
+#[cfg(test)]
+mod draft_request_tests {
+    use super::*;
+    use crate::compose::{write_mime, Address, Body, OutgoingAttachment, OutgoingMessage};
+
+    fn mime_of(msg: &OutgoingMessage, files: &[OutgoingAttachment]) -> Vec<u8> {
+        let mut out = Vec::new();
+        write_mime(&mut out, msg, files, "me@example.com", None, "=_test", "Thu, 12 Nov 2026 10:00:00 +0000").unwrap();
+        out
+    }
+
+    fn draft(kind: &str, mode: &str, body: &str) -> OutgoingMessage {
+        OutgoingMessage {
+            kind: kind.into(),
+            account_id: "gmail-x".into(),
+            to: vec![Address { email: "bob@example.com".into(), name: String::new(), list: 0 }],
+            subject: "Draft subject".into(),
+            mode: mode.into(),
+            body: Body { format: if mode == "html" { "html" } else { "text" }.into(), content: body.into() },
+            ..Default::default()
+        }
+    }
+
+    fn decode(message: &serde_json::Value) -> String {
+        use base64::Engine;
+        let raw = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(message["raw"].as_str().unwrap()).unwrap();
+        String::from_utf8(raw).unwrap()
+    }
+
+    #[test]
+    fn new_draft_is_created_with_post_and_no_id() {
+        let m = gmail_draft_message(b"Subject: x\r\n\r\nhi", None);
+        let (update, url, body) = gmail_draft_request(None, m);
+        assert!(!update);
+        assert!(url.ends_with("/users/me/drafts"), "{}", url);
+        assert!(body.get("id").is_none());
+        assert!(body["message"]["raw"].is_string());
+        assert!(body["message"].get("threadId").is_none());
+    }
+
+    #[test]
+    fn existing_draft_is_updated_with_put_and_its_id() {
+        let (update, url, body) = gmail_draft_request(Some("r-99/x"), gmail_draft_message(b"Subject: x", None));
+        assert!(update, "drafts.update, not a second drafts.create");
+        assert!(url.ends_with("/drafts/r-99%2Fx"), "{}", url);
+        assert_eq!(body["id"], "r-99/x");
+    }
+
+    #[test]
+    fn reply_draft_carries_the_thread_id() {
+        let m = gmail_draft_message(b"x", Some("thread-7"));
+        assert_eq!(m["threadId"], "thread-7");
+        let (_, _, body) = gmail_draft_request(None, m);
+        assert_eq!(body["message"]["threadId"], "thread-7");
+    }
+
+    #[test]
+    fn raw_is_the_whole_mime_message_for_html_and_plain() {
+        let html = decode(&gmail_draft_message(&mime_of(&draft("new", "html", "<p>hi</p>"), &[]), None));
+        assert!(html.contains("Subject: Draft subject") || html.contains("Subject: =?"), "{}", html);
+        assert!(html.contains("text/html"), "HTML draft is an HTML part");
+        let plain = decode(&gmail_draft_message(&mime_of(&draft("new", "system", "hello"), &[]), None));
+        assert!(!plain.contains("text/html"), "system-mode draft has no HTML part");
+    }
+
+    #[test]
+    fn raw_carries_attachments_as_file_parts() {
+        let dir = std::env::temp_dir().join(format!("omalook-gmail-draft-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("notes.txt");
+        std::fs::write(&f, b"attached bytes").unwrap();
+        let a = OutgoingAttachment { path: f.to_string_lossy().into(), name: "notes.txt".into(), size: 14, ..Default::default() };
+        let mime = decode(&gmail_draft_message(&mime_of(&draft("new", "system", "see attached"), std::slice::from_ref(&a)), None));
+        assert!(mime.contains("multipart/mixed"), "{}", mime);
+        assert!(mime.contains("notes.txt"), "attachment name is in the draft");
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
 

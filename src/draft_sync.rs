@@ -71,6 +71,11 @@ impl DraftWorker {
 
     pub async fn run(&self) {
         info!("Drafts worker started for {}", self.account_id);
+        // Once per start: spool directories a crash left behind (no live draft owns them).
+        let swept = sweep_spool(&self.db, &default_root());
+        if swept > 0 {
+            info!("Drafts {}: removed {} orphaned draft spool dir(s)", self.account_id, swept);
+        }
         loop {
             self.drain_now().await;
             let wait = match self.db.draft_next_due(&self.account_id, DEBOUNCE_MS) {
@@ -281,9 +286,17 @@ async fn send_claimed(db: &Database, provider: &dyn EmailProvider, spool_root: &
 /// Remove a draft: from the provider (when it has a copy), then locally. The local row is removed
 /// only after the provider's delete succeeded or there was nothing to delete.
 pub async fn discard(db: &Database, provider: &dyn EmailProvider, spool_root: &Path, local_id: &str) -> Result<()> {
-    if is_sending(local_id) {
-        return Err(OmarchyError::HttpError("this draft is being sent".into()));
+    // Claimed like a send: the push worker and a save of the same draft keep off it meanwhile, so
+    // a push cannot re-create the provider copy between the remote delete and the local one.
+    if !claim(local_id) {
+        return Err(OmarchyError::HttpError("this draft is being sent or saved right now".into()));
     }
+    let result = discard_claimed(db, provider, spool_root, local_id).await;
+    release(local_id);
+    result
+}
+
+async fn discard_claimed(db: &Database, provider: &dyn EmailProvider, spool_root: &Path, local_id: &str) -> Result<()> {
     let Some(row) = db.draft_get(local_id)? else { return Ok(()) };
     if let Some(rid) = row.remote_id.as_deref() {
         provider.delete_draft(rid).await?;
@@ -291,6 +304,82 @@ pub async fn discard(db: &Database, provider: &dyn EmailProvider, spool_root: &P
     db.draft_delete(local_id)?;
     crate::attach_spool::remove(spool_root, local_id);
     Ok(())
+}
+
+/// A new local draft id (`dr-<time>-<counter>`), unique within the process and across restarts.
+pub fn new_draft_id() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    format!("dr-{:x}-{:04x}", Database::now_ms(), COUNTER.fetch_add(1, Ordering::Relaxed) & 0xffff)
+}
+
+/// Save what the compose pane holds as the local copy of a draft (`POST /drafts/save`). The new
+/// attachments are copied into the spool under the draft's id (`attach_spool::snapshot_draft`); an
+/// attachment that was already spooled and whose copy has gone stays in the list, so the UI shows
+/// it with a '!' chip instead of dropping it. `msg.draft_id` is set to the id used. `state` is
+/// `editing` (autosave) or `saved` (explicit save, close, quit). Returns the draft id.
+pub fn save_local(db: &Database, spool_root: &Path, msg: &mut OutgoingMessage, state: &str) -> std::result::Result<String, String> {
+    if state != "editing" && state != "saved" {
+        return Err(format!("unknown draft state '{}'", state));
+    }
+    let previous: Vec<OutgoingAttachment> = if msg.draft_id.is_empty() {
+        Vec::new()
+    } else {
+        if is_sending(&msg.draft_id) {
+            return Err("this draft is being sent right now".into());
+        }
+        match db.draft_get(&msg.draft_id).map_err(|e| e.to_string())? {
+            Some(row) if row.state == "sent" => return Err("this draft was already sent".into()),
+            Some(row) => serde_json::from_str::<OutgoingMessage>(&row.payload_json).map(|m| m.attachments).unwrap_or_default(),
+            None => Vec::new(),
+        }
+    };
+    let id = if msg.draft_id.is_empty() { new_draft_id() } else { msg.draft_id.clone() };
+    // Attachments that were spooled before and whose copy is gone: kept as they are (for the '!' chip).
+    let gone = |a: &OutgoingAttachment| previous.iter().any(|p| p.path == a.path) && !Path::new(&a.path).is_file();
+    let to_copy: Vec<OutgoingAttachment> = msg.attachments.iter().filter(|a| !gone(a)).cloned().collect();
+    let copied = crate::attach_spool::snapshot_draft(spool_root, &id, &to_copy, &previous)?;
+    let mut copied = copied.into_iter();
+    let mut merged = Vec::with_capacity(msg.attachments.len());
+    for a in &msg.attachments {
+        if gone(a) {
+            merged.push(a.clone());
+        } else if let Some(c) = copied.next() {
+            merged.push(c);
+        }
+    }
+    msg.attachments = merged;
+    msg.draft_id = id.clone();
+    let payload = serde_json::to_string(&msg).map_err(|e| e.to_string())?;
+    db.draft_save(&id, &msg.kind, &msg.in_reply_to, &payload, &msg.mode, state).map_err(|e| e.to_string())?;
+    Ok(id)
+}
+
+/// One draft as JSON for the UI (`GET /drafts`, `GET /drafts/get`): the row, the saved message
+/// under `payload`, `recover` (an autosaved draft a crash left unsaved: offered at startup) and
+/// `missing` (names of spooled attachments whose copy is gone).
+pub fn draft_json(row: &DraftRow) -> serde_json::Value {
+    let payload: serde_json::Value = serde_json::from_str(&row.payload_json).unwrap_or(serde_json::Value::Null);
+    let missing: Vec<String> = match serde_json::from_str::<OutgoingMessage>(&row.payload_json) {
+        Ok(m) => crate::attach_spool::missing_copies(&m.attachments),
+        Err(_) => Vec::new(),
+    };
+    serde_json::json!({
+        "local_id": row.local_id,
+        "account_id": row.account_id,
+        "remote_id": row.remote_id,
+        "kind": row.kind,
+        "in_reply_to": row.in_reply_to,
+        "mode": row.mode,
+        "state": row.state,
+        "dirty": row.dirty,
+        "recover": row.state == "editing" && row.dirty,
+        "last_error": row.last_error,
+        "notice": row.notice,
+        "updated_at": row.updated_at,
+        "payload": payload,
+        "missing": missing,
+    })
 }
 
 fn short(e: &OmarchyError) -> String {
@@ -571,6 +660,73 @@ mod tests {
         discard(&db, &fake, &root, "d1").await.unwrap();
         assert_eq!(fake.calls.lock().unwrap().as_slice(), ["delete R1"]);
         assert!(db.draft_get("d1").unwrap().is_none());
+    }
+
+    #[test]
+    fn draft_json_flags_recovery_and_missing_copies() {
+        let db = db();
+        let mut m = msg("unsaved");
+        m.attachments = vec![OutgoingAttachment { path: "/gone/omalook/x.pdf".into(), name: "x.pdf".into(), size: 1, ..Default::default() }];
+        save(&db, "d1", &m, "editing");
+        let row = db.draft_get("d1").unwrap().unwrap();
+        let j = draft_json(&row);
+        assert_eq!(j["recover"], true, "an autosaved, unsaved draft is offered for recovery");
+        assert_eq!(j["missing"], serde_json::json!(["x.pdf"]));
+        assert_eq!(j["payload"]["subject"], "unsaved");
+        db.draft_save("d1", "new", "", &serde_json::to_string(&m).unwrap(), "system", "saved").unwrap();
+        assert_eq!(draft_json(&db.draft_get("d1").unwrap().unwrap())["recover"], false);
+    }
+
+    #[test]
+    fn save_local_copies_attachments_and_keeps_the_gone_ones() {
+        let db = db();
+        let root = std::env::temp_dir().join(format!("omalook-save-local-{}", std::process::id()));
+        let src = root.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        let f = src.join("report.txt");
+        std::fs::write(&f, b"hello").unwrap();
+        let mut m = msg("with file");
+        m.attachments = vec![OutgoingAttachment { path: f.to_string_lossy().into(), name: "report.txt".into(), size: 5, ..Default::default() }];
+        let id = save_local(&db, &root.join("spool"), &mut m, "editing").unwrap();
+        assert!(id.starts_with("dr-"));
+        assert_eq!(m.draft_id, id);
+        let spooled = m.attachments[0].path.clone();
+        assert!(spooled.starts_with(&root.join("spool").to_string_lossy().to_string()), "copied into the spool: {}", spooled);
+        assert!(Path::new(&spooled).is_file());
+        // Resume after the spool copy vanished and the source is gone too: the entry stays (a '!' chip),
+        // and the save still succeeds for the rest of the draft.
+        std::fs::remove_file(&spooled).unwrap();
+        std::fs::remove_file(&f).unwrap();
+        let mut resumed = serde_json::from_str::<OutgoingMessage>(&db.draft_get(&id).unwrap().unwrap().payload_json).unwrap();
+        resumed.subject = "edited".into();
+        let again = save_local(&db, &root.join("spool"), &mut resumed, "saved").unwrap();
+        assert_eq!(again, id, "a resumed draft keeps its id");
+        assert_eq!(resumed.attachments.len(), 1, "the missing attachment is not dropped");
+        let j = draft_json(&db.draft_get(&id).unwrap().unwrap());
+        assert_eq!(j["missing"], serde_json::json!(["report.txt"]));
+        assert_eq!(j["state"], "saved");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn save_local_refuses_a_sent_or_unknown_state() {
+        let db = db();
+        let root = std::env::temp_dir().join("omalook-save-local-refuse");
+        let mut m = msg("x");
+        m.draft_id = "d-sent".into();
+        save(&db, "d-sent", &m, "saved");
+        db.draft_mark_sent("d-sent").unwrap();
+        assert!(save_local(&db, &root, &mut m, "saved").unwrap_err().contains("already sent"));
+        let mut fresh = msg("y");
+        assert!(save_local(&db, &root, &mut fresh, "sending").is_err(), "only editing / saved are valid");
+    }
+
+    #[test]
+    fn new_draft_ids_are_unique() {
+        let a = new_draft_id();
+        let b = new_draft_id();
+        assert_ne!(a, b);
+        assert!(a.starts_with("dr-"));
     }
 
     #[test]

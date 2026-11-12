@@ -216,6 +216,13 @@ impl Database {
         Ok(self.conn.execute("DELETE FROM drafts WHERE local_id = ?1", params![local_id])? == 1)
     }
 
+    /// Live drafts of every account, newest first (startup recovery, `GET /drafts` without an account).
+    pub fn draft_list_all(&self) -> Result<Vec<DraftRow>> {
+        let mut st = self.conn.prepare(&format!("SELECT {} FROM drafts WHERE state != 'sent' ORDER BY updated_at DESC", COLS))?;
+        let rows = st.query_map([], row_of)?.collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
     /// Ids of every live draft of every account. The spool root is shared by accounts, so the
     /// sweep must keep them all.
     pub fn draft_all_live_ids(&self) -> Result<Vec<String>> {

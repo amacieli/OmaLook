@@ -1023,6 +1023,100 @@ fn read_post_body(stream: &mut std::net::TcpStream, initial: &[u8], limit: usize
     String::from_utf8(data[header_end..header_end + len].to_vec()).map_err(|_| "message is not valid UTF-8".into())
 }
 
+/// POST /drafts/save — the compose pane's draft (`OutgoingMessage` JSON). `draft_id` empty = a new
+/// draft. Writes the local copy (`draft_sync::save_local`); the draft worker pushes it to Drafts.
+/// Answers `{ok, id, state, attachments, missing}` or `{ok:false, error}`.
+fn drafts_save_response(config_dir: &PathBuf, stream: &mut std::net::TcpStream, initial: &[u8], first_line: &str) -> String {
+    use omalook::compose::{OutgoingMessage, MAX_BODY_BYTES};
+    let err = |m: &str| serde_json::json!({ "ok": false, "error": m }).to_string();
+    let raw = match read_post_body(stream, initial, MAX_BODY_BYTES + 64 * 1024) {
+        Ok(b) => b,
+        Err(e) => return err(&e),
+    };
+    let mut msg: OutgoingMessage = match serde_json::from_str(&raw) {
+        Ok(m) => m,
+        Err(e) => return err(&format!("unreadable draft: {}", e)),
+    };
+    if msg.account_id.is_empty() {
+        return err("the draft has no account");
+    }
+    let state = query_param(first_line, "state").unwrap_or_else(|| "saved".to_string());
+    let db_path = config_dir.join("messages.db");
+    let db = match Database::open_for_account(db_path.to_str().unwrap_or("messages.db"), &msg.account_id) {
+        Ok(db) => db,
+        Err(e) => return err(&format!("database: {}", e)),
+    };
+    match omalook::draft_sync::save_local(&db, &omalook::draft_sync::default_root(), &mut msg, &state) {
+        Ok(id) => serde_json::json!({
+            "ok": true, "id": id, "state": state, "attachments": msg.attachments,
+            "missing": omalook::attach_spool::missing_copies(&msg.attachments),
+        }).to_string(),
+        Err(e) => err(&e),
+    }
+}
+
+/// GET /drafts, GET /drafts/get?id=, POST /drafts/discard?id= (see the route comment in the loop).
+/// Discard deletes the provider's copy first and the local row only after that succeeded.
+fn drafts_route(config_dir: &PathBuf, first_line: &str) -> String {
+    let err = |m: &str| serde_json::json!({ "ok": false, "error": m }).to_string();
+    let db_str = config_dir.join("messages.db").to_str().unwrap_or("messages.db").to_string();
+    let db = match Database::open(&db_str) {
+        Ok(db) => db,
+        Err(e) => return err(&format!("database: {}", e)),
+    };
+    if first_line.contains("POST /drafts/discard") {
+        let id = match query_param(first_line, "id") {
+            Some(i) => i,
+            None => return err("missing id"),
+        };
+        let row = match db.draft_get(&id) {
+            Ok(Some(r)) => r,
+            Ok(None) => return serde_json::json!({ "ok": true, "discarded": false }).to_string(),
+            Err(e) => return err(&e.to_string()),
+        };
+        let account_db = match Database::open_for_account(&db_str, &row.account_id) {
+            Ok(d) => d,
+            Err(e) => return err(&format!("database: {}", e)),
+        };
+        let provider: Arc<dyn omalook::providers::EmailProvider> = if omalook::accounts::provider_of(&row.account_id) == "gmail" {
+            Arc::new(omalook::providers::gmail::GmailProvider::new(&row.account_id, Some(config_dir.join("messages.db"))))
+        } else {
+            Arc::new(GraphEmailProvider::new(AuthManager::for_account(&row.account_id)))
+        };
+        let rt = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+            Ok(rt) => rt,
+            Err(e) => return err(&format!("runtime: {}", e)),
+        };
+        let spool = omalook::draft_sync::default_root();
+        return match rt.block_on(omalook::draft_sync::discard(&account_db, provider.as_ref(), &spool, &id)) {
+            Ok(()) => serde_json::json!({ "ok": true, "discarded": true, "id": id }).to_string(),
+            Err(e) => err(&e.to_string()),
+        };
+    }
+    if first_line.contains("GET /drafts/get") {
+        let id = match query_param(first_line, "id") {
+            Some(i) => i,
+            None => return err("missing id"),
+        };
+        return match db.draft_get(&id) {
+            Ok(Some(r)) => serde_json::json!({ "ok": true, "draft": omalook::draft_sync::draft_json(&r) }).to_string(),
+            Ok(None) => err("no such draft"),
+            Err(e) => err(&e.to_string()),
+        };
+    }
+    let rows = match query_param(first_line, "account") {
+        Some(a) => db.draft_list(&a),
+        None => db.draft_list_all(),
+    };
+    match rows {
+        Ok(rows) => serde_json::json!({
+            "ok": true,
+            "drafts": rows.iter().map(omalook::draft_sync::draft_json).collect::<Vec<_>>(),
+        }).to_string(),
+        Err(e) => err(&e.to_string()),
+    }
+}
+
 /// POST /compose/send — queue a composed message. The body is the JSON the compose pane builds
 /// (`omalook::compose::OutgoingMessage`). It is stored in the outbox to go out after the
 /// `[mail] send_delay_secs` setting (0 = now) and the account's outbox worker is woken, so the
@@ -2358,6 +2452,8 @@ fn messages_response(config_dir: &PathBuf, first_line: &str, req_t: std::time::I
                             }
                             // Archived / deleted / moved messages wait out their undo window hidden.
                             conds.push("m.action_pending IS NULL".to_string());
+                            // A draft that this app holds locally is shown from the local copy (GET /drafts), never twice.
+                            conds.push("m.id NOT IN (SELECT remote_id FROM drafts WHERE remote_id IS NOT NULL AND state != 'sent')".to_string());
                             let where_sql = if conds.is_empty() { String::new() } else { format!(" WHERE {}", conds.join(" AND ")) };
                             args.push(limit.into());
                             args.push(offset.into());
@@ -2862,6 +2958,23 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                         .map(|a| omalook::accounts::provider_of(&a).to_string())
                         .unwrap_or_default();
                     let body = serde_json::to_string(&omalook::compose::attachment_limits(&provider)).unwrap_or_else(|_| "{}".into());
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                        body.len(), body
+                    );
+                    let _ = stream.write_all(response.as_bytes());
+                    continue;
+                }
+
+                // ── Drafts (docs/PLAN-compose.md Phase B2). GET /drafts?account=ID (every account without it;
+                // `recover` marks an unsaved autosave for the startup prompt), GET /drafts/get?id=,
+                // POST /drafts/save?state=editing|saved (JSON body: the compose message), POST /drafts/discard?id= ──
+                if first_line.contains("GET /drafts") || first_line.contains("POST /drafts/") {
+                    let body = if first_line.contains("POST /drafts/save") {
+                        drafts_save_response(config_dir, &mut stream, &buf[..n], first_line)
+                    } else {
+                        drafts_route(config_dir, first_line)
+                    };
                     let response = format!(
                         "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                         body.len(), body

@@ -1024,12 +1024,7 @@ impl super::EmailProvider for GraphEmailProvider {
             None => {
                 // A reply / forward is created by Graph so the conversation stays threaded (as the
                 // send path does); a new message is created as itself.
-                let action = match msg.kind.as_str() {
-                    "replyAll" if msg.is_reply() => Some("createReplyAll"),
-                    "forward" if msg.is_forward() => Some("createForward"),
-                    _ if msg.is_reply() => Some("createReply"),
-                    _ => None,
-                };
+                let action = graph_create_action(msg);
                 let mut created = None;
                 if let Some(action) = action {
                     match graph_call(&client, &token, reqwest::Method::POST, &format!("/me/messages/{}/{}", enc(&msg.in_reply_to), action), Some(serde_json::json!({}))).await {
@@ -1058,8 +1053,8 @@ impl super::EmailProvider for GraphEmailProvider {
                     present.push(c);
                 }
             }
-            let body = graph_message_json_with(msg, &present);
-            graph_call(&client, &token, reqwest::Method::PATCH, &format!("/me/messages/{}", enc(&did)), Some(body)).await?;
+            let (method, path, body) = graph_draft_update_request(&did, msg, &present);
+            graph_call(&client, &token, method, &path, Some(body)).await?;
             if fresh || attachments_changed {
                 Self::sync_draft_attachments(&client, &token, &did, msg).await?;
             }
@@ -1207,6 +1202,105 @@ fn infer_well_known_name(display_name: &str) -> Option<String> {
         "conversation history"  => Some("conversationhistory".to_string()),
         "clutter"               => Some("clutter".to_string()),
         _                       => None,
+    }
+}
+
+/// Which Graph action creates a new draft for `msg`: a reply or forward is created by Graph
+/// (`createReply` / `createReplyAll` / `createForward`) so the conversation stays threaded; a new
+/// message is posted as itself (`None`).
+pub fn graph_create_action(msg: &crate::compose::OutgoingMessage) -> Option<&'static str> {
+    match msg.kind.as_str() {
+        "replyAll" if msg.is_reply() => Some("createReplyAll"),
+        "forward" if msg.is_forward() => Some("createForward"),
+        _ if msg.is_reply() => Some("createReply"),
+        _ => None,
+    }
+}
+
+/// The request that creates a draft on Graph: `(method, path, body)`. A reply / forward is created
+/// from its original (empty body); a new message is `POST /me/messages` with the whole message.
+pub fn graph_draft_create_request(msg: &crate::compose::OutgoingMessage) -> (reqwest::Method, String, serde_json::Value) {
+    let enc = |s: &str| urlencoding::encode(s).into_owned();
+    match graph_create_action(msg) {
+        Some(action) => (reqwest::Method::POST, format!("/me/messages/{}/{}", enc(&msg.in_reply_to), action), serde_json::json!({})),
+        None => (reqwest::Method::POST, "/me/messages".to_string(), crate::compose::graph_message_json(msg)),
+    }
+}
+
+/// The request that updates an existing draft: `PATCH /me/messages/{id}` with subject, body
+/// (`contentType` follows the compose mode) and recipients. Attachments are not in this body; they
+/// go through `/attachments`.
+pub fn graph_draft_update_request(remote_id: &str, msg: &crate::compose::OutgoingMessage, present: &[String]) -> (reqwest::Method, String, serde_json::Value) {
+    (
+        reqwest::Method::PATCH,
+        format!("/me/messages/{}", urlencoding::encode(remote_id)),
+        crate::compose::graph_message_json_with(msg, present),
+    )
+}
+
+#[cfg(test)]
+mod draft_request_tests {
+    use super::*;
+    use crate::compose::{Address, Body, OutgoingMessage};
+
+    fn msg(kind: &str, mode: &str, body: &str) -> OutgoingMessage {
+        OutgoingMessage {
+            kind: kind.into(),
+            account_id: "exchange-x".into(),
+            in_reply_to: "AAMk/orig=1".into(),
+            to: vec![Address { email: "bob@example.com".into(), name: "Bob".into(), list: 0 }],
+            subject: "Hello".into(),
+            mode: mode.into(),
+            body: Body { format: if mode == "html" { "html" } else { "text" }.into(), content: body.into() },
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn create_action_follows_kind() {
+        assert_eq!(graph_create_action(&msg("new", "system", "x")), None);
+        assert_eq!(graph_create_action(&msg("reply", "system", "x")), Some("createReply"));
+        assert_eq!(graph_create_action(&msg("replyAll", "system", "x")), Some("createReplyAll"));
+        assert_eq!(graph_create_action(&msg("forward", "system", "x")), Some("createForward"));
+        // A reply kind without an original is created as a new message.
+        let mut orphan = msg("reply", "system", "x");
+        orphan.in_reply_to.clear();
+        assert_eq!(graph_create_action(&orphan), None);
+    }
+
+    #[test]
+    fn first_save_of_a_reply_is_created_by_graph_with_the_id_encoded() {
+        let (m, path, body) = graph_draft_create_request(&msg("reply", "system", "x"));
+        assert_eq!(m, reqwest::Method::POST);
+        assert_eq!(path, "/me/messages/AAMk%2Forig%3D1/createReply");
+        assert_eq!(body, serde_json::json!({}), "createReply takes an empty body");
+    }
+
+    #[test]
+    fn first_save_of_a_new_message_posts_the_message() {
+        let (m, path, body) = graph_draft_create_request(&msg("new", "html", "<p>hi</p>"));
+        assert_eq!(m, reqwest::Method::POST);
+        assert_eq!(path, "/me/messages");
+        assert_eq!(body["subject"], "Hello");
+        assert_eq!(body["body"]["contentType"], "HTML");
+        assert_eq!(body["toRecipients"][0]["emailAddress"]["address"], "bob@example.com");
+    }
+
+    #[test]
+    fn later_saves_patch_the_existing_draft() {
+        let (m, path, body) = graph_draft_update_request("AAMk-1/x+y", &msg("new", "system", "plain"), &[]);
+        assert_eq!(m, reqwest::Method::PATCH, "an existing draft is PATCHed, never POSTed again");
+        assert_eq!(path, "/me/messages/AAMk-1%2Fx%2By");
+        assert_eq!(body["body"]["contentType"], "Text");
+        assert!(body.get("attachments").is_none(), "attachments are synced separately");
+    }
+
+    #[test]
+    fn body_content_type_follows_the_compose_mode() {
+        let html = graph_draft_update_request("id", &msg("new", "html", "<b>x</b>"), &[]).2;
+        assert_eq!(html["body"]["contentType"], "HTML");
+        let system = graph_draft_update_request("id", &msg("new", "system", "x"), &[]).2;
+        assert_eq!(system["body"]["contentType"], "Text");
     }
 }
 
