@@ -255,6 +255,30 @@ var RESPONSE_LABELS = { organizer: "Organizer", accepted: "Accepted", tentativel
                         notResponded: "Not responded", none: "Not responded" }
 function responseLabel(r) { return RESPONSE_LABELS[r] || "" }
 
+// Invitees by answer (rooms left out): { accepted, tentative, declined, none, total }. `none` = no reply yet.
+function responseTally(attendees) {
+    var t = { accepted: 0, tentative: 0, declined: 0, none: 0, total: 0 }
+    for (var i = 0; i < (attendees || []).length; i++) {
+        var a = attendees[i]
+        if (a.role === "resource") continue
+        t.total++
+        if (a.response === "accepted") t.accepted++
+        else if (a.response === "tentativelyAccepted") t.tentative++
+        else if (a.response === "declined") t.declined++
+        else t.none++
+    }
+    return t
+}
+// "2 accepted · 1 tentative · 1 declined · 3 no reply" (only the non-zero parts); "" when nobody is invited
+function tallyText(t) {
+    var parts = []
+    if (t.accepted) parts.push(t.accepted + " accepted")
+    if (t.tentative) parts.push(t.tentative + " tentative")
+    if (t.declined) parts.push(t.declined + " declined")
+    if (t.none) parts.push(t.none + " no reply")
+    return parts.join(" \u00b7 ")
+}
+
 // Agenda rows for the calendar sidebar, from `now` on: a flat list of
 // { kind: "head", text, date } and { kind: "ev", ev, date, time } (Today / Tomorrow / dated heads).
 // Timed events that have already ended today are left out; multi-day events appear on their first day

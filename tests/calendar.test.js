@@ -82,3 +82,13 @@ console.log('calendar tests ok');
   eq(lane(4), [], 'fri');
   eq(C2.eventsAtCursor(n,D(2026,10,27),720,'day').map(e=>e.raw.id).sort(), ['a','t'], 'multi-day events are under the cursor on every day');
 }
+
+// OL-021 phase 3 leftover: invitee tally for the detail pane
+{
+  const CT=new Function(fs.readFileSync('qml/views/CalendarUtil.js','utf8').replace('.pragma library','')+';return {responseTally,tallyText}')();
+  const t=CT.responseTally([{role:'required',response:'accepted'},{role:'optional',response:'tentativelyAccepted'},{role:'required',response:'declined'},{role:'required',response:'notResponded'},{role:'required',response:''},{role:'resource',response:'accepted'}]);
+  eq(t.total,5,'tally total skips rooms'); eq(t.accepted,1,'accepted'); eq(t.none,2,'none incl. blank');
+  eq(CT.tallyText(t),'1 accepted \u00b7 1 tentative \u00b7 1 declined \u00b7 2 no reply','tally text');
+  eq(CT.tallyText(CT.responseTally([])),'','nobody invited');
+  console.log('ok tally');
+}

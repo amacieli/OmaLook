@@ -20,6 +20,7 @@ Rectangle {
     readonly property string joinHref: CU.joinUrl(raw)
     readonly property var attendees: raw && raw.attendees ? raw.attendees : []
     readonly property var tags: raw && raw.tags ? raw.tags : []
+    readonly property var tally: CU.responseTally(attendees)
 
     color: "transparent"
     clip: true
@@ -95,8 +96,8 @@ Rectangle {
                 text: {
                     if (!root.raw) return ""
                     var bits = []
-                    var r = CU.responseLabel(root.raw.my_response)
-                    if (r) bits.push(r)
+                    if (root.raw.is_organizer) bits.push("You organise this")
+                    else bits.push("Your response: " + (CU.responseLabel(root.raw.my_response) || "not known"))
                     if (root.raw.show_as) bits.push("shown as " + root.raw.show_as)
                     if (root.raw.reminder_minutes !== undefined && root.raw.reminder_minutes !== null && root.raw.reminder_minutes >= 0)
                         bits.push("reminder " + root.raw.reminder_minutes + " min")
@@ -133,7 +134,7 @@ Rectangle {
 
             Text {
                 visible: root.attendees.length > 0
-                text: "ATTENDEES (" + root.attendees.length + ")"
+                text: "ATTENDEES (" + root.tally.total + ")" + (CU.tallyText(root.tally) !== "" ? "   " + CU.tallyText(root.tally) : "")
                 font.family: root.monoFont; font.pixelSize: Style.font.caption; font.letterSpacing: 1; color: root.dimColor
             }
             Repeater {
