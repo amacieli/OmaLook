@@ -41,7 +41,7 @@ ShellRoot {
     minimumSize: Qt.size(Style.space(720), Style.space(480))
 
     // Closing the window (or Esc at the top level) ends the app.
-    onVisibleChanged: if (!visible) Qt.quit()
+    onVisibleChanged: if (!visible) { shell.flushOnQuit(); Qt.quit() }
 
     // Settings -> Appearance -> Scale factor: the whole UI is laid out at window/scale and
     // then scaled up, so every size (fonts, spacing, icons) follows at once, no restart.
@@ -56,7 +56,7 @@ ShellRoot {
         height: parent.height / shell.uiScale
         scale: shell.uiScale
         transformOrigin: Item.TopLeft
-        onCloseRequested: Qt.quit()
+        onCloseRequested: { shell.flushOnQuit(); Qt.quit() }
       }
     }
   }

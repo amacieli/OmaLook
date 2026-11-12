@@ -21,6 +21,8 @@ FocusScope {
   signal closeRequested()
 
   function focusKeys() { keyCatcher.forceActiveFocus() }
+  // Quit: an open compose is saved as a draft first (AppState.flushDraftOnQuit).
+  function flushOnQuit() { appState.flushDraftOnQuit() }
 
   // UI scale factor (Settings -> Appearance); shell.qml scales this whole item by it.
   readonly property real uiScale: appState.uiScale

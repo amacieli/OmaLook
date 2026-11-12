@@ -44,6 +44,8 @@ FocusScope {
   // Attachments: [{ path, name, size }]. `listDir(path, hidden, cb)` and `browseDir` come from the
   // owner (the daemon lists folders for the file browser; the last folder used is remembered).
   property var attachments: []
+  // Attachments changed by the user: an autosave straight away (not after the 10 s timer).
+  onAttachmentsChanged: if (root._ready) root.saveDraftNow("editing")
   property var missingNames: []              // draft attachments whose spool copy is gone (AttachStrip "!")
   property var listDir: null
   property string browseDir: ""
@@ -53,6 +55,20 @@ FocusScope {
   signal sendRequested(var message)
   signal discardRequested()
   signal focusRequested()
+  // Status "saved to Drafts" once the worker has pushed the saved copy (polled while the pane is open).
+  Timer {
+    id: pushPoll
+    interval: 3000
+    repeat: true
+    running: root.visible && root.draftId !== "" && root.draftStateFn !== null
+    onTriggered: {
+      if (root.dirty) return
+      root.draftStateFn(root.draftId, function(d) {
+        if (d && d.remote_id && !d.dirty && !root.dirty) root.localStatus = "saved to Drafts"
+      })
+    }
+  }
+
   // Esc on a changed message, "Save draft": saved, then the owner closes the pane.
   signal saveAndCloseRequested()
 
@@ -60,6 +76,7 @@ FocusScope {
   // the save function (AppState.saveDraft, injected like fetchLimits) and the autosave clock.
   property string draftId: initial.draftId || ""
   property var saveDraftFn: null
+  property var draftStateFn: null            // (localId, done(draft|null)): asks the backend whether the provider has it
   property int autosaveSecs: 10
 
   property string mode: defaultMode
@@ -450,8 +467,9 @@ FocusScope {
     root.sendRequested(root.buildMessage())
   }
 
+  // Esc: an empty message closes silently; a changed one asks Save draft / Discard / Cancel.
   function requestClose() {
-    if (root.dirty) root.confirming = "discard"
+    if (root.dirty) root.confirming = "close"
     else root.discardRequested()
   }
 

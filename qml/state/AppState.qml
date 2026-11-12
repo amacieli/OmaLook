@@ -1393,6 +1393,29 @@ Item {
   // ---- drafts (OL-048 Phase B2) ----------------------------------------------------------------
   // Save the compose pane's draft locally (POST /drafts/save?state=editing|saved); `done` gets the
   // backend's answer: {ok, id, ...} or {ok:false, error}.
+  // Compose pane's buildMessage, while a compose is open (MailView sets it), for the save on quit.
+  property var composeFlush: null
+  // Quit (window closed or Q): the open compose is saved as a draft before the app exits. Synchronous, because
+  // the process ends right after; the worker pushes it to the provider on its next start.
+  function flushDraftOnQuit() {
+    if (!composing || !composeFlush) return
+    try {
+      var msg = composeFlush()
+      if (!msg) return
+      var xhr = new XMLHttpRequest()
+      xhr.open("POST", root.backendUrl + "/drafts/save?state=saved", false)
+      xhr.send(JSON.stringify(msg))
+    } catch (e) {}
+  }
+  // The draft row as the backend holds it (remote_id set and dirty false = the provider has the copy).
+  function draftState(localId, done) {
+    request("GET", "/drafts/get?id=" + encodeURIComponent(localId), function(xhr) {
+      var r = null
+      try { r = JSON.parse(xhr.responseText) } catch (e) {}
+      done(xhr.status === 200 && r && r.ok ? r.draft : null)
+    })
+  }
+
   function saveDraft(message, state, done) {
     request("POST", "/drafts/save?state=" + encodeURIComponent(state), function(xhr) {
       var r = null

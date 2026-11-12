@@ -101,6 +101,8 @@ RowLayout {
       item.fetchLimits = function(accountId, cb) { root.app.attachLimits(accountId, cb) }
       item.fetchOriginals = function(messageId, cb) { root.app.composeOriginals(messageId, cb) }
       item.saveDraftFn = function(message, state, done) { root.app.saveDraft(message, state, done) }
+      item.draftStateFn = function(localId, done) { root.app.draftState(localId, done) }
+      root.app.composeFlush = function() { return item.buildMessage() }
       item.forceActiveFocus()
     }
     Connections {
