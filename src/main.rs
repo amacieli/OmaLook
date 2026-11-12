@@ -3309,9 +3309,6 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                     let response = format!(
                         "HTTP/1.1 {}\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                         status, body.len(), body
-                    let response = format!(
-                        "HTTP/1.1 {}\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
-                        status, body.len(), body
                     );
                     let _ = stream.write_all(response.as_bytes());
                     continue;
@@ -3339,6 +3336,9 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                         Ok(map) => ("200 OK", serde_json::to_string(&map).unwrap_or_else(|_| "{}".into())),
                         Err(e) => ("400 Bad Request", serde_json::json!({ "error": e }).to_string()),
                     };
+                    let response = format!(
+                        "HTTP/1.1 {}\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                        status, body.len(), body
                     );
                     let _ = stream.write_all(response.as_bytes());
                     continue;

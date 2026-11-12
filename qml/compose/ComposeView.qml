@@ -170,12 +170,30 @@ FocusScope {
   }
   onFetchOriginalsChanged: if (originalsState === "idle") _loadOriginals()
 
+  // ---- Inline pictures (OL-054). In HTML mode a picture is an image `cid:<id>` in the document plus an
+  // attachment entry with the same `inline_cid`. The entry is listed only while its image is in the
+  // document, so deleting the picture from the text takes it out of the list and off the message.
+  property int _pictureSeq: 0
+  property bool _pictureMode: false   // the next browser pick goes into the text, not the attachments
+  readonly property var liveAttachments: root.attachments.filter(function(a) {
+    return !a.inline_cid || (handler.pictureCids || []).indexOf(a.inline_cid) >= 0
+  })
+
   // Everything the strip and the list show: the forward's originals first, then picked files.
-  readonly property var rows: Att.combine(originals, attachments)
+  readonly property var rows: Att.combine(originals, liveAttachments)
   readonly property real attachedBytes: Att.rawTotal(rows)
 
   function openAttach() {
     root.localStatus = ""
+    root._pictureMode = false
+    browser.title = "Attach files"
+    browser.open()
+  }
+
+  function openPicture() {
+    root.localStatus = ""
+    root._pictureMode = true
+    browser.title = "Insert pictures"
     browser.open()
   }
 
@@ -213,8 +231,54 @@ FocusScope {
       next.splice(r.ref, 1)
       root.originals = next
     } else {
-      root.removeAttachment(r.ref)
+      var a = root.liveAttachments[r.ref]
+      if (a && a.inline_cid) handler.removeImage(a.inline_cid)
+      root.attachments = root.attachments.filter(function(x) { return x !== a })
     }
+  }
+
+  // The picked entry (same object as in `attachments`) behind `row`; null for the forward's originals.
+  function _entryOf(row) {
+    var r = root.rows[row]
+    return r && r.origin === "picked" ? root.liveAttachments[r.ref] : null
+  }
+
+  // Pictures: a picture file goes into the text as an image when the mode can show it, else it is attached.
+  function _addPicture(f) {
+    var cid = root._newCid()
+    if (!handler.insertImage(f.path, cid)) return false
+    root.attachments = root.attachments.concat([{ path: f.path, name: f.name, size: f.size || 0, inline_cid: cid }])
+    return true
+  }
+  function _newCid() {
+    root._pictureSeq += 1
+    return "omalook-" + Date.now().toString(36) + "-" + root._pictureSeq + "@omalook"
+  }
+  // Files from the browser (insert mode) or the clipboard: [{ path, name, size }].
+  function insertPictures(files) {
+    var pics = files.filter(function(f) { return Att.isPicture(f.name) })
+    var others = files.filter(function(f) { return !Att.isPicture(f.name) })
+    if (root.mode !== Modes.HTML) {
+      root.addAttachments(files)
+      if (pics.length > 0) root.localStatus = pics.length === 1
+        ? "System-font mode can't show pictures: attached as a file."
+        : "System-font mode can't show pictures: attached " + pics.length + " as files."
+      return
+    }
+    var added = 0, failed = 0
+    pics.forEach(function(f) { if (root._addPicture(f)) added++; else failed++ })
+    if (others.length > 0) root.addAttachments(others)
+    else editor.forceActiveFocus()
+    var msg = added > 0 ? "Inserted " + added + (added === 1 ? " picture." : " pictures.") : ""
+    if (failed > 0) msg += (msg ? " " : "") + failed + (failed === 1 ? " file" : " files") + " could not be read as a picture."
+    if (others.length > 0) msg += (msg ? " " : "") + others.length + (others.length === 1 ? " file" : " files") + " not a picture: attached."
+    root.localStatus = msg
+  }
+  // A picture taken out of the text (system-font switch) becomes an ordinary attachment.
+  function _picturesToFiles() {
+    root.attachments = root.attachments.map(function(a) {
+      return a.inline_cid ? { path: a.path, name: a.name, size: a.size } : a
+    })
   }
 
   // The palette twins of the keys (`:attach`, `:attachments`, `:detach`, `:detach-all`).
@@ -223,17 +287,36 @@ FocusScope {
   // always taken here and the text paste is replayed on the focused field when the clipboard holds no files.
   property var _pasteTarget: null
   property string _pasteType: ""
+  // Picture data (PNG) on the clipboard: saved under the cache dir, then inserted (or attached in system mode).
+  readonly property string _pasteScript: 'd="${XDG_CACHE_HOME:-$HOME/.cache}/omalook/paste"; mkdir -p "$d" || exit 1; '
+    + 'f="$d/picture-$(date +%s%N).png"; if wl-paste --type image/png > "$f" && [ -s "$f" ]; then printf \'%s\' "$f"; else rm -f "$f"; fi'
   Process {
     id: pasteTypes
     command: ["wl-paste", "--list-types"]
     stdout: StdioCollector {
       onStreamFinished: {
         root._pasteType = Att.clipboardFileType(text)
-        if (root._pasteType === "") root._pasteText()
-        else { pasteBody.command = ["wl-paste", "--no-newline", "--type", root._pasteType]; pasteBody.running = true }
+        if (root._pasteType !== "") { pasteBody.command = ["wl-paste", "--no-newline", "--type", root._pasteType]; pasteBody.running = true }
+        else if (Att.clipboardHasPng(text)) { pasteImage.command = ["sh", "-c", root._pasteScript]; pasteImage.running = true }
+        else root._pasteText()
       }
     }
     onExited: function(code) { if (code !== 0) root._pasteText() }
+  }
+  Process {
+    id: pasteImage
+    stdout: StdioCollector { onStreamFinished: root._pastedPicture(text.trim()) }
+  }
+  function _pastedPicture(path) {
+    if (path === "") { root.localStatus = "The clipboard picture could not be read."; return }
+    var f = { path: path, name: "pasted-picture.png", size: 0 }
+    var base = Att.baseName(path)
+    if (!root.listDir) { root.insertPictures([f]); return }
+    root.listDir(Att.dirName(path), true, function(r) {
+      var hit = (r && r.entries ? r.entries : []).filter(function(e) { return e.name === base })
+      f.size = hit.length > 0 ? (hit[0].size || 0) : 0
+      root.insertPictures([f])
+    })
   }
   Process {
     id: pasteBody
@@ -295,6 +378,7 @@ FocusScope {
     else if (name === "attachments") openList()
     else if (name === "detach") removeRow(root.rows.length - 1)
     else if (name === "detach-all") { root.attachments = []; root.originals = [] }
+    else if (name === "signature") root.toggleSignature()
   }
 
   function buildMessage() {
@@ -306,7 +390,11 @@ FocusScope {
       subject: header.subject.text,
       mode: root.mode,
       body: _body(),
-      attachments: root.attachments.map(function(a) { return { path: a.path, name: a.name, size: a.size } }),
+      attachments: root.liveAttachments.map(function(a) {
+        var o = { path: a.path, name: a.name, size: a.size }
+        if (a.inline_cid) o.inline_cid = a.inline_cid
+        return o
+      }),
       // Which of the original's files go along (forward only); left out until the list is known.
       forwarded_keep: initial.kind === "forward" && root.originalsState !== "idle" ? root.originals.map(function(o) { return o.id }) : undefined
     }
@@ -349,7 +437,7 @@ FocusScope {
   function setMode(m) {
     if (m === root.mode) return
     if (m === Modes.SYSTEM && handler.hasRichAttributes) { root.confirming = "flatten"; return }
-    if (m === Modes.SYSTEM) handler.flattenToSystem()
+    if (m === Modes.SYSTEM) { root._picturesToFiles(); handler.flattenToSystem() }
     root.mode = m
   }
 
@@ -371,14 +459,18 @@ FocusScope {
       if (initial.restore.format === "text") handler.setPlainText(initial.restore.content)
       else handler.setHtml(initial.restore.content)
     }
+    // A restored message's pictures come back from their files (the document only names them).
+    if (initial.attachments) initial.attachments.forEach(function(a) { if (a.inline_cid) handler.registerImage(a.path, a.inline_cid) })
+    // The signature goes in before `_seedText` is taken, so a message with only a signature is not "dirty".
+    if (!initial.restore) _insertSignature()
     _seedText = initial.restore ? "" : handler.plainText()
+    _ready = true
     // Replies start in the body, new messages in To.
     if (initial.restore) { editor.forceActiveFocus(); editor.cursorPosition = editor.length }
     else if (initial.kind === "new" || initial.kind === "forward") header.to.input.forceActiveFocus()
     else { editor.forceActiveFocus(); editor.cursorPosition = 0 }
   }
 
-    else if (name === "signature") root.toggleSignature()
   Keys.onPressed: function(e) {
     if (browser.opened || attachList.opened) return
     if (root.confirming !== "") {
@@ -393,6 +485,7 @@ FocusScope {
       e.accepted = true
     } else if (ctrl && (e.key === Qt.Key_Return || e.key === Qt.Key_Enter)) { root.trySend(); e.accepted = true }
     else if (ctrl && e.key === Qt.Key_B) { handler.toggleBold(); e.accepted = true }
+    else if (ctrl && shift && e.key === Qt.Key_I) { root.openPicture(); e.accepted = true }
     else if (ctrl && e.key === Qt.Key_I) { handler.toggleItalic(); e.accepted = true }
     else if (ctrl && e.key === Qt.Key_U) { handler.toggleUnderline(); e.accepted = true }
 else if (ctrl && !shift && e.key === Qt.Key_V) { root.startPaste(); e.accepted = true }
@@ -403,6 +496,7 @@ else if (ctrl && !shift && e.key === Qt.Key_V) { root.startPaste(); e.accepted =
     else if (ctrl && e.key === Qt.Key_K) { root.linkOpen = true; linkUrl.forceActiveFocus(); e.accepted = true }
     else if (ctrl && shift && (e.key === Qt.Key_7 || e.key === Qt.Key_Ampersand)) { handler.toggleNumberedList(); e.accepted = true }
     else if (ctrl && shift && (e.key === Qt.Key_8 || e.key === Qt.Key_Asterisk)) { handler.toggleBulletList(); e.accepted = true }
+    else if (ctrl && !shift && e.key === Qt.Key_G) { root.toggleSignature(); e.accepted = true }
   }
 
   ColumnLayout {
@@ -448,6 +542,15 @@ else if (ctrl && !shift && e.key === Qt.Key_V) { root.startPaste(); e.accepted =
 
       Button {
         bordered: true
+        visible: root.mode === Modes.HTML
+        text: "Picture"
+        iconText: "\uf03e"
+        tooltipText: "Ctrl+Shift+I"
+        onClicked: root.openPicture()
+      }
+
+      Button {
+        bordered: true
         text: root.rows.length > 0 ? "Attach (" + root.rows.length + ")" : "Attach"
         iconText: "\uf0c6"
         tooltipText: "Ctrl+Shift+A"
@@ -459,12 +562,9 @@ else if (ctrl && !shift && e.key === Qt.Key_V) { root.startPaste(); e.accepted =
         text: "Discard"
         iconText: "\uf1f8"
         tooltipText: "Esc"
-    // The signature goes in before `_seedText` is taken, so a message with only a signature is not "dirty".
-    if (!initial.restore) _insertSignature()
         onClicked: root.requestClose()
       }
       Button {
-    _ready = true
         bordered: true
         selected: true
         text: "Send"
@@ -496,7 +596,6 @@ else if (ctrl && !shift && e.key === Qt.Key_V) { root.startPaste(); e.accepted =
       id: externalBanner
       visible: root._externals.length > 0
       Layout.fillWidth: true
-    else if (ctrl && !shift && e.key === Qt.Key_G) { root.toggleSignature(); e.accepted = true }
       Layout.leftMargin: Style.spacing.lg
       Layout.rightMargin: Style.spacing.lg
       Layout.topMargin: Style.spacing.md
@@ -643,7 +742,7 @@ else if (ctrl && !shift && e.key === Qt.Key_V) { root.startPaste(); e.accepted =
       UiText {
         dim: true
         font.pixelSize: Style.font.caption
-        text: "Ctrl+Enter send · Esc discard · Ctrl+K link · Ctrl+Shift+A attach · Ctrl+G signature"
+        text: "Ctrl+Enter send · Esc discard · Ctrl+K link · Ctrl+Shift+A attach · Ctrl+Shift+I picture · Ctrl+G signature"
       }
     }
   }
@@ -659,11 +758,14 @@ else if (ctrl && !shift && e.key === Qt.Key_V) { root.startPaste(); e.accepted =
     onRemoveRequested: function(row) { root.removeRow(row) }
     onAddRequested: { attachList.close(); root.openAttach() }
     onRenameRequested: function(row, name) {
-      var r = root.rows[row]
-      if (!r || r.origin === "original") return
-      var next = root.attachments.slice()
-      next[r.ref] = { path: next[r.ref].path, name: name, size: next[r.ref].size }
-      root.attachments = next
+      var a = root._entryOf(row)
+      if (!a) return
+      root.attachments = root.attachments.map(function(x) {
+        if (x !== a) return x
+        var o = { path: x.path, name: name, size: x.size }
+        if (x.inline_cid) o.inline_cid = x.inline_cid
+        return o
+      })
     }
     onClosed: editor.forceActiveFocus()
   }
@@ -678,8 +780,11 @@ else if (ctrl && !shift && e.key === Qt.Key_V) { root.startPaste(); e.accepted =
     capacity: Att.capacity(root.limits)
     baseBytes: root.attachedBytes
     attached: root.attachments.map(function(a) { return a.path })
-    onPicked: function(files) { root.addAttachments(files) }
-    onCanceled: editor.forceActiveFocus()
+    onPicked: function(files) {
+      if (root._pictureMode) { root._pictureMode = false; root.insertPictures(files) }
+      else root.addAttachments(files)
+    }
+    onCanceled: { root._pictureMode = false; editor.forceActiveFocus() }
     onNavigated: function(d) { root.browsed(d) }
   }
 
@@ -709,7 +814,7 @@ else if (ctrl && !shift && e.key === Qt.Key_V) { root.startPaste(); e.accepted =
     message: root.confirming === "discard" ? "Discard this message?"
       : root.confirming === "nosubject" ? "Send without a subject?"
       : root.confirming === "audience" ? "Send to about " + root.audience + " people?"
-      : "Switching to system font removes fonts, sizes, colours and alignment. Continue?"
+      : "Switching to system font removes fonts, sizes, colours and alignment" + (handler.pictureCids.length > 0 ? ", and turns pictures into attached files" : "") + ". Continue?"
     cancelText: root.confirming === "discard" ? "Keep editing" : "Cancel"
     confirmText: root.confirming === "discard" ? "Discard" : (root.confirming === "nosubject" || root.confirming === "audience") ? "Send" : "Switch"
     onCanceled: root.confirming = ""
@@ -719,7 +824,7 @@ else if (ctrl && !shift && e.key === Qt.Key_V) { root.startPaste(); e.accepted =
       if (what === "discard") root.discardRequested()
       else if (what === "nosubject") root.sendRequested(root.buildMessage())
       else if (what === "audience") { root.audienceOk = true; root.trySend() }
-      else if (what === "flatten") { handler.flattenToSystem(); root.mode = Modes.SYSTEM }
+      else if (what === "flatten") { root._picturesToFiles(); handler.flattenToSystem(); root.mode = Modes.SYSTEM }
     }
   }
 }

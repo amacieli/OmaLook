@@ -1,6 +1,6 @@
 const fs=require('fs');
 const src=fs.readFileSync('qml/compose/attach.js','utf8').replace('.pragma library','');
-const A=new Function(src+';return {layout,counted,capacity,meter,states,displayNames,combine,defaultLimits,encodedPart,clipboardFileType,pathsFromClipboard,baseName,dirName}')();
+const A=new Function(src+';return {layout,counted,capacity,meter,states,displayNames,combine,defaultLimits,encodedPart,clipboardFileType,clipboardHasPng,isPicture,pathsFromClipboard,baseName,dirName}')();
 const eq=(a,b,m)=>{ const x=JSON.stringify(a), y=JSON.stringify(b); if(x!==y){console.error('FAIL',m,x,y);process.exit(1)} };
 const MB=1048576;
 
@@ -63,4 +63,7 @@ eq(A.pathsFromClipboard('copy\nfile:///home/a/My%20Doc.pdf\nfile:///tmp/x.png\n'
 eq(A.pathsFromClipboard('# c\r\nfile://localhost/tmp/a.txt\r\nhttps://x.org/y\r\nfile:///tmp/a.txt\r\nfile:///tmp/%E2%82%AC.txt'),['/tmp/a.txt','/tmp/\u20ac.txt'],'uri-list: comments, remote, duplicates, utf-8');
 eq(A.pathsFromClipboard('file:///tmp/%ZZ'),[],'bad escape ignored');
 eq([A.baseName('/a/b/c.txt'),A.dirName('/a/b/c.txt'),A.dirName('/c.txt')],['c.txt','/a/b','/'],'names');
+// Inline pictures (OL-054): which picks go into the text, and which clipboards hold PNG data.
+eq([A.isPicture('a.PNG'),A.isPicture('p.jpeg'),A.isPicture('x.webp'),A.isPicture('d.svg'),A.isPicture('n.txt')],[true,true,true,false,false],'picture names');
+eq([A.clipboardHasPng('text/plain\nimage/png\n'),A.clipboardHasPng('text/plain'),A.clipboardHasPng('image/jpeg')],[true,false,false],'clipboard png');
 console.log('ok attach');

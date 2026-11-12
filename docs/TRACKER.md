@@ -5,6 +5,17 @@ IDs are stable (never reused). Status: `open` | `investigating` | `planned` | `i
 
 ## Issues
 
+### OL-048 — Drafts: save, resume, sync to the provider (PLAN-compose.md Phase B2; OL-035 phase 7 attachments kept with drafts) (in progress 2026-11-12, NOT finished)
+- **Wanted (user, 2026-11-12):** autosave local drafts; push them to Drafts on Graph and Gmail; resume from the Drafts folder; send from the provider copy (no duplicate in Drafts/Sent); crash recovery; attachments kept with the draft (spool, '!' chip when a copy is missing).
+- **Built (uncommitted at time of writing, in tree):**
+  - Stage 1, committed `fbb03d2`: `drafts` table + CRUD (`src/db/drafts.rs`), dirty/state/backoff/parking rules. 6 unit tests in the commit message.
+  - Stage 2, code in tree: `EmailProvider::save_draft / draft_version / delete_draft / send_draft` (`src/providers/mod.rs`); Graph: POST createReply/createForward or POST /me/messages, PATCH /me/messages/{id}, attachment re-sync on change, DELETE; Gmail: drafts.create / drafts.update (full raw MIME via `build_mime`), drafts.send, drafts.delete.
+  - Stage 3, code in tree: `src/draft_sync.rs` (push_one, drain, debounced `DraftWorker`, conflict split, send_from_draft, discard), spool `attach_spool::snapshot_draft` / `missing_copies`, outbox sends draft-based messages via `send_from_draft`, draft worker spawned per account in `scheduler.rs`.
+- **Verified:** `cargo test --lib -- draft` in a scratch copy of HEAD plus these files: 33 passed (db draft_tests, draft_sync tests with a scripted fake provider: offline-then-reconnect pushes once, debounce, 4xx parks and keeps the local copy, missing spool copy blocks and is named, Gmail 10 MB hold, conflict keeps both, send-from-draft leaves no second copy, deleted draft not resent, discard order, claim exclusivity; attach_spool reuse/removal/missing copy). **Not verified:** Graph and Gmail request bodies (no builder tests yet), anything live.
+- **Not built yet:** routes `GET /drafts`, `GET /drafts/get`, `POST /drafts/save`, `POST /drafts/discard` in `src/main.rs`; Drafts-folder sync dedupe against local `remote_id`; startup crash-recovery prompt; spool sweep at startup; UI (ComposeView autosave, Esc prompt, resume with Enter/`e`, status line); `docs/KEYS.md`; qmllint.
+- **Not committed (blocked on shared files):** `src/compose.rs`, `src/providers/gmail.rs`, `src/providers/graph.rs`, `src/main.rs` carry other agents' uncommitted hunks (calendar, compose extras, inline images); the stage-2/3 commit needs those hunks split out first.
+- **Live:** not done. No scratch drafts created on either provider.
+
 ### OL-054 — Inline pictures (`cid:`) in HTML compose: insert, paste, send, keep on reply/forward (in progress 2026-11-12)
 - **Wanted (user, backlog item 12):** in HTML mode, insert a picture (attach browser or clipboard image) that shows in the editor and is sent as an inline attachment referenced by `cid:`. Replies and forwards keep the original's inline pictures when the quoted HTML references them. System-font mode: the picture is attached as a normal file, and the status line says so.
 - **Found (code read 2026-11-12):** the editor is a `TextEdit` (RichText) over Qt's `QTextDocument`; `DocumentHandler` (C++) owns formatting. `ComposeView` sends `body.content = handler.html()`; `compose::clean_html` keeps `<img>` tags. Nothing in the editor can show images today. Reply/forward quotes are **escaped plain text** (`_quoteHtml`), so no `cid:` references reach a reply today; the preservation code is written for when they do. `OutgoingAttachment` has no inline flag; Graph's `fileAttachment` path has no `isInline`/`contentId`; `write_mime` only builds `multipart/mixed` + `alternative`. The spool (`attach_spool::snapshot`) rebuilds attachments field by field, so any new field must be copied there.
@@ -92,7 +103,7 @@ IDs are stable (never reused). Status: `open` | `investigating` | `planned` | `i
 - **Phase 3 (built 2026-11-01, partly verified):** one-line strip (`AttachStrip.qml`), list panel (`AttachList.qml`, `Ctrl+Shift+L`), live meter by From account, forward chips (`GET /compose/originals`, `forwarded_keep`, Graph prunes un-kept originals and fails the send if a delete fails, Gmail forward fetches kept originals), palette twins. **Checked:** 372 lib tests, `tests/attach.test.js`, qmllint, and on screen (scratch instance, fake accounts): constant strip height with 1/2/3/41 files, forward chips, red over-limit meter and `!` chip on Gmail, list keys. **Not checked:** Send refusal on screen, palette twins while composing, keyboard-only walkthrough, From dropdown by keyboard, `Ctrl+Shift+Backspace` from the To field (does nothing), live forward on Graph and Gmail. See the hand-off file.
 - **Phase 4 (built 2026-11-01, not seen on screen):** `AttachBrowser.qml` + `pick.js`: pattern filter (`*.pdf`), `Ctrl+T` tick shown, `Ctrl+A` tick all, `Ctrl+U` clear, `Ctrl+S` sort, `Ctrl+B` places + recent folders (session only), footer with ticked size against the room left (red when too big). Ticks already survived folder changes. **Checked:** `tests/pick.test.js`, other node tests, qmllint (no new warnings). **Not checked:** on screen, 5000-entry folder. **Not built:** bookmarks in `settings.toml`, recent *files*, per-file over-limit tint (user wants a built-in picker in the style of superfile but simpler; tripwires and forgot-attachment check dropped by user).
 - **Session 2026-11-12 (phases 3 fixes, 5, 6; built, needs `./build.sh --live`, none of it seen on screen):** phase 3 open items found by reading the code: (2) palette twins were unreachable while composing (the shell's keys are off, `MailView.editing`): `Ctrl+P` in the compose pane now opens the palette and focus returns to the editor on close (`focusAfterPalette`, skipped when a command opened a panel); (3) `RecipientField` swallowed Backspace with any modifiers, so `Ctrl+Shift+Backspace` did nothing from To/Cc/Bcc: now only a plain Backspace pops a chip. **Phase 5:** `Ctrl+V` with files on the clipboard (`text/uri-list` or `x-special/gnome-copied-files`, via `wl-paste`) attaches them (sizes from the folder listing; folders and unreadable paths are named in the status line); anything else pastes as text into the focused field; a `DropArea` takes files dragged from a file manager (the phase-0 question, whether Quickshell delivers the drop, is still open: needs a real drag). External picker command **not built** (user, 2026-11-01: built-in picker only). **Phase 6:** the forgot-attachment check and the sensitive-path tripwire are **not built** (user answer 6: not wanted); duplicate names already show as `scan.pdf (2)`; new: `r` in the attachment list renames a picked file as sent (the file on disk is untouched). Forward-as-.eml dropped (user did not want to pursue). Checked: `tests/attach.test.js` (clipboard type choice, uri-list and gnome bodies, escapes, duplicates, bad escapes), 528 lib tests, qmllint (no errors). **Not checked:** every key above on screen; `wl-paste` with a real Nautilus copy; the rename reaching the sent message; the drop.
-- **Phase 7 (drafts):** blocked, waits for PLAN-compose.md B2 (drafts: save, resume, sync), which is backlog item 5 and not built.
+- **Phase 7 (drafts):** in progress under OL-048 (provider calls, draft worker and attachment spool are in tree; routes, UI and live checks are not done).
 
 ### OL-034 — Messages deleted on another client disappear from OmaLook (done 2026-10-31, commit 5b21dc8, tested live by user)
 - **Symptom:** a message deleted elsewhere stayed in the list for hours until a manual refresh.
@@ -176,24 +187,6 @@ IDs are stable (never reused). Status: `open` | `investigating` | `planned` | `i
 - **Wanted (user, 2026-11-12):** signatures (OL-050), aliases / send-as (OL-051), bounce / redirect (OL-052), reply-to-list (OL-053). Each is its own item with its own commit. External `$EDITOR` for the body is **cancelled by the user**; do not build it.
 - **Status:** OL-023 is separate and not part of this umbrella.
 
-
-### OL-050 — Per-account signatures in Settings → Mail and compose (backlog 7) (built 2026-11-12, needs `./build.sh --live`; not seen on screen)
-- **Built:** `[mail.signatures]` in `settings.toml` (`models::clean_signature`, `settings::read_signatures` / `write_signature`); `GET /settings/signatures` and `POST /settings/signature?account=ID` with `{"text": ...}` (empty text clears). Settings → Mail picks a signed-in account and edits its signature. `qml/compose/signature.js` inserts it: new messages below the cursor, replies and forwards above the quoted text. System mode gets `-- ` as the first line; HTML mode gets the plain lines. `Ctrl+G` / `:signature` turns it off for one message; switching From swaps it. Documented in `docs/KEYS.md`.
-- **Unit-tested:** `cargo test --lib -- --skip test_copy_to_clipboard signature` (4 Rust tests: cleaning, control characters, length caps, empty entries dropped); `node tests/signature.test.js` (block text, reply and new-message insertion, locating the block after typing above it, edited block left alone).
-- **qmllint:** no errors in ComposeView.qml, AppState.qml, MailPage.qml, MailView.qml, AppCommands.qml.
-- **NOT verified:** rendering on screen; that the signature survives a real send (it is ordinary body text, so the MIME path is unchanged); HTML-mode insertion into the rich editor (inherits the formatting of the neighbouring text); the cursor position after insertion in a forward.
-- **Not built:** nothing in the signature list.
-
-
-### OL-051 — Aliases / send-as in the compose From dropdown (backlog 7) (planned 2026-11-12, NOT STARTED)
-- **Findings:** Gmail: `gmail.settings.basic` is already requested (`src/google_auth.rs`), so `users/me/settings/sendAs` can list the send-as addresses. Graph: `proxyAddresses` on `/me` (`User.Read`, believed held; not checked against the granted scopes). Whether Graph accepts an alias as `from` is NOT verified.
-- **Planned interpretation:** send-as identities (not mail aliases for receiving). The From dropdown in `ComposeHeader.qml` lists the primary address and the send-as ones; the chosen one is used as From where the provider accepts it.
-
-### OL-052 — Bounce / redirect (mutt-style resend) (planned 2026-11-12, NOT STARTED)
-- **Findings:** Graph has no bounce action (per the user), so only Gmail can do it. Gmail: `messages.send` with a raw MIME message already exists in `src/providers/gmail.rs` (the outbox path). A bounce would need the original raw source (`format=raw`, not fetched today). What the recipient sees is NOT verified: the original From is likely rewritten to the sending account unless the original headers are kept; this must be tested before it is described to users.
-
-### OL-053 — Reply to list (List-Post / List-Id) (planned 2026-11-12, NOT STARTED)
-- **Findings:** the cache keeps no List-* headers (`grep` of `src` finds none). Detection needs a lazy fetch per opened message: Gmail `format=metadata&metadataHeaders=List-Id,List-Post`; Graph `$select=internetMessageHeaders`. Key and palette entry to be chosen from the free keys in `docs/KEYS.md`.
 
 ### OL-022 — New mail takes the first signed-in account instead of the viewed or last-used one (done in tree 2026-10-30, needs `./build.sh --live`)
 - **Done (2026-10-30):** `AppState.newMailAccountId()`: the account of the folder being viewed when the list is filtered to one account, else `last_mail_account` (written to `view_state.json` when a message is queued for sending), else the first signed-in account; a stored account that is no longer signed in is skipped. Replies/forwards unchanged. Not run in the live UI.
@@ -350,13 +343,13 @@ WebKit helper, undo-send, rebindable keys with which-key and a palette. Mutt's e
 2. [ ] **Threading**: thread view, collapse/expand, thread-wide actions.
 3. [ ] **Archive / delete / move**: queued today but never checked against Graph or Gmail. Verify live, then fix what breaks.
 4. [ ] **Bulk operations**: act on all marked messages, mark by pattern.
-5. [ ] **Drafts** (PLAN-compose.md Phase B2): save, resume, sync to the provider, crash recovery.
+5. [~] **Drafts** (PLAN-compose.md Phase B2): save, resume, sync to the provider, crash recovery. In progress under OL-048 (not finished).
 6. [ ] **Gmail attachments** (send): MIME multipart in `build_mime`; the UI currently refuses them for Gmail.
 7. [ ] **Compose extras** (OL-049): signatures (OL-050), aliases (OL-051), bounce (OL-052), reply-to-list (OL-053). External `$EDITOR` cancelled by the user. Forward-as-attachment is not in this item.
 8. [ ] **Security**: GPG / S/MIME sign and encrypt.
 9. [ ] **Offline**: test and harden use without a network (SQLite cache exists, untested offline).
 10. [ ] **Automation**: per-account / per-folder hooks and macros.
-11. [ ] Unchecked live paths for compose attachments: file of 3 MB or more (upload session), reply and forward with attachments.
+11. [ ] Unchecked live paths for compose attachments (drafts with attachments are part of OL-048): file of 3 MB or more (upload session), reply and forward with attachments.
 12. [ ] Inline images (cid) in HTML compose.
 
 ## Done
