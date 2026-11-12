@@ -38,7 +38,7 @@ Item {
       xhr.send()
     }
   }
-  Component.onCompleted: perfMark("AppState created")
+  Component.onCompleted: { perfMark("AppState created"); root.checkRecovery(); recoverTimer.start() }
   // Calendar view chosen in the calendar dropdown: day | workweek | week | month
   property string calendarMode: "month"
   // People view dropdowns: all | favorites | lists   and   first | last | company | recent
@@ -1415,6 +1415,44 @@ Item {
 
   // Open a saved draft (GET /drafts/get?id=) in the compose pane in its own mode, with its
   // reply/forward link and its attachments; sending it goes through its draft id.
+  // ---- Crash recovery (OL-048): drafts an autosave left unsent (GET /drafts, `recover` true). Read once per
+  // start, retried while the backend is not up yet; offered one at a time by AppShell while no compose is open.
+  property var recoverQueue: []
+  property bool recoveryDone: false
+  property int _recoverTries: 0
+  Timer { id: recoverTimer; interval: 1500; repeat: true; onTriggered: root.checkRecovery() }
+  function checkRecovery() {
+    if (recoveryDone || _recoverTries >= 8) { recoverTimer.stop(); return }
+    _recoverTries += 1
+    request("GET", "/drafts", function(xhr) {
+      var r = null
+      try { r = JSON.parse(xhr.responseText) } catch (e) {}
+      if (xhr.status !== 200 || !r || !r.ok) return
+      recoveryDone = true
+      recoverTimer.stop()
+      recoverQueue = (r.drafts || []).filter(function(d) { return d.recover === true })
+    })
+  }
+  // Text of the question for the first queued draft.
+  function recoverText() {
+    var d = recoverQueue[0]
+    if (!d) return ""
+    var what = d.subject ? "\u201c" + d.subject + "\u201d" : "a message with no subject"
+    return "Recover unsaved draft " + what + "?"
+  }
+  // choice: 0 Resume, 1 Discard, -1 dismissed (kept for the next start).
+  function resolveRecovery(choice) {
+    var d = recoverQueue[0]
+    if (!d) return
+    recoverQueue = recoverQueue.slice(1)
+    if (choice === 0) resumeDraft(String(d.local_id))
+    else if (choice === 1) request("POST", "/drafts/discard?id=" + encodeURIComponent(String(d.local_id)), function(xhr) {
+      var r = null
+      try { r = JSON.parse(xhr.responseText) } catch (e) {}
+      if (!(xhr.status === 200 && r && r.ok)) notify("Could not discard the draft: " + (r && r.error ? r.error : "the backend did not answer"))
+    })
+  }
+
   function resumeDraft(localId) {
     request("GET", "/drafts/get?id=" + encodeURIComponent(localId), function(xhr) {
       var r = null

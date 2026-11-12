@@ -8,6 +8,7 @@ import "chrome"
 import "auth"
 import "settings"
 import "views"
+import "compose"
 import "state"
 import "common"
 import "keys"
@@ -77,6 +78,7 @@ FocusScope {
     interceptor: function(e) {
       // Link hint labels (f in the reading pane) take every key until a label is typed or Esc.
       var ci = contentLoader.item
+      if (recoverDialog.opened) { recoverDialog.handleKey(e); return true }
       if (ci && ci.hintMode === true && !appState.pendingConfirm) return ci.hintInput(e.key, e.text) === true
       if (!appState.pendingConfirm) return false
       confirmDialog.handleKey(e)
@@ -224,6 +226,18 @@ FocusScope {
     onOpenedChanged: if (opened) selectedIndex = 0
     onCanceled: appState.pendingConfirm = null
     onConfirmed: { var c = appState.pendingConfirm; appState.pendingConfirm = null; if (c) c.run() }
+  }
+
+  // Crash recovery (OL-048): offered once per start, Resume is the default; Esc keeps the draft for next start.
+  ChoiceDialog {
+    id: recoverDialog
+    anchors.fill: parent
+    z: 1100
+    opened: appState.recoverQueue.length > 0 && !appState.composing
+    message: appState.recoverText()
+    choices: [ { text: "Resume" }, { text: "Discard", destructive: true } ]
+    escapeIndex: -1
+    onChosen: function(i) { appState.resolveRecovery(i) }
   }
 
   Connections {
