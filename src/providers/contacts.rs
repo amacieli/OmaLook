@@ -101,6 +101,11 @@ pub trait ContactsProvider: Send + Sync {
         Err(OmarchyError::HttpError("set_photo not supported".into()))
     }
 
+    /// People in the organisation's directory matching what was typed (Graph: `/me/people` and `/users`).
+    async fn directory_search(&self, _query: &str) -> Result<Vec<crate::models::DirectoryEntry>> {
+        Err(OmarchyError::HttpError("directory search not supported".into()))
+    }
+
     /// Read the MAPI single-value properties named by `ids` (`"String 0x3A23"`) of a contact.
     async fn get_extended(&self, _id: &str, _ids: &[&str]) -> Result<Vec<(String, String)>> {
         Err(OmarchyError::HttpError("get_extended not supported".into()))
@@ -395,6 +400,27 @@ impl ContactsProvider for GraphContactsProvider {
         Ok(())
     }
 
+    async fn directory_search(&self, query: &str) -> Result<Vec<crate::models::DirectoryEntry>> {
+        let q = query.trim();
+        if q.chars().count() < 2 {
+            return Ok(vec![]);
+        }
+        let token = self.get_token().await?;
+        let client = super::http_client();
+        let enc = |t: &str| -> String { t.bytes().map(|b| if b.is_ascii_alphanumeric() || b"-_.~".contains(&b) { (b as char).to_string() } else { format!("%{:02X}", b) }).collect() };
+        // people the user works with first (ranked by Graph), then the directory
+        let people_url = format!("{}/me/people?$search={}&$top=15", GRAPH, enc(&format!("\"{}\"", q.replace('"', ""))));
+        let lit = q.replace('\'', "''");
+        let filter = format!("startswith(displayName,'{lit}') or startswith(mail,'{lit}') or startswith(surname,'{lit}') or startswith(givenName,'{lit}')");
+        let users_url = format!("{}/users?$filter={}&$top=15&$select=displayName,mail,jobTitle,companyName,department", GRAPH, enc(&filter));
+        let people = Self::get_page(&client, &token, &people_url).await.unwrap_or(serde_json::Value::Null);
+        let users = Self::get_page(&client, &token, &users_url).await;
+        if people.is_null() && users.is_err() {
+            return Err(users.unwrap_err());
+        }
+        Ok(parse_directory(&people, &users.unwrap_or(serde_json::Value::Null)))
+    }
+
     async fn get_extended(&self, id: &str, ids: &[&str]) -> Result<Vec<(String, String)>> {
         if ids.is_empty() {
             return Ok(vec![]);
@@ -409,6 +435,24 @@ impl ContactsProvider for GraphContactsProvider {
             .map(|a| a.iter().filter_map(|p| Some((p["id"].as_str()?.to_string(), p["value"].as_str()?.to_string()))).collect())
             .unwrap_or_default())
     }
+}
+
+/// People and directory answers merged: one entry per address, people first, no one without an address.
+pub fn parse_directory(people: &serde_json::Value, users: &serde_json::Value) -> Vec<crate::models::DirectoryEntry> {
+    let mut out: Vec<crate::models::DirectoryEntry> = vec![];
+    let mut push = |name: &str, email: &str, title: &str, company: &str| {
+        let e = email.trim().to_lowercase();
+        if e.is_empty() || out.iter().any(|x| x.email.to_lowercase() == e) { return; }
+        out.push(crate::models::DirectoryEntry { name: name.trim().to_string(), email: email.trim().to_string(), title: title.trim().to_string(), company: company.trim().to_string() });
+    };
+    for p in people["value"].as_array().into_iter().flatten() {
+        let email = p["scoredEmailAddresses"].as_array().and_then(|a| a.first()).and_then(|e| e["address"].as_str()).unwrap_or("");
+        push(p["displayName"].as_str().unwrap_or(""), email, p["jobTitle"].as_str().unwrap_or(""), p["companyName"].as_str().unwrap_or(""));
+    }
+    for u in users["value"].as_array().into_iter().flatten() {
+        push(u["displayName"].as_str().unwrap_or(""), u["mail"].as_str().unwrap_or(""), u["jobTitle"].as_str().unwrap_or(""), u["companyName"].as_str().unwrap_or(""));
+    }
+    out
 }
 
 /// What a delta page holds: contacts to store, ids to drop (`"@removed"`).
@@ -655,6 +699,22 @@ mod tests {
         ]}));
         assert_eq!(page.upserts.len(), 1);
         assert_eq!(page.removed, vec!["b"]);
+    }
+
+    #[test]
+    fn directory_answers_merge_people_first_without_duplicates_or_addressless_entries() {
+        let people = serde_json::json!({ "value": [
+            { "displayName": "Ann Lee", "jobTitle": "CFO", "scoredEmailAddresses": [{ "address": "ann@acme.test" }] },
+            { "displayName": "No Mail", "scoredEmailAddresses": [] } ] });
+        let users = serde_json::json!({ "value": [
+            { "displayName": "Ann Lee (dir)", "mail": "ANN@acme.test", "jobTitle": "x" },
+            { "displayName": "Bo Ray", "mail": "bo@acme.test", "companyName": "Acme" },
+            { "displayName": "Room 4", "mail": null } ] });
+        let d = parse_directory(&people, &users);
+        assert_eq!(d.iter().map(|e| e.email.as_str()).collect::<Vec<_>>(), vec!["ann@acme.test", "bo@acme.test"]);
+        assert_eq!((d[0].name.as_str(), d[0].title.as_str()), ("Ann Lee", "CFO"), "the people answer wins");
+        assert_eq!(d[1].company, "Acme");
+        assert!(parse_directory(&serde_json::Value::Null, &serde_json::Value::Null).is_empty());
     }
 
     #[test]

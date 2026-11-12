@@ -354,6 +354,16 @@ pub fn contacts_search(ctx: &Ctx, args: &Value) -> Result<Value, String> {
     Ok(contacts_page(rows, args))
 }
 
+/// One contact in full (the cached provider object), if it belongs to an account the agent may see.
+pub fn contacts_get(ctx: &Ctx, args: &Value) -> Result<Value, String> {
+    let id = s(args, "id").ok_or("missing id")?;
+    let policy = ctx.policy();
+    let accts = { let conn = open_ro(ctx)?; scope(&conn, &policy, None)? };
+    let rec = open_db(ctx)?.get_contact_record(id).map_err(|e| e.to_string())?.ok_or("no such contact")?;
+    if !accts.contains(&rec.account_id) { return Err("no such contact".into()); }
+    Ok(wrap("contacts", json!({ "id": rec.id, "account_id": rec.account_id, "folder_id": rec.folder_id, "is_favorite": rec.is_favorite, "contact": rec.raw })))
+}
+
 // ---- SMS --------------------------------------------------------------------------------
 
 fn sms_title(addresses: &[String], names: &[String]) -> String {
@@ -609,6 +619,17 @@ mod tests {
         assert!(calendar_list_events(&c, &json!({ "from": "2026-10-22", "to": "2026-10-19" })).is_err());
         assert_eq!(calendar_get_event(&c, &json!({ "id": "e1" })).unwrap()["event"]["body"], "Daily sync");
         let _ = fs::remove_dir_all(d);
+    }
+
+    #[test]
+    fn contacts_get_returns_one_contact_only_from_an_allowed_account() {
+        let (c, _d) = fixture("contacts", SETTINGS);
+        let ok = contacts_get(&c, &json!({ "id": "k1" })).unwrap();
+        assert_eq!(ok["id"], "k1");
+        assert_eq!(ok["account_id"], "graph-1");
+        assert_eq!(contacts_get(&c, &json!({ "id": "k2" })).unwrap_err(), "no such contact", "another account's contact is not revealed");
+        assert!(contacts_get(&c, &json!({ "id": "nope" })).is_err());
+        assert!(contacts_get(&c, &json!({})).is_err());
     }
 
     #[test]

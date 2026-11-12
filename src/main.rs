@@ -1289,9 +1289,35 @@ fn contacts_route(config_dir: &PathBuf, stream: &mut std::net::TcpStream, initia
     let db_path = config_dir.join("messages.db");
     let open = || Database::open(db_path.to_str().unwrap_or("messages.db"));
     let err = |m: String| serde_json::json!({ "ok": false, "error": m }).to_string();
+    if first_line.contains("GET /contacts/directory") {
+        let (account, q) = (query_param(first_line, "account").unwrap_or_default(), query_param(first_line, "q").unwrap_or_default());
+        if account.is_empty() { return Some(err("no account selected".into())); }
+        if !SCHEDULER.get().map(|s| s.is_running(&account)).unwrap_or(false) { return Some(err("that account is not signed in".into())); }
+        let provider = omalook::scheduler::contacts_provider_for(&account);
+        let Ok(rt) = tokio::runtime::Builder::new_current_thread().enable_all().build() else { return Some(err("could not start".into())) };
+        return Some(match rt.block_on(provider.directory_search(&q)) {
+            Ok(list) => serde_json::json!({ "ok": true, "people": list }).to_string(),
+            Err(e) => err(omalook::contacts_outbox::short_error(&e)),
+        });
+    }
     if first_line.contains("GET /contacts/get") {
         let id = query_param(first_line, "id").unwrap_or_default();
+        let live = query_param(first_line, "live").as_deref() == Some("1");
         return Some(match open() {
+            Ok(db) if live => {
+                // the editor wants the extra MAPI fields too: one request to the server, merged into the answer
+                let mut d = omalook::contacts_api::detail(&db, &id);
+                let account = d["account_id"].as_str().unwrap_or("").to_string();
+                if d["ok"] == true && !account.is_empty() && !id.starts_with("local-") && SCHEDULER.get().map(|s| s.is_running(&account)).unwrap_or(false) {
+                    let provider = omalook::scheduler::contacts_provider_for(&account);
+                    if let Ok(rt) = tokio::runtime::Builder::new_current_thread().enable_all().build() {
+                        if let Ok(list) = rt.block_on(provider.get_extended(&id, &omalook::contacts_write::ext_ids())) {
+                            d["contact"]["singleValueExtendedProperties"] = serde_json::Value::Array(list.into_iter().map(|(i, v)| serde_json::json!({ "id": i, "value": v })).collect());
+                        }
+                    }
+                }
+                d.to_string()
+            }
             Ok(db) => omalook::contacts_api::detail(&db, &id).to_string(),
             Err(e) => err(format!("database: {}", e)),
         });

@@ -65,6 +65,7 @@ pub static TOOLS: &[ToolSpec] = &[
     // contacts
     t("contacts_list", Contacts, R, "List contacts (view: all or favorites; sort: first, last, company, recent).", true),
     t("contacts_search", Contacts, R, "Search contacts by name, company, job title, email or phone.", true),
+    t("contacts_get", Contacts, R, "Every field of one contact (id from contacts_list or contacts_search): names, up to three emails, phones, addresses, company, birthday, notes, categories.", true),
     t("contacts_set_favorite", Contacts, W1, "Mark or unmark a contact as favorite.", false),
     // sms
     t("sms_list_threads", Sms, R, "List SMS threads, optionally filtered by a query.", true),
@@ -117,6 +118,7 @@ pub fn input_schema(name: &str) -> Value {
             "query": { "type": "string" }, "account": account, "limit": limit, "cursor": cursor,
             "view": { "type": "string", "enum": ["all", "favorites"] },
         }), &["query"]),
+        "contacts_get" => obj(json!({ "id": { "type": "string", "description": "Contact id." } }), &["id"]),
         "sms_list_threads" => obj(json!({
             "query": { "type": "string", "description": "Match contact name, phone number or message text." },
             "device": { "type": "string", "description": "Phone id (default: the paired phone)." }, "limit": limit, "cursor": cursor,
@@ -148,6 +150,7 @@ pub fn call(ctx: &Ctx, name: &str, args: &Value) -> Result<Value, String> {
         "calendar_get_event" => r::calendar_get_event(ctx, args),
         "contacts_list" => r::contacts_list(ctx, args),
         "contacts_search" => r::contacts_search(ctx, args),
+        "contacts_get" => r::contacts_get(ctx, args),
         "sms_list_threads" => r::sms_list_threads(ctx, args),
         "sms_get_messages" => r::sms_get_messages(ctx, args),
         "sms_list_contacts" => r::sms_list_contacts(ctx, args),

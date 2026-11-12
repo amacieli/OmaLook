@@ -20,6 +20,51 @@ const LISTS: &[&str] = &["imAddresses", "children", "categories", "businessPhone
 const ADDRESSES: &[&str] = &["homeAddress", "businessAddress", "otherAddress"];
 const ADDRESS_PARTS: &[&str] = &["street", "city", "state", "countryOrRegion", "postalCode"];
 
+/// MAPI properties Graph lets a contact carry that have no field of their own; each one was checked to
+/// round-trip (plan section 2.1). name, Graph property id, kind.
+pub const EXT: &[(&str, &str, &str)] = &[
+    ("fax", "String 0x3A23", "text"), ("pager", "String 0x3A21", "text"), ("car", "String 0x3A1E", "text"),
+    ("companyMain", "String 0x3A57", "text"), ("assistantPhone", "String 0x3A2E", "text"), ("homePage", "String 0x3A50", "text"),
+    ("anniversary", "SystemTime 0x3A41", "date"), ("gender", "Integer 0x3A4D", "gender"),
+];
+
+/// The ids to ask Graph for when reading these.
+pub fn ext_ids() -> Vec<&'static str> { EXT.iter().map(|e| e.1).collect() }
+
+fn clean_extended(v: &Value) -> Result<Value, String> {
+    let o = match v { Value::Null => return Ok(json!({})), Value::Object(o) => o, _ => return Err("extended must be an object".into()) };
+    let mut out = Map::new();
+    for (k, x) in o {
+        let Some(def) = EXT.iter().find(|e| e.0 == k) else { return Err(format!("unknown extended field {k}")) };
+        let t = x.as_str().unwrap_or("").trim().to_string();
+        let val = match def.2 {
+            "date" => {
+                if t.is_empty() { continue; } // a date property cannot be cleared; blank leaves it alone
+                let d: String = t.chars().take(10).collect();
+                chrono::NaiveDate::parse_from_str(&d, "%Y-%m-%d").map_err(|_| format!("{k}: use YYYY-MM-DD"))?;
+                format!("{d}T11:59:00Z")
+            }
+            "gender" => match t.to_lowercase().as_str() { "" | "unspecified" => "0".to_string(), "female" => "1".to_string(), "male" => "2".to_string(), _ => return Err("gender: female, male or unspecified".into()) },
+            _ => { if t.len() > 500 { return Err(format!("{k} is too long")); } t }
+        };
+        out.insert(k.clone(), json!(val));
+    }
+    Ok(Value::Object(out))
+}
+
+/// `extended` (name -> value) becomes Graph's `singleValueExtendedProperties`, merged over what the contact already has.
+fn extended_to_graph(fields: &mut Map<String, Value>, base: &Value) {
+    let Some(Value::Object(ext)) = fields.remove("extended") else { return };
+    if ext.is_empty() { return; }
+    let mut list: Vec<Value> = base["singleValueExtendedProperties"].as_array().cloned().unwrap_or_default();
+    for (name, val) in ext {
+        let Some(def) = EXT.iter().find(|e| e.0 == name) else { continue };
+        list.retain(|p| !p["id"].as_str().map(|i| i.eq_ignore_ascii_case(def.1)).unwrap_or(false));
+        list.push(json!({ "id": def.1, "value": val }));
+    }
+    fields.insert("singleValueExtendedProperties".into(), Value::Array(list));
+}
+
 fn empty_of(key: &str) -> Value {
     if key == "birthday" { Value::Null }
     else if key == "emailAddresses" || LISTS.contains(&key) { json!([]) }
@@ -132,6 +177,7 @@ pub fn clean_fields(v: &Value) -> Result<Map<String, Value>, String> {
             else if key == "businessPhones" { clean_list(key, x, MAX_BUSINESS_PHONES)? }
             else if key == "homePhones" { clean_list(key, x, MAX_HOME_PHONES)? }
             else if LISTS.contains(&key) { clean_list(key, x, 500)? }
+            else if key == "extended" { clean_extended(x)? }
             else if ADDRESSES.contains(&key) { clean_address(key, x)? }
             else if TEXT.contains(&key) { clean_text(key, x)? }
             else { return Err(format!("unknown field {key}")) };
@@ -177,9 +223,10 @@ fn new_id(prefix: &str, now: i64, n: u32) -> String { format!("{prefix}-{now:x}-
 /// (the account's default folder when absent).
 pub fn save(db: &Database, req: &Value, seq: u32) -> Value {
     let err = |m: String| json!({ "ok": false, "error": m });
-    let fields = match clean_fields(&req["fields"]) { Ok(f) => f, Err(e) => return err(e) };
+    let mut fields = match clean_fields(&req["fields"]) { Ok(f) => f, Err(e) => return err(e) };
     let now = Database::now_ms();
     let id = req["id"].as_str().unwrap_or("");
+    if !fields.contains_key("extended") || id.is_empty() { extended_to_graph(&mut fields, &Value::Null); }
 
     if id.is_empty() {
         // ---- create
@@ -201,6 +248,7 @@ pub fn save(db: &Database, req: &Value, seq: u32) -> Value {
     // ---- update
     let rec = match db.get_contact_record(id) { Ok(Some(r)) => r, Ok(None) => return err("no such contact".into()), Err(e) => return err(format!("database: {e}")) };
     if rec.sync_state == "deleted" { return err("that contact was deleted".into()); }
+    extended_to_graph(&mut fields, &rec.raw);
     let changes = only_changes(&rec.raw, &fields);
     if changes.is_empty() { return json!({ "ok": true, "id": id, "unchanged": true }); }
     let folder = rec.folder_id.clone().unwrap_or_default();
@@ -409,6 +457,23 @@ mod tests {
         assert!(clean_fields(&json!({"givenName": 5})).is_err());
         assert!(clean_fields(&json!("x")).is_err());
         assert!(clean_fields(&json!({"homeAddress": {"planet": "mars"}})).is_err());
+    }
+
+    #[test]
+    fn extended_fields_are_checked_and_become_graph_properties_merged_over_the_old_ones() {
+        assert!(clean_fields(&json!({"extended": {"bogus": "x"}})).is_err());
+        assert!(clean_fields(&json!({"extended": {"gender": "robot"}})).is_err());
+        assert!(clean_fields(&json!({"extended": {"anniversary": "soon"}})).is_err());
+        let f = clean_fields(&json!({"extended": {"fax": " 123 ", "gender": "Female", "anniversary": "2001-02-03"}})).unwrap();
+        assert_eq!(f["extended"], json!({"fax": "123", "gender": "1", "anniversary": "2001-02-03T11:59:00Z"}));
+        let base = json!({"singleValueExtendedProperties": [{"id": "string 0x3a23", "value": "old"}, {"id": "string 0x3a21", "value": "pg"}]});
+        let mut m = clean_fields(&json!({"extended": {"fax": "new"}})).unwrap();
+        extended_to_graph(&mut m, &base);
+        let list = m["singleValueExtendedProperties"].as_array().unwrap();
+        assert_eq!(list.len(), 2, "{list:?}");
+        assert!(list.iter().any(|p| p["id"] == "String 0x3A23" && p["value"] == "new"));
+        assert!(list.iter().any(|p| p["id"] == "string 0x3a21" && p["value"] == "pg"), "the other property is kept");
+        assert!(clean_fields(&json!({"extended": {"anniversary": ""}})).unwrap()["extended"].as_object().unwrap().is_empty(), "a date cannot be cleared; blank is ignored");
     }
 
     #[test]

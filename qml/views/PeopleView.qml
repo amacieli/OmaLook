@@ -194,13 +194,21 @@ Item {
     }
     function editContact() {
         if (!selected) return "No contact selected"
-        ensureDetail(function(ok) {
-            if (!ok) { root.notice("Could not read that contact"); return }
-            if (detail.sync_state === "deleted") { root.notice("That contact is being deleted"); return }
-            root.editorRaw = detail.contact
+        var id = selected.id
+        // live=1: the backend also reads the extra properties (fax, pager, anniversary, ...) from the server
+        var xhr = new XMLHttpRequest()
+        xhr.onreadystatechange = function() {
+            if (xhr.readyState !== XMLHttpRequest.DONE) return
+            var d = null
+            try { d = JSON.parse(xhr.responseText) } catch (e) {}
+            if (!d || d.ok !== true) { root.notice("Could not read that contact"); return }
+            if (d.sync_state === "deleted") { root.notice("That contact is being deleted"); return }
+            root.editorRaw = d.contact
             root.editorStatus = ""
             root.editorOpen = true
-        })
+        }
+        xhr.open("GET", backendUrl + "/contacts/get?id=" + encodeURIComponent(id) + "&live=1")
+        xhr.send()
         return ""
     }
     function saveFromEditor(body) {
@@ -343,6 +351,37 @@ Item {
             root.notice("Imported " + r.created + (r.skipped_existing ? ", " + r.skipped_existing + " already there" : "") + (r.failed ? ", " + r.failed + " refused (" + r.first_error + ")" : "") + (r.dropped_fields ? ", " + r.dropped_fields + " fields did not fit" : ""))
         })
     }
+    // ── directory (phase 6): people in the organisation who are not in your contacts yet ──
+    property var dirResults: []
+    property string dirAccount: ""
+    function _directoryAccount() {
+        if (selected && _writableAccount(selected.account_id)) return selected.account_id
+        var w = appAccounts.filter(function(a) { return a.signed_in && a.provider !== "gmail" })
+        return w.length > 0 ? w[0].id : ""
+    }
+    function directorySearch(q, done) {
+        var acct = _directoryAccount()
+        if (acct === "") { notice("No account can search a directory"); return }
+        var xhr = new XMLHttpRequest()
+        xhr.onreadystatechange = function() {
+            if (xhr.readyState !== XMLHttpRequest.DONE) return
+            var r = {}
+            try { r = JSON.parse(xhr.responseText) } catch (e) {}
+            if (r.ok !== true) { root.notice(r.error || "directory search failed"); return }
+            root.dirResults = r.people || []
+            root.dirAccount = acct
+            done(root.dirResults.length)
+        }
+        xhr.open("GET", backendUrl + "/contacts/directory?account=" + encodeURIComponent(acct) + "&q=" + encodeURIComponent(q))
+        xhr.send()
+    }
+    function addDirectoryPerson(p) {
+        _postJson("/contacts/quick", { account_id: dirAccount, name: p.name, address: p.email }, function(r) {
+            root.notice(r.ok === true ? "Added " + (p.name || p.email) + " to your contacts" : (r.error || "not added"))
+            if (r.ok === true) root.load()
+        })
+    }
+
     property string photoPath: ""
     property string _photoId: ""
     function loadPhoto(retry) {

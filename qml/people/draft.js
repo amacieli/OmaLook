@@ -50,6 +50,19 @@ var DEFS = [
   { id: "personalNotes", label: "Notes",  kind: "notes", show: true, key: "personalNotes" }
 ]
 
+// MAPI properties with no field of their own (each checked to round-trip). The editor reads them from
+// raw.singleValueExtendedProperties, which the backend fills when the editor opens (GET /contacts/get?live=1).
+var EXT_IDS = { fax: "string 0x3a23", pager: "string 0x3a21", car: "string 0x3a1e", companyMain: "string 0x3a57",
+                assistantPhone: "string 0x3a2e", homePage: "string 0x3a50", anniversary: "systemtime 0x3a41", gender: "integer 0x3a4d" }
+DEFS.push({ id: "x_fax", label: "Fax", kind: "ext", ext: "fax" })
+DEFS.push({ id: "x_pager", label: "Pager", kind: "ext", ext: "pager" })
+DEFS.push({ id: "x_car", label: "Car phone", kind: "ext", ext: "car" })
+DEFS.push({ id: "x_assistantPhone", label: "Assistant phone", kind: "ext", ext: "assistantPhone" })
+DEFS.push({ id: "x_companyMain", label: "Company main phone", kind: "ext", ext: "companyMain" })
+DEFS.push({ id: "x_homePage", label: "Personal web page", kind: "ext", ext: "homePage" })
+DEFS.push({ id: "x_anniversary", label: "Anniversary", kind: "ext", ext: "anniversary", hint: "2010-06-12 (a date cannot be cleared once set)" })
+DEFS.push({ id: "x_gender", label: "Gender", kind: "ext", ext: "gender", hint: "female, male or unspecified" })
+
 var ADDRESS_PARTS = [["street", "Street"], ["city", "City"], ["state", "State / region"], ["postalCode", "Postal code"], ["countryOrRegion", "Country"]]
 ;[["homeAddress", "Home"], ["businessAddress", "Business"], ["otherAddress", "Other"]].forEach(function(a) {
   ADDRESS_PARTS.forEach(function(p, i) {
@@ -78,6 +91,13 @@ function valueOf(raw, d) {
     case "phone": return s((raw[d.list] || [])[d.slot])
     case "list": return (raw[d.key] || []).map(s).join(", ")
     case "address": return s((raw[d.addr] || {})[d.part])
+    case "ext": {
+      var want = EXT_IDS[d.ext], found = ""
+      ;(raw.singleValueExtendedProperties || []).forEach(function(p) { if (s(p.id).toLowerCase() === want) found = s(p.value) })
+      if (d.ext === "gender") return found === "1" ? "female" : (found === "2" ? "male" : "")
+      if (d.ext === "anniversary") return found.slice(0, 10)
+      return found
+    }
     case "date": {
       var m = /^(\d{4})-(\d{2})-(\d{2})/.exec(s(raw.birthday))
       return m ? (m[1] === "1604" || m[1] === "0001" ? m[2] + "-" + m[3] : m[1] + "-" + m[2] + "-" + m[3]) : ""
@@ -145,6 +165,8 @@ function validate(values) {
     if (a !== "" && (!/^[^\s@]+@[^\s@]+$/.test(a))) return "'" + a + "' is not an email address"
     if (a === "" && s(values["email" + i + "name"]).trim() !== "") return "Email " + (i + 1) + " has a name but no address"
   }
+  if (s(values.x_anniversary).trim() !== "" && parseBirthday(values.x_anniversary) === null) return "Anniversary: use 2010-06-12"
+  if (["", "female", "male", "unspecified"].indexOf(s(values.x_gender).trim().toLowerCase()) < 0) return "Gender: female, male or unspecified"
   if (parseBirthday(values.birthday) === null) return "Birthday: use 2000-05-17, or 05-17 without a year"
   return ""
 }
@@ -164,6 +186,9 @@ function buildFields(values, initial) {
     else if (d.kind === "list") f[d.key] = splitList(values[d.id])
     else if (d.kind === "date") f.birthday = parseBirthday(values[d.id]) || null
   })
+  var ext = {}, anyExt = false
+  DEFS.forEach(function(d) { if (d.kind === "ext" && changed[d.id]) { ext[d.ext] = d.ext === "gender" ? s(values[d.id]).trim().toLowerCase() : s(values[d.id]).trim(); anyExt = true } })
+  if (anyExt) f.extended = ext
   if (touched(function(d) { return d.kind === "email" || d.kind === "emailname" })) {
     var emails = []
     for (var i = 0; i < 3; i++) {

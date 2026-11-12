@@ -236,3 +236,9 @@ The calendar has a keyboard cursor (the highlighted day; in the day and week gri
 
 With more than one account, event bars take the account's colour and the header shows the filter. The join link is the provider's own link
 when there is one, else a known meeting host found in the location or body, else the first `https` URL in the location.
+
+## People (contacts)
+
+Cursor `j k gg G`, `/` filter, `Enter` detail, `Space`/`v` mark. `c`/`n` new, `e` edit, `x` delete (`Ctrl-Z` reverts; saves are instant), `t` tags, `Ctrl-Shift-V` move to a folder, `A` cycle account, `M` merge marked duplicates (the first is kept), `E` export (vCard or CSV), `w` mail, `S` text, `O` open, `y` copy.
+Editor: `Tab`/`Shift-Tab` field, `Ctrl-K` add a field (fax, pager, anniversary, gender, ...), `Ctrl-Enter` save, `Esc` close, `Ctrl-T` account/folder, `Ctrl-D` drop empty extra fields.
+Palette: `:import PATH` (.vcf/.csv), `:export`, `:photo PATH.jpg`, `:dir NAME` then pick (organisation directory), `:addcontact` (in mail: add the sender). View "Possible duplicates" groups likely repeats.

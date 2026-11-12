@@ -43,6 +43,15 @@ function birthdayText(iso) {
   return m[1] === "1604" || m[1] === "0001" ? day + " " + mon : day + " " + mon + " " + m[1]
 }
 
+var EXT_IDS = { fax: "string 0x3a23", pager: "string 0x3a21", car: "string 0x3a1e", companyMain: "string 0x3a57",
+                assistantPhone: "string 0x3a2e", homePage: "string 0x3a50", anniversary: "systemtime 0x3a41", gender: "integer 0x3a4d" }
+// The MAPI properties the backend filled in (only after the editor has opened the contact).
+function ext(c, name) {
+  var want = EXT_IDS[name], found = ""
+  arr(c && c.singleValueExtendedProperties).forEach(function(p) { if (s(p.id).toLowerCase() === want) found = s(p.value) })
+  return found
+}
+
 function _row(label, value, kind, extra) {
   var r = { label: label, value: value, kind: kind || "text" }
   if (extra) for (var k in extra) r[k] = extra[k]
@@ -68,6 +77,9 @@ function sections(c) {
   arr(c.businessPhones).forEach(function(p) { phones.push(_row("Business", s(p), "phone", { number: s(p) })) })
   arr(c.homePhones).forEach(function(p) { phones.push(_row("Home", s(p), "phone", { number: s(p) })) })
   if (s(c.mobilePhone) !== "") phones.push(_row("Mobile", s(c.mobilePhone), "phone", { number: s(c.mobilePhone) }))
+  ;[["Fax", "fax"], ["Pager", "pager"], ["Car", "car"], ["Assistant", "assistantPhone"], ["Company main", "companyMain"]].forEach(function(p) {
+    var v = ext(c, p[1]); if (v !== "") phones.push(_row(p[0], v, "phone", { number: v }))
+  })
   add("Phone", phones)
   add("Chat", arr(c.imAddresses).map(function(x) { return _row("IM", s(x)) }))
   add("Address", [["Home", c.homeAddress], ["Business", c.businessAddress], ["Other", c.otherAddress]].map(function(p) {
@@ -80,10 +92,12 @@ function sections(c) {
     _row("Assistant", s(c.assistantName)), _row("Phonetic company", s(c.yomiCompanyName))
   ])
   add("Personal", [
-    _row("Birthday", birthdayText(c.birthday)), _row("Spouse", s(c.spouseName)),
+    _row("Birthday", birthdayText(c.birthday)), _row("Anniversary", birthdayText(ext(c, "anniversary"))),
+    _row("Gender", ext(c, "gender") === "1" ? "female" : (ext(c, "gender") === "2" ? "male" : "")), _row("Spouse", s(c.spouseName)),
     _row("Children", arr(c.children).map(s).filter(Boolean).join(", "))
   ])
-  add("Web", [_row("Home page", s(c.businessHomePage), "url", { url: s(c.businessHomePage) })])
+  add("Web", [_row("Home page", s(c.businessHomePage), "url", { url: s(c.businessHomePage) }),
+              _row("Personal page", ext(c, "homePage"), "url", { url: ext(c, "homePage") })])
   add("Categories", [_row("Categories", arr(c.categories).map(s).filter(Boolean).join(", "))])
   add("Notes", [_row("Notes", s(c.personalNotes), "notes")])
   return out

@@ -310,6 +310,15 @@ pub struct ContactFolder {
     pub parent_folder_id: Option<String>,
 }
 
+/// Someone found in the organisation's directory (not in the user's own contacts yet).
+#[derive(Debug, Serialize, Clone, PartialEq, Eq, Default)]
+pub struct DirectoryEntry {
+    pub name: String,
+    pub email: String,
+    pub title: String,
+    pub company: String,
+}
+
 /// Contact plus the view-only fields the People view needs
 #[derive(Debug, Serialize, Clone)]
 pub struct ContactRow {

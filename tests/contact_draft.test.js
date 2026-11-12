@@ -39,4 +39,10 @@ const cr=D.buildFields({givenName:'Bo',email0:'b@x.org',mobilePhone:'5'},{}); eq
 eq(D.buildFields(Object.assign({},v,{mobilePhone:''}),v),{mobilePhone:''},'clear text');
 eq(D.buildFields(Object.assign({},v,{email0:'',email0name:''}),v).emailAddresses,[{address:'h@x.org'}],'remove first email');
 eq(D.changeCount(w,v),6,'count');
+// extended (MAPI) fields
+const rx={singleValueExtendedProperties:[{id:'String 0x3a23',value:'555'},{id:'Integer 0x3a4d',value:'1'},{id:'SystemTime 0x3a41',value:'2001-02-03T11:59:00Z'}]};
+const vx=D.valuesOf(rx); eq([vx.x_fax,vx.x_gender,vx.x_anniversary,vx.x_pager],['555','female','2001-02-03',''],'ext values');
+eq(D.shownIds(vx).includes('x_fax'),true,'filled ext shown'); eq(D.shownIds(vx).includes('x_pager'),false,'empty ext hidden');
+const fx=D.buildFields(Object.assign({},vx,{x_fax:'777',x_gender:'Male'}),vx); eq(fx,{extended:{fax:'777',gender:'male'}},'ext changes');
+eq(D.validate({x_gender:'robot'}).startsWith('Gender'),true,'gender'); eq(D.validate({x_anniversary:'x'}).startsWith('Anniversary'),true,'anniversary');
 console.log('ok draft');

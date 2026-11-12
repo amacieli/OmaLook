@@ -308,6 +308,19 @@ Item {
     return [{ id: "pdf.go", title: "Delete folder \u201c" + f.name + "\u201d", keys: [], run: function() { content.folderCall("delete", { account_id: f.account_id, id: f.id }, "Folder deleted") } }]
   }
 
+  // ---- People: directory (phase 6) -----------------------------------------
+  function pickDirSearch(q) {
+    var t = q.trim()
+    if (t.length < 2) return [{ id: "pdir.hint", title: "type at least two letters of a name or address, then Enter", keys: [], run: function() {} }]
+    return [{ id: "pdir.go", title: "Search the organisation's directory for \u201c" + t + "\u201d", keys: [], run: function() {
+      content.directorySearch(t, function(n) { if (n === 0) say("No one found for \u201c" + t + "\u201d"); else root.paletteRequested("dirpick ") }) } }]
+  }
+  function pickDirPeople(q) {
+    var query = q.trim().toLowerCase()
+    var out = (content ? content.dirResults : []).filter(function(p) { return query === "" || (p.name + " " + p.email).toLowerCase().indexOf(query) >= 0 })
+      .map(function(p, i) { return { id: "pdirp." + i, title: (p.name || p.email) + "   " + p.email + (p.title ? "   \u00b7 " + p.title : ""), keys: [], run: function() { content.addDirectoryPerson(p) } } })
+    return out.length ? out : [{ id: "pdirp.none", title: "no one", keys: [], run: function() {} }]
+  }
   // ---- People: files, merge, photo (phase 5) ------------------------------
   function pickExport(q) {
     var n = content ? content.targetIds().length : 0
@@ -738,6 +751,8 @@ Item {
     { id: "people.newfolder", title: "New contact folder\u2026", scope: "contacts/list", keys: [], ex: ["newfolder"], pick: pickNewFolder, run: function() { root.paletteRequested("newfolder ") } },
     { id: "people.renamefolder", title: "Rename the selected contact's folder\u2026", scope: "contacts/list", keys: [], ex: ["renamefolder"], pick: pickRenameFolder, run: function() { root.paletteRequested("renamefolder ") } },
     { id: "people.deletefolder", title: "Delete the selected contact's folder\u2026", scope: "contacts/list", keys: [], ex: ["deletefolder"], pick: pickDeleteFolder, run: function() { root.paletteRequested("deletefolder ") } },
+    { id: "people.dir",      title: "Find someone in the organisation's directory\u2026", scope: "contacts/list", keys: [], ex: ["dir", "directory"], pick: pickDirSearch, run: function() { root.paletteRequested("dir ") } },
+    { id: "people.dirpick",  title: "Add a person found in the directory\u2026", scope: "contacts/list", keys: [], ex: ["dirpick"], pick: pickDirPeople, run: function() { root.paletteRequested("dirpick ") } },
     { id: "people.merge",    title: "Merge the marked contacts (the first is kept)", scope: "contacts/list", keys: ["M"], run: function() { content.mergeMarked() } },
     { id: "people.export",   title: "Export to a vCard or CSV file\u2026", scope: "contacts/list", keys: ["E"], ex: ["export"], pick: pickExport, run: function() { root.paletteRequested("export ") } },
     { id: "people.import",   title: "Import a vCard or CSV file\u2026", scope: "contacts/list", keys: [], ex: ["import"], pick: pickImport, run: function() { root.paletteRequested("import ") } },

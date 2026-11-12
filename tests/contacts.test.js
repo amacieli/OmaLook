@@ -32,4 +32,6 @@ eq(F.mapUrl('1 A St, Paris'),'https://www.openstreetmap.org/search?query=1%20A%2
 if(!F.asText(c).includes('Birthday: 3 Mar 1980')) {console.error('FAIL text');process.exit(1)}
 const v=F.vcard(c); if(!v.startsWith('BEGIN:VCARD')||!v.endsWith('END:VCARD')||!v.includes('EMAIL;TYPE=INTERNET:a@x.org')||!v.includes('TEL;TYPE=CELL:4')||!v.includes('BDAY:1980-03-03')) {console.error('FAIL vcard',v);process.exit(1)}
 eq(F.sections({}),[], 'empty contact');
+const sx=F.sections({singleValueExtendedProperties:[{id:'String 0x3a23',value:'555'},{id:'SystemTime 0x3a41',value:'2001-02-03T11:59:00Z'},{id:'Integer 0x3a4d',value:'2'}]});
+eq(sx.map(s=>s.title),['Phone','Personal'],'ext sections'); eq(sx[0].rows[0].label+':'+sx[0].rows[0].number,'Fax:555','fax row'); eq(sx[1].rows.map(r=>r.label+':'+r.value),['Anniversary:3 Feb 2001','Gender:male'],'personal ext');
 console.log('ok contacts');
