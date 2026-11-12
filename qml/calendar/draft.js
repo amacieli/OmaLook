@@ -34,6 +34,7 @@ function buildRequest(f) {
     if (f.reminder !== null && f.reminder !== undefined && f.reminder >= 0) body.reminder_minutes = f.reminder
     if (f.repeat && f.repeat.ok && f.repeat.pattern)
         body.recurrence = { pattern: f.repeat.pattern, range: f.repeat.range }
+    if (f.attendees && f.attendees.length > 0) body.attendees = f.attendees   // attendeeList rows; none = personal
     return { ok: true, body: body }
 }
 
@@ -92,3 +93,193 @@ function pendingRaw(item, accounts) {
 }
 
 function pendingMark(raw) { return raw && raw.failed ? "\u2717 " : raw && raw.pending ? "\u23f2 " : "" }
+
+// ---- phase 3: attendees, edits, cancel / decline / delete (docs/PLAN-calendar-events.md 5.5, 6, 9, 12) ----
+
+function looksLikeAddress(s) { return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(s || "").trim()) }
+
+// The attendee rows as the request carries them: the Required and Optional chips ({email, name}) plus the rooms
+// kept from an edit ({email, name, role: "resource"}). The account's own address is dropped (the organiser is
+// implicit) and reported in `own`; an address listed twice keeps its first row. -> { list: [{name, email, role}],
+// own: bool, bad: [text that is not an address] }
+function attendeeList(required, optional, kept, ownEmail) {
+    var seen = {}, list = [], bad = [], own = false
+    function add(a, role) {
+        var em = String(a.email || "").trim()
+        if (em === "") return
+        var k = em.toLowerCase()
+        if (ownEmail && k === String(ownEmail).toLowerCase()) { own = true; return }
+        if (seen[k]) return
+        seen[k] = true
+        if (role !== "resource" && !looksLikeAddress(em)) { bad.push(em); return }
+        list.push({ name: String(a.name || ""), email: em, role: role })
+    }
+    ;(required || []).forEach(function(a) { add(a, "required") })
+    ;(optional || []).forEach(function(a) { add(a, "optional") })
+    ;(kept || []).forEach(function(a) { add(a, "resource") })
+    return { list: list, own: own, bad: bad }
+}
+
+// People who reach the event (rooms do not count as invitees; the backend counts the same way).
+function inviteeCount(list) { return (list || []).filter(function(a) { return a.role !== "resource" }).length }
+
+// The footer line: who the save reaches and when (plan 12: the undo window is the safety net).
+function reachLine(n, mode) {
+    var people = n + (n === 1 ? " person" : " people")
+    if (mode === "edit") return n === 0 ? "No attendees: nobody is told about the change."
+                                        : "Invitations with the update go out to " + people + " when the undo window ends."
+    return n === 0 ? "Personal entry. No invitations." : people + " will be invited when the undo window ends."
+}
+
+// Merge suggestion lists, first one wins; each entry becomes {name, email}. Entries without an address are dropped.
+function mergePeople(first, second) {
+    var seen = {}, out = [], all = (first || []).concat(second || [])
+    for (var i = 0; i < all.length; i++) {
+        var k = String(all[i].email || "").toLowerCase()
+        if (k === "" || seen[k]) continue
+        seen[k] = true
+        out.push({ name: all[i].name || "", email: all[i].email })
+    }
+    return out
+}
+
+// The state an edit is compared on and sent from, in the request's own field names. f = { subject, notes, when
+// (valid parseWhen result), location, reminder (minutes or null), showAs, attendees: [{name, email, role}] }.
+// Attendees are sorted, so the same people in another order are not a change.
+function stateOf(f) {
+    var att = (f.attendees || []).map(function(a) { return { name: a.name || "", email: a.email, role: a.role || "required" } })
+    att.sort(function(x, y) {
+        var a = String(x.email).toLowerCase(), b = String(y.email).toLowerCase()
+        return a < b ? -1 : a > b ? 1 : 0
+    })
+    return {
+        subject: String(f.subject || "").trim(), body: String(f.notes || ""),
+        start: stamp(f.when.start), end: stamp(f.when.end), all_day: f.when.allDay === true,
+        location: String(f.location || "").trim(), show_as: f.showAs || "busy",
+        reminder_minutes: f.reminder === null || f.reminder === undefined || f.reminder < 0 ? null : f.reminder,
+        attendees: att
+    }
+}
+
+var STATE_KEYS = ["subject", "body", "start", "end", "all_day", "location", "show_as", "reminder_minutes", "attendees"]
+
+// Which fields differ between two stateOf results (empty array: nothing to send).
+function changedKeys(before, after) {
+    var out = []
+    for (var i = 0; i < STATE_KEYS.length; i++) {
+        var k = STATE_KEYS[i]
+        if (JSON.stringify(before[k] === undefined ? null : before[k]) !== JSON.stringify(after[k] === undefined ? null : after[k])) out.push(k)
+    }
+    return out
+}
+
+// A recurring event (an occurrence or an exception of a series) gets the occurrence-or-series question first.
+function isRecurring(raw) {
+    return !!raw && (!!raw.series_master_id || raw.event_type === "occurrence" || raw.event_type === "exception")
+}
+
+// Mine: Graph says I organise it (isOrganizer, true for entries on my own calendar), or its organiser is my address.
+function isMine(raw, account) {
+    if (raw.is_organizer === true) return true
+    var org = String(raw.organizer_email || "").trim().toLowerCase()
+    var me = String((account && account.email) || "").trim().toLowerCase()
+    return org !== "" && org === me
+}
+
+// Why `e` cannot edit this event, or "" when it can. account = the appAccounts entry for raw.account_id.
+function editRefusal(raw, account) {
+    if (!raw) return "No event selected"
+    if (raw.pending === true) return "That event is not saved yet"
+    if (!account) return "This calendar is not connected any more"
+    if (account.provider !== "exchange") return "Google calendars are read-only in OmaLook for now"
+    if (!isMine(raw, account)) return "Only the organiser can change this meeting. x declines it."
+    return ""
+}
+
+// What `x` does: delete a personal entry, cancel a meeting you organise, decline one you attend.
+// -> { kind: "delete" | "cancel" | "decline" } or { error }
+function removeKind(raw, account) {
+    if (!raw) return { error: "No event selected" }
+    if (raw.pending === true) return { error: "That event is not saved yet" }
+    if (!account) return { error: "This calendar is not connected any more" }
+    if (account.provider !== "exchange") return { error: "Google calendars are read-only in OmaLook for now" }
+    if (!isMine(raw, account)) {
+        if ((raw.organizer_email || "") !== "") return { kind: "decline" }
+        return { error: "Not your event: only its organiser can delete it" }
+    }
+    var invitees = (raw.attendees || []).filter(function(a) { return a.role !== "resource" && String(a.email || "").trim() !== "" }).length
+    return { kind: invitees > 0 ? "cancel" : "delete" }
+}
+
+// Path for an edit (PATCH) or a cancel / decline / delete (POST), with dry_run=1 for the invitee count.
+function changePath(op, id, scope, kind, dry) {
+    var q = "id=" + encodeURIComponent(id) + "&scope=" + (scope === "series" ? "series" : "occurrence")
+    if (op === "update") return "/calendar/event?" + q + (dry ? "&dry_run=1" : "")
+    return "/calendar/event/cancel?" + q + "&kind=" + kind + (dry ? "&dry_run=1" : "")
+}
+
+// The undo bar's line once the server has queued the change.
+function changeMessage(op, n, series) {
+    var whole = series ? " on the whole series" : ""
+    if (op === "update") return "Change queued" + whole + (n > 0 ? " for " + n + (n === 1 ? " person" : " people") : " (personal)")
+    if (op === "cancel") return "Cancellation queued for " + n + (n === 1 ? " person" : " people") + whole
+    if (op === "decline") return "Decline queued (the organiser is told)" + whole
+    return "Delete queued (personal)" + whole
+}
+
+// The confirm line for cancel / decline / delete. n = invitees from the dry run, -1 while it is counting.
+function removeLine(op, n) {
+    if (op === "decline") return "Your decline goes to the organiser only. Nothing else is sent."
+    if (op === "delete") return "Removed from your calendar when the undo window ends. Nobody is told."
+    if (n < 0) return "Counting who is invited\u2026"
+    return "The cancellation goes to " + n + (n === 1 ? " person" : " people") + " when the undo window ends."
+}
+
+var CHANGE_OPS = { update: true, cancel: true, decline: true, delete: true }
+
+// The pending mark on an event that has a queued change: \u23f2 an edit, \u2296 a removal, \u2717 refused by the server.
+function changeMark(op, failed) { return failed ? "\u2717 " : op === "update" ? "\u23f2 " : "\u2296 " }
+
+// Outbox changes (edit, cancel, decline, delete) drawn on the cached events until the server has them. An edit shows
+// its new subject, times and place; a removal gets a mark. Returns a new array; the cache is not touched.
+function applyChanges(rawEvents, items) {
+    var live = (items || []).filter(function(it) {
+        return CHANGE_OPS[it.op] === true && (it.state === "pending" || it.state === "sending" || it.state === "failed")
+    })
+    if (live.length === 0) return rawEvents || []
+    return (rawEvents || []).map(function(r) {
+        for (var i = 0; i < live.length; i++) {
+            var it = live[i], t = it.target || ""
+            if (t === "" || !(r.id === t || (it.series === true && r.series_master_id === t))) continue
+            var out = Object.assign({}, r), failed = it.state === "failed"
+            out.pendingOp = it.op; out.failed = failed; out.pending = !failed; out.error = it.error || ""
+            if (it.op === "update") {
+                out.subject = changeMark("update", failed) + (it.subject || r.subject)
+                out.start = it.start || r.start
+                out.end = it.end || r.end
+                out.is_all_day = it.all_day === true
+                out.location = it.location || r.location || ""
+            } else {
+                out.subject = changeMark(it.op, failed) + r.subject
+            }
+            return out
+        }
+        return r
+    })
+}
+
+// The edit's request body (PATCH). The backend takes the whole editor state, so every field is sent, the attendee list
+// included: an empty list would remove everyone. f = stateOf inputs + { accountId, changed (changedKeys result),
+// originalLocation }. -> { ok, body } | { ok: false, nothing: true } | { ok: false, error }
+function buildPatch(f) {
+    if (!f.accountId) return { ok: false, error: "no calendar account selected" }
+    if (!f.when || !f.when.ok) return { ok: false, error: f.when && f.when.error ? f.when.error : "the time is not understood" }
+    if (!f.changed || f.changed.length === 0) return { ok: false, nothing: true, error: "Nothing changed yet" }
+    var body = stateOf(f)
+    if (body.subject === "") return { ok: false, error: "a title is needed" }
+    if (body.reminder_minutes === null) delete body.reminder_minutes
+    if (body.location === "" && f.originalLocation) return { ok: false, error: "clearing the place is not supported yet: type a new one" }
+    if (body.location === "") delete body.location
+    body.account_id = f.accountId
+    return { ok: true, body: body }
+}

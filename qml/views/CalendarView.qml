@@ -40,7 +40,7 @@ Item {
     property var  pendingItems: []
     readonly property var pendingRaws: pendingItems.map(function(i) { return Draft.pendingRaw(i, appAccounts) }).filter(function(r) { return r !== null })
         .map(function(r) { r.subject = Draft.pendingMark(r) + r.subject; return r })
-    property var  events: CU.normalise(CU.filterAccount(rawEvents.concat(pendingRaws), accountFilter))
+    property var  events: CU.normalise(CU.filterAccount(Draft.applyChanges(rawEvents, pendingItems).concat(pendingRaws), accountFilter))
     property int  selIdx: 0                    // which of the events under the cursor is selected
     property bool detailOpen: false
     property var  editor: null
@@ -79,7 +79,7 @@ Item {
     property string lastAccount: ""
     signal accountUsed(string id)
     property bool   editorOpen: false
-    readonly property bool editing: editorOpen     // AppShell hands every key to the editor's fields meanwhile
+    readonly property bool editing: editorOpen || askMode !== ""     // AppShell hands every key to the editor's fields (or the question) meanwhile
     property var    editorRestore: null
     property string editorAccount: ""
     property string editorStatus: ""
@@ -88,7 +88,26 @@ Item {
     property string undoId: ""                     // the queued write the undo bar is about
     property string undoMessage: ""
     property string undoState: ""                  // pending | sending | sent | failed | ""
-    property string undoKind: "event"              // event | tags: what the bar is about (Ctrl-Z only reopens the editor for an event)
+    property string undoKind: "event"              // event | change | tags: what the bar is about (Ctrl-Z only reopens the editor for an event)
+
+    // ── edit, cancel, decline, delete (phase 3; docs/PLAN-calendar-events.md 5.3, 6, 12) ──
+    property string editorMode: "create"          // create | edit (PATCH on save)
+    property var    editorOriginal: null          // edit: { raw (cached row), start, end, allDay }
+    property string editorScope: "occurrence"     // edit: occurrence | series
+    property var    _changeTargets: ({})          // queued change id -> { target, series } (the outbox list does not carry the target)
+    property string askMode: ""                   // "" | scope (occurrence or series?) | confirm (cancel / decline / delete)
+    property string action: ""                    // edit | remove: what the question is about
+    property var    actionRaw: null               // the cached row it is about
+    property string actionKind: ""                // cancel | decline | delete
+    property string actionScope: "occurrence"
+    property int    actionCount: -1               // invitees from the dry run; -1 while counting
+    property string actionStatus: ""              // the owner's refusal, shown on the question
+    readonly property bool asking: askMode !== ""
+    property var    appContacts: []               // [{name, email}] best first (AppState.composeContacts)
+    property var    dirPeople: []                 // the organisation directory's answer for the editor's last query
+    property string dirQuery: ""
+    property int    _dirSerial: 0
+    readonly property var suggestionList: Draft.mergePeople(appContacts, dirPeople)
 
     // OL-040 phase 6: show only events whose tags match (mail `tag:` syntax). "" = all.
     property string tagFilter: ""
@@ -120,6 +139,8 @@ Item {
         if (id === "") return "No signed-in account can create events yet (Microsoft work/school accounts only)"
         var d = new Date(anchorDate.getFullYear(), anchorDate.getMonth(), anchorDate.getDate(), 0, mode === "month" ? 9 * 60 : cursorMin)
         editorStart = d
+        editorMode = "create"
+        editorOriginal = null
         editorAccount = id
         editorStatus = ""
         editorRestore = null
@@ -140,7 +161,126 @@ Item {
         xhr.send(body)
     }
 
+    function accountOfRaw(raw) {
+        for (var i = 0; i < appAccounts.length; i++) if (appAccounts[i].id === raw.account_id) return appAccounts[i]
+        return null
+    }
+    function accountEmailOf(id) {
+        for (var i = 0; i < appAccounts.length; i++) if (appAccounts[i].id === id) return appAccounts[i].email || ""
+        return ""
+    }
+
+    // `e`: the selected event opens in the editor, filled. A repeating event first asks occurrence or series.
+    function keyEdit() {
+        if (editing) return ""
+        var raw = selectedEvent ? selectedEvent.raw : null
+        if (!raw) return "No event selected"
+        var why = Draft.editRefusal(raw, accountOfRaw(raw))
+        if (why !== "") return why
+        if (Draft.isRecurring(raw)) { action = "edit"; actionRaw = raw; askMode = "scope"; return "" }
+        _openEdit(raw, "occurrence")
+        return ""
+    }
+    function _openEdit(raw, scope) {
+        var s = CU.parseStamp(raw.start)
+        if (!s) return
+        var e = CU.parseStamp(raw.end) || s
+        editorOriginal = {
+            raw: raw, allDay: raw.is_all_day === true || !s.hasTime,
+            start: new Date(s.date.getFullYear(), s.date.getMonth(), s.date.getDate(), 0, s.minutes || 0),
+            end: new Date(e.date.getFullYear(), e.date.getMonth(), e.date.getDate(), 0, e.minutes || 0) }
+        editorMode = "edit"
+        editorScope = scope
+        editorAccount = raw.account_id
+        editorStart = editorOriginal.start
+        editorStatus = ""
+        editorRestore = null
+        cancelAsk()
+        editorOpen = true
+    }
+    function _savePatch(body) {
+        if (!editorOriginal) { editorStatus = "Nothing to save: the event is not open"; return }
+        editorStatus = "saving\u2026"
+        editorSnapshot = null
+        var raw = editorOriginal.raw, scope = editorScope
+        _post("PATCH", Draft.changePath("update", raw.id, scope, "", false), JSON.stringify(body), function(r) {
+            if (!r.ok) { editorStatus = r.error || "could not save"; return }
+            editorOpen = false
+            editorStatus = ""
+            _queued(r, "update", scope === "series", r.invitees || 0)
+        })
+    }
+
+    // `x`: delete a personal entry, cancel a meeting you organise, decline one you attend. A repeating event asks
+    // occurrence or series first; then the question shows the invitee count from a dry run, and nothing queues until Enter.
+    function keyRemove() {
+        if (editing) return ""
+        var raw = selectedEvent ? selectedEvent.raw : null
+        if (!raw) return "No event selected"
+        var rk = Draft.removeKind(raw, accountOfRaw(raw))
+        if (rk.error) return rk.error
+        actionRaw = raw
+        actionKind = rk.kind
+        action = "remove"
+        if (Draft.isRecurring(raw)) { askMode = "scope"; return "" }
+        _askRemove("occurrence")
+        return ""
+    }
+    function _askRemove(scope) {
+        actionScope = scope
+        actionCount = -1
+        actionStatus = ""
+        askMode = "confirm"
+        var acct = accountOfRaw(actionRaw)
+        _post("POST", Draft.changePath("cancel", actionRaw.id, scope, actionKind, true),
+              JSON.stringify({ account_id: acct ? acct.id : actionRaw.account_id, comment: "" }), function(r) {
+            if (!r.ok) { actionStatus = r.error || "could not check who is invited"; actionCount = 0; return }
+            actionCount = r.invitees || 0
+        })
+    }
+    function pickScope(scope) {
+        if (action === "edit") _openEdit(actionRaw, scope)
+        else if (action === "remove") _askRemove(scope)
+    }
+    function confirmRemove(message) {
+        if (actionCount < 0) { actionStatus = "Still counting who is invited. One moment."; return }
+        var raw = actionRaw, kind = actionKind, series = actionScope === "series"
+        var acct = accountOfRaw(raw)
+        actionStatus = ""
+        _post("POST", Draft.changePath("cancel", raw.id, actionScope, kind, false),
+              JSON.stringify({ account_id: acct ? acct.id : raw.account_id, comment: message || "" }), function(r) {
+            if (!r.ok) { actionStatus = r.error || "not queued"; return }
+            cancelAsk()
+            _queued(r, kind, series, r.invitees || 0)
+        })
+    }
+    function cancelAsk() { askMode = ""; action = ""; actionRaw = null; actionStatus = ""; actionCount = -1 }
+
+    // A queued change: the undo bar takes it, and the outbox target is kept so the pending mark lands on the right row.
+    function _queued(r, op, series, count) {
+        _changeTargets[r.id] = { target: r.target || "", series: series === true }
+        undoKind = "change"
+        undoId = r.id
+        undoState = "pending"
+        undoMessage = Draft.changeMessage(op, count, series)
+        pollOutbox()
+        outboxTimer.start()
+    }
+
+    // The attendee suggestions: the organisation directory for what is typed (two letters or more), after a short pause.
+    function queryDirectory(text) { dirQuery = String(text || "").trim(); dirTimer.restart() }
+    function _searchDirectory() {
+        var q = dirQuery, acct = editorAccount, serial = ++_dirSerial
+        if (q.length < 2 || acct === "") { dirPeople = []; return }
+        _post("GET", "/contacts/directory?account=" + encodeURIComponent(acct) + "&q=" + encodeURIComponent(q), null, function(r) {
+            if (serial !== _dirSerial) return
+            dirPeople = r.ok && r.people ? r.people.map(function(p) { return { name: p.name || "", email: p.email || "" } }) : []
+        })
+    }
+    Timer { id: dirTimer; interval: 350; onTriggered: root._searchDirectory() }
+
     function saveEvent(body) {
+        if (editorMode === "edit") { _savePatch(body); return }
         editorStatus = "saving\u2026"
         editorSnapshot = editor ? editor.snapshot() : null
         _post("POST", "/calendar/event", JSON.stringify(body), function(r) {
@@ -167,7 +307,7 @@ Item {
             if (r.cancelled === true) {
                 undoId = ""; undoState = ""; undoMessage = ""
                 pollOutbox()
-                if (undoKind === "tags") { undoMessage = ""; return }
+                if (undoKind !== "event") { undoMessage = ""; return }
                 if (editorSnapshot && !editorOpen) {
                     editorRestore = editorSnapshot; editorStatus = "Undone. Your event is back in the editor."
                     editorStart = editorSnapshot.base.start
@@ -194,6 +334,10 @@ Item {
                     if (items[i].state === "sent") undoMessage = "Saved"
                     else if (items[i].state === "failed") undoMessage = "Not saved: " + (items[i].error || "the server refused it") + (undoKind === "event" ? "   (Ctrl-Z to edit it again)" : "")
                 }
+            }
+            for (i = 0; i < items.length; i++) {
+                var ct = _changeTargets[items[i].id]
+                if (ct) { items[i].target = ct.target; items[i].series = ct.series }
             }
             pendingItems = items.filter(function(it) { return it.state === "pending" || it.state === "sending" || it.state === "failed" })
             if (sentNow) loadEvents(true)
@@ -399,6 +543,11 @@ Item {
                         events: root.events
                         status: root.editorStatus
                         restore: root.editorRestore
+                        mode: root.editorMode
+                        original: root.editorOriginal
+                        ownEmail: root.accountEmailOf(root.editorAccount)
+                        suggestions: root.suggestionList
+                        onDirectoryQuery: function(text) { root.queryDirectory(text) }
                         onAccountPicked: function(id) { root.editorAccount = id }
                         onSaveRequested: function(body) { root.saveEvent(body) }
                         onCancelRequested: { root.editorOpen = false; root.editorStatus = "" }
@@ -406,6 +555,27 @@ Item {
                         Component.onDestruction: if (root.editor === ed) root.editor = null
                     }
                 }
+            }
+
+            // the question for `e` and `x`: occurrence or series, then the confirm line (who it reaches, a cancel message)
+            EventChangeDialog {
+                id: askDialog
+                anchors.fill: parent
+                z: 105
+                visible: root.asking
+                mode: root.askMode === "scope" ? "scope" : "confirm"
+                heading: root.action === "edit" ? (root.askMode === "scope" ? "Edit a repeating event" : "Edit this event")
+                    : root.actionKind === "cancel" ? "Cancel this meeting"
+                    : root.actionKind === "decline" ? "Decline this invitation" : "Delete this event"
+                askLine: root.action === "edit" ? "Change only this occurrence, or the whole series?"
+                    : root.actionKind === "decline" ? "Decline only this occurrence, or the whole series?"
+                    : "Cancel or delete only this occurrence, or the whole series?"
+                detail: root.askMode === "confirm" ? Draft.removeLine(root.actionKind, root.actionCount) : ""
+                allowMessage: root.askMode === "confirm" && root.actionKind === "cancel"
+                status: root.actionStatus
+                onScopePicked: function(scope) { root.pickScope(scope) }
+                onConfirmed: function(message) { root.confirmRemove(message) }
+                onDismissed: root.cancelAsk()
             }
 
             // the undo bar: after a save, a delete or a cancel, until the server has it

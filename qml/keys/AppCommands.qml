@@ -729,6 +729,8 @@ Item {
     { id: "cal.pane.narrow", title: "Narrow the calendar sidebar", scope: "calendar/list", keys: ["C-Left", "C-w <"],  run: function(n) { content.resizePane(-(n || 1)) } },
     { id: "cal.tag",   title: "Set tags on the selected event\u2026", scope: "calendar/list", keys: ["T"], ex: ["tag", "category", "cat"], pick: pickEventTags, when: function() { return !!content && content.selectedEvent !== undefined && !!content.selectedEvent }, run: function() { openEventTagPicker() } },
     { id: "cal.tagfilter", title: "Show only events with a tag\u2026", scope: "calendar/list", keys: ["f"], ex: ["tagfilter", "filter"], pick: pickEventTagFilter, run: function() { openEventTagFilter() } },
+    { id: "cal.edit",  title: "Edit the selected event",       scope: "calendar/list", keys: ["e"], ex: ["edit"], run: function() { var m = content.keyEdit(); if (m) say(m) } },
+    { id: "cal.remove", title: "Delete, cancel or decline the selected event", scope: "calendar/list", keys: ["x"], ex: ["cancel", "decline", "delete"], run: function() { var m = content.keyRemove(); if (m) say(m) } },
     { id: "cal.new",   title: "New event",       scope: "calendar/list", keys: ["c", "n"], run: function() { var m = content.newEvent(); if (m) say(m) } },
     { id: "cal.undo",  title: "Undo the event just saved (while its undo bar shows)", scope: "calendar/list", keys: ["C-z"], when: function() { return !!content && content.undoId !== undefined && content.undoId !== "" }, run: function() { var m = content.undoLast(); if (m) say(m) } },
 

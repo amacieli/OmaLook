@@ -255,6 +255,17 @@ puts the original files back as chips. `GET /attach/limits?account=<id>` reports
 | `R` | `sms.retry` | send failed texts again (a failed text shows a red "Send failure") |
 | `x` | `item.delete` | says deleting is not possible (KDE Connect has no delete) |
 
+## Calendar: edit, cancel, decline (OL-021 phase 3)
+
+| Key | Does |
+|---|---|
+| `e` | Edit the selected event (`cal.edit`; `:edit`). The editor opens filled. Save sends only the changed fields, with the full attendee list. Google calendars and events you cannot change refuse with a message. A recurring event first asks: this occurrence or the whole series (`o` / `s`, Esc backs out). |
+| `x` | Remove the selected event (`cal.remove`; `:delete`, `:cancel`, `:decline`). A personal entry is deleted. A meeting you organise is cancelled, with an optional message to attendees (Enter sends). A meeting you attend is declined. Recurring events ask occurrence or series first. |
+
+Every change goes through the undo bar: it says how many people will be invited or told, and invitations go out when the undo window ends. `Ctrl-Z` undoes while the window is open. Changes waiting to send show a pending mark.
+
+In the editor, the Required and Optional rows take names or addresses, with suggestions from your contacts and the organisation directory. Your own address is not added (you are the organiser).
+
 ## Calendar (OL-021 phase 1)
 
 The calendar has a keyboard cursor (the highlighted day; in the day and week grids also a 30-minute slot).
