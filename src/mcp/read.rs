@@ -623,7 +623,7 @@ mod tests {
 
     #[test]
     fn contacts_get_returns_one_contact_only_from_an_allowed_account() {
-        let (c, _d) = fixture("contacts", SETTINGS);
+        let (c, _d) = fixture("contacts-get", SETTINGS);
         let ok = contacts_get(&c, &json!({ "id": "k1" })).unwrap();
         assert_eq!(ok["id"], "k1");
         assert_eq!(ok["account_id"], "graph-1");
