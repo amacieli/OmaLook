@@ -1,7 +1,7 @@
 const fs = require('fs');
 const src = fs.readFileSync(__dirname + '/../qml/calendar/draft.js', 'utf8').replace(/^\.pragma.*$/m, '');
 const D = new Function(src + ';return {stamp,buildRequest,conflicts,canCreate,chooseAccount,cycleAccount,pendingRaw,pendingMark,' +
-    'attendeeList,inviteeCount,reachLine,mergePeople,stateOf,changedKeys,isRecurring,editRefusal,removeKind,changePath,' +
+    'attendeeList,inviteeCount,reachLine,onlineRows,defaultOnline,stepOnline,onlineLine,mergePeople,stateOf,changedKeys,isRecurring,editRefusal,removeKind,changePath,' +
     'changeMessage,removeLine,applyChanges,buildPatch}')();
 let n = 0;
 function eq(a, b, m) { n++; if (JSON.stringify(a) !== JSON.stringify(b)) { console.error('FAIL', m, '\n got', JSON.stringify(a), '\nwant', JSON.stringify(b)); process.exit(1); } }
@@ -152,4 +152,38 @@ eq(pb.body, { subject: 'Plan', body: 'n', start: '2026-10-28T10:00:00', end: '20
 eq(D.buildPatch(Object.assign({}, base, { accountId: 'exchange-a', changed: [] })), { ok: false, nothing: true, error: 'Nothing changed yet' }, 'nothing changed is not sent');
 eq(D.buildPatch(Object.assign({}, base, { accountId: '', changed: ['subject'] })).ok, false, 'no account');
 eq(D.buildPatch(Object.assign({}, base, { accountId: 'x', changed: ['subject'], subject: '  ' })), { ok: false, error: 'a title is needed' }, 'title needed');
+// ---- online meeting picker (OL-021 track B)
+const oopts = [
+  { id: 'none', label: 'None', kind: 'none', available: true, reason: '', default: false },
+  { id: 'teamsForBusiness', label: 'Microsoft Teams', kind: 'native', available: true, reason: '', default: true },
+  { id: 'googleMeet', label: 'Google Meet', kind: 'native', available: false, reason: 'needs a Google account', default: false },
+  { id: 'personalLink', label: 'My Zoom room', kind: 'static', available: true, reason: '', default: false },
+  { id: 'jitsi', label: 'Jitsi', kind: 'generated', available: false, reason: 'turned off in Settings', default: false },
+  { id: 'zoom', label: 'Zoom', kind: 'external', available: false, reason: 'Zoom sign-in is not built yet', default: false }];
+const orows = D.onlineRows(oopts, false);
+eq(orows.map(r => r.id), ['none', 'teamsForBusiness', 'personalLink', 'jitsi', 'zoom'], 'orows: other account kind left out');
+eq(orows.filter(r => !r.enabled).map(r => [r.id, r.note]), [['jitsi', 'turned off in Settings'], ['zoom', 'needs setup']], 'disabled orows say why; stubs say needs setup');
+eq(D.defaultOnline(orows), 'teamsForBusiness', 'backend default');
+eq(D.defaultOnline([]), 'none', 'no orows: none');
+eq(D.stepOnline(orows, 'teamsForBusiness', 1), 'personalLink', 'step skips disabled');
+eq(D.stepOnline(orows, 'personalLink', 1), 'none', 'step wraps past disabled orows');
+eq(D.stepOnline(orows, 'none', -1), 'personalLink', 'step back wraps');
+const oer = D.onlineRows(oopts, true);
+eq(oer.find(r => r.id === 'teamsForBusiness'), { id: 'teamsForBusiness', label: 'Microsoft Teams', enabled: false, note: 'new events only', isDefault: true }, 'edit: native disabled');
+eq(oer.find(r => r.id === 'personalLink').enabled, true, 'edit: personal link allowed');
+eq(D.onlineLine('none', orows, false), '', 'no line for none');
+eq(D.onlineLine('teamsForBusiness', orows, false), 'Microsoft Teams meeting link is created when it is saved.', 'native line');
+eq(D.onlineLine('personalLink', orows, false), 'My Zoom room link is added to the place and notes.', 'static line');
+const w2 = { ok: true, start: new Date(2026, 10, 12, 10), end: new Date(2026, 10, 12, 11), allDay: false };
+eq(D.buildRequest({ accountId: 'x', when: w2, online: 'jitsi' }).body.online_provider, 'jitsi', 'create sends the choice');
+eq('online_provider' in D.buildRequest({ accountId: 'x', when: w2, online: 'none' }).body, false, 'create none: nothing sent');
+eq('online_provider' in D.buildRequest({ accountId: 'x', when: w2 }).body, false, 'create unset: nothing sent');
+const ost0 = D.stateOf({ subject: 's', when: w2, online: '' }), ost1 = D.stateOf({ subject: 's', when: w2, online: 'jitsi' });
+eq(D.changedKeys(ost0, ost1), ['online_provider'], 'changing the picker is a change');
+let opp = D.buildPatch({ accountId: 'x', when: w2, subject: 's', online: 'jitsi', changed: ['online_provider'] });
+eq(opp.body.online_provider, 'jitsi', 'patch sends the new choice');
+opp = D.buildPatch({ accountId: 'x', when: w2, subject: 's', online: '', changed: ['subject'] });
+eq('online_provider' in opp.body, false, 'patch keeps the meeting when untouched');
+opp = D.buildPatch({ accountId: 'x', when: w2, subject: 's', online: 'none', changed: ['online_provider'] });
+eq(opp.body.online_provider, 'none', 'patch can remove the meeting');
 console.log('draft tests ok (' + n + ' checks)');

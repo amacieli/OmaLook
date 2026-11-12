@@ -39,6 +39,7 @@ FocusScope {
     property var    original: null          // edit: { raw (cached row), start, end, allDay }
     property string ownEmail: ""            // the account's own address: never added as an attendee
     property var    suggestions: []         // [{name, email}] best first (owner merges contacts, people, directory)
+    property var    meetingOptions: []      // GET /calendar/meeting-options rows for the account (the Online meeting picker)
 
     signal saveRequested(var body)
     signal cancelRequested()
@@ -51,6 +52,7 @@ FocusScope {
     property var    baseWhen: ({ start: initialStart, end: new Date(initialStart.getTime() + defaultMinutes * 60000), allDay: false })
     property string repeatText: ""
     property string showAs: "busy"
+    property string onlineChoice: ""       // Online meeting: "" = not touched (a new event takes the account's default)
     property string localStatus: ""
     property bool   confirmDiscard: false
     readonly property bool editing: mode === "edit" && original !== null
@@ -68,6 +70,22 @@ FocusScope {
         for (var i = 0; i < accounts.length; i++) if (accounts[i].id === accountId) return accounts[i]
         return null
     }
+
+    // Online meeting: the rows, the shown choice and what is sent. An edit sends nothing unless the choice moved off the
+    // event's own meeting (absent = the backend keeps it).
+    readonly property string originalOnline: editing ? (original.raw.online_provider || "") : ""
+    readonly property var onlineRows: {
+        var rows = Draft.onlineRows(meetingOptions, editing)
+        if (editing && originalOnline !== "") {
+            var have = false
+            for (var i = 0; i < rows.length; i++) if (rows[i].id === originalOnline) have = true
+            if (!have) rows.splice(1, 0, { id: originalOnline, label: "Current meeting", enabled: true, note: "", isDefault: false })
+        }
+        return rows
+    }
+    readonly property string shownOnline: onlineChoice !== "" ? onlineChoice : (editing ? (originalOnline || "none") : Draft.defaultOnline(onlineRows))
+    readonly property string sentOnline: editing ? (shownOnline === (originalOnline || "none") ? "" : shownOnline) : shownOnline
+    readonly property string onlineText: Draft.onlineLine(editing && sentOnline === "" ? "none" : shownOnline, onlineRows, editing)
 
     // Attendees: the chips in the two rows, plus rooms kept from an edit. people.list is what gets sent.
     readonly property var keptRooms: editing ? (original.raw.attendees || []).filter(function(a) { return a.role === "resource" }) : []
@@ -88,12 +106,13 @@ FocusScope {
     readonly property var currentState: whenResult.ok ? Draft.stateOf({
         subject: titleField.text, notes: notesField.text, when: whenResult, location: whereField.text,
         reminder: reminderField.text.trim() === "" ? null : parseInt(reminderField.text),
-        showAs: showAs, attendees: people.list }) : null
+        showAs: showAs, attendees: people.list, online: sentOnline }) : null
     readonly property var changed: editing && originalState && currentState ? Draft.changedKeys(originalState, currentState) : []
 
     readonly property bool dirty: editing ? changed.length > 0
         : titleField.text !== "" || whenText !== "" || repeatText !== "" || whereField.text !== ""
           || notesField.text !== "" || reminderField.text !== String(defaultReminder) || showAs !== "busy"
+          || shownOnline !== Draft.defaultOnline(onlineRows)
           || baseWhen.start.getTime() !== initialStart.getTime() || people.list.length > 0
     readonly property color fg: Commons.Color.foreground
     readonly property var showOptions: {
@@ -113,7 +132,7 @@ FocusScope {
     function snapshot() {
         return { subject: titleField.text, notes: notesField.text, location: whereField.text, reminder: reminderField.text,
                  showAs: showAs, base: whenResult.ok ? { start: whenResult.start, end: whenResult.end, allDay: whenResult.allDay } : baseWhen,
-                 repeatText: repeatText, required: reqField.recipients, optional: optField.recipients }
+                 repeatText: repeatText, required: reqField.recipients, optional: optField.recipients, online: onlineChoice }
     }
 
     function save() {
@@ -123,7 +142,7 @@ FocusScope {
                 accountId: original.raw.account_id || accountId, when: whenResult, subject: titleField.text,
                 notes: notesField.text, location: whereField.text,
                 reminder: reminderField.text.trim() === "" ? null : parseInt(reminderField.text),
-                showAs: showAs, attendees: people.list, changed: changed, originalLocation: original.raw.location || "" })
+                showAs: showAs, attendees: people.list, changed: changed, originalLocation: original.raw.location || "", online: sentOnline })
             if (!u.ok) { localStatus = u.nothing ? "Nothing changed yet. Esc closes." : u.error; return }
             localStatus = ""
             saveRequested(u.body)
@@ -134,7 +153,7 @@ FocusScope {
             when: whenResult, location: whereField.text,
             reminder: reminderField.text.trim() === "" ? null : parseInt(reminderField.text),
             showAs: showAs, repeat: repeatResult.ok && repeatResult.pattern ? repeatResult : (repeatResult.ok ? null : repeatResult),
-            attendees: people.list, transactionId: txId })
+            attendees: people.list, transactionId: txId, online: sentOnline })
         if (!r.ok) { localStatus = r.error; return }
         localStatus = ""
         saveRequested(r.body)
@@ -189,6 +208,7 @@ FocusScope {
             titleField.text = restore.subject; notesField.text = restore.notes; whereField.text = restore.location
             reminderField.text = restore.reminder; showAs = restore.showAs; baseWhen = restore.base; repeatText = restore.repeatText
             repeatField.text = restore.repeatText
+            onlineChoice = restore.online || ""
             if (restore.required) reqField.setRecipients(restore.required)
             if (restore.optional) optField.setRecipients(restore.optional)
         }
@@ -359,6 +379,46 @@ FocusScope {
             UiText { text: "Where"; dim: true; Layout.preferredWidth: Style.space(84) }
             TextField { id: whereField; Layout.fillWidth: true; placeholderText: "Room, address or link"; activeFocusOnTab: true }
 
+            // ---- Online meeting (OL-021 track B): None / the providers for this account; Zoom and Webex are shown but off
+            UiText { text: "Meeting"; dim: true; Layout.alignment: Qt.AlignTop; Layout.preferredWidth: Style.space(84); Layout.topMargin: Style.spacing.md }
+            FocusScope {
+                id: onlineRow
+                Layout.fillWidth: true
+                implicitHeight: onlineFlow.implicitHeight + Style.spacing.md * 2
+                activeFocusOnTab: true
+                Rectangle {
+                    anchors.fill: parent; radius: Style.cornerRadius; color: "transparent"
+                    border.width: onlineRow.activeFocus ? 1 : 0; border.color: Commons.Color.accent
+                }
+                Flow {
+                    id: onlineFlow
+                    anchors.left: parent.left; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
+                    anchors.leftMargin: Style.spacing.lg; anchors.rightMargin: Style.spacing.lg
+                    spacing: Style.spacing.xl
+                    Repeater {
+                        model: root.onlineRows
+                        delegate: UiText {
+                            required property var modelData
+                            readonly property bool picked: modelData.id === root.shownOnline
+                            text: (picked ? "\u25cf " : "\u25cb ") + modelData.label + (modelData.note !== "" ? "  (" + modelData.note + ")" : "")
+                            font.bold: picked
+                            foreground: picked ? Commons.Color.accent : root.fg
+                            dim: !modelData.enabled
+                            MouseArea {
+                                anchors.fill: parent
+                                onClicked: { onlineRow.forceActiveFocus(); if (modelData.enabled) root.onlineChoice = modelData.id }
+                            }
+                        }
+                    }
+                    UiText { visible: root.onlineRows.length === 0; text: "loading\u2026"; dim: true }
+                }
+                Keys.onPressed: function(e) {
+                    var dir = e.key === Qt.Key_Right || e.key === Qt.Key_Space ? 1 : e.key === Qt.Key_Left ? -1 : 0
+                    if (dir === 0) return
+                    root.onlineChoice = Draft.stepOnline(root.onlineRows, root.shownOnline, dir); e.accepted = true
+                }
+            }
+
             // ---- Reminder
             UiText { text: "Reminder"; dim: true; Layout.preferredWidth: Style.space(84) }
             RowLayout {
@@ -419,7 +479,7 @@ FocusScope {
         PanelSeparator { Layout.fillWidth: true }
         UiText {
             Layout.fillWidth: true
-            text: root.reachText + "    Ctrl-F find a time    Ctrl-Enter save"
+            text: root.reachText + (root.onlineText !== "" ? "  " + root.onlineText : "") + "    Ctrl-F find a time    Ctrl-Enter save"
             dim: true; font.pixelSize: Style.font.caption
         }
     }

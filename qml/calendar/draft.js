@@ -35,6 +35,7 @@ function buildRequest(f) {
     if (f.repeat && f.repeat.ok && f.repeat.pattern)
         body.recurrence = { pattern: f.repeat.pattern, range: f.repeat.range }
     if (f.attendees && f.attendees.length > 0) body.attendees = f.attendees   // attendeeList rows; none = personal
+    if (f.online && f.online !== "none") body.online_provider = f.online   // OL-021 B: the backend adds the link (docs 7.x)
     return { ok: true, body: body }
 }
 
@@ -157,11 +158,11 @@ function stateOf(f) {
         start: stamp(f.when.start), end: stamp(f.when.end), all_day: f.when.allDay === true,
         location: String(f.location || "").trim(), show_as: f.showAs || "busy",
         reminder_minutes: f.reminder === null || f.reminder === undefined || f.reminder < 0 ? null : f.reminder,
-        attendees: att
+        attendees: att, online_provider: f.online || ""
     }
 }
 
-var STATE_KEYS = ["subject", "body", "start", "end", "all_day", "location", "show_as", "reminder_minutes", "attendees"]
+var STATE_KEYS = ["subject", "body", "start", "end", "all_day", "location", "show_as", "reminder_minutes", "attendees", "online_provider"]
 
 // Which fields differ between two stateOf results (empty array: nothing to send).
 function changedKeys(before, after) {
@@ -281,5 +282,48 @@ function buildPatch(f) {
     if (body.location === "" && f.originalLocation) return { ok: false, error: "clearing the place is not supported yet: type a new one" }
     if (body.location === "") delete body.location
     body.account_id = f.accountId
+    if (body.online_provider === "") delete body.online_provider   // absent: the backend keeps the event's meeting as it is
     return { ok: true, body: body }
+}
+
+// The Online meeting picker's rows from GET /calendar/meeting-options: [{id, label, kind, available, reason, default}] ->
+// [{id, label, enabled, note}]. A provider for another account kind is left out; Zoom / Webex stay but disabled
+// ("needs setup"); on an edit a native provider (Teams, Meet) is disabled: Graph and Google only add it when the event is created.
+function onlineRows(options, editing) {
+    var out = []
+    ;(options || []).forEach(function(o) {
+        var why = String(o.reason || "")
+        if (o.available === false && why.indexOf("needs a ") === 0) return
+        var enabled = o.available !== false, note = ""
+        if (!enabled) note = o.kind === "external" ? "needs setup" : (why || "not available")
+        else if (editing && o.kind === "native") { enabled = false; note = "new events only" }
+        out.push({ id: o.id, label: o.label, enabled: enabled, note: note, isDefault: o.default === true })
+    })
+    return out
+}
+
+// The default choice for a new event: the row the backend marked, else none.
+function defaultOnline(rows) { for (var i = 0; i < (rows || []).length; i++) if (rows[i].isDefault && rows[i].enabled) return rows[i].id; return "none" }
+
+// Left / Right on the picker: the next enabled row.
+function stepOnline(rows, current, dir) {
+    var en = (rows || []).filter(function(r) { return r.enabled || r.id === current })
+    if (en.length === 0) return current
+    var i = 0
+    for (var k = 0; k < en.length; k++) if (en[k].id === current) i = k
+    for (var n = 1; n <= en.length; n++) {
+        var c = en[(((i + dir * n) % en.length) + en.length) % en.length]
+        if (c.enabled) return c.id
+    }
+    return current
+}
+
+// The footer sentence for the picked meeting ("" for none): says what the save does, since the link is made on the server.
+function onlineLine(choice, rows, editing) {
+    if (!choice || choice === "none") return ""
+    var label = choice
+    ;(rows || []).forEach(function(r) { if (r.id === choice) label = r.label })
+    var native = choice === "teamsForBusiness" || choice === "googleMeet"
+    if (native) return label + " meeting link is created when it is saved."
+    return label + (editing ? " link replaces the one the app added." : " link is added to the place and notes.")
 }

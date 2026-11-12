@@ -82,6 +82,10 @@ Item {
     readonly property bool editing: editorOpen || askMode !== "" || finderOpen    // AppShell hands every key to the editor's fields, the question or the finder meanwhile
     property var    editorRestore: null
     property string editorAccount: ""
+    property var    meetingOptions: []           // the editor's Online meeting rows for editorAccount (GET /calendar/meeting-options)
+    property int    _meetSerial: 0
+    onEditorAccountChanged: loadMeetingOptions()
+    onEditorOpenChanged: if (editorOpen) loadMeetingOptions()
     property string editorStatus: ""
     property date   editorStart: new Date()
     property var    editorSnapshot: null           // what was in the editor at Save, for Undo
@@ -221,6 +225,15 @@ Item {
         xhr.open(method, backendUrl + path)
         if (body !== null) xhr.setRequestHeader("Content-Type", "application/json")
         xhr.send(body)
+    }
+
+    function loadMeetingOptions() {
+        var acct = editorAccount, serial = ++_meetSerial
+        if (!editorOpen || acct === "") { meetingOptions = []; return }
+        _post("GET", "/calendar/meeting-options?account=" + encodeURIComponent(acct), null, function(r) {
+            if (serial !== _meetSerial) return
+            meetingOptions = r.ok && r.options ? r.options : []
+        })
     }
 
     function accountOfRaw(raw) {
@@ -609,6 +622,7 @@ Item {
                         original: root.editorOriginal
                         ownEmail: root.accountEmailOf(root.editorAccount)
                         suggestions: root.suggestionList
+                        meetingOptions: root.meetingOptions
                         onDirectoryQuery: function(text) { root.queryDirectory(text) }
                         onAccountPicked: function(id) { root.editorAccount = id }
                         onSaveRequested: function(body) { root.saveEvent(body) }
