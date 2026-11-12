@@ -1117,6 +1117,78 @@ fn drafts_route(config_dir: &PathBuf, first_line: &str) -> String {
     }
 }
 
+/// The send-as identities of an account (OL-051): cached for six hours, read from the provider when older (or `force`),
+/// the stale copy when the provider cannot be reached, and just the account address when nothing was ever read.
+fn identities_for(db: &Database, account: &str, force: bool) -> Vec<omalook::identities::Identity> {
+    use omalook::identities::{ensure_primary, Identity};
+    const TTL_SECS: i64 = 6 * 3600;
+    let email = db.account_email(account).ok().flatten().unwrap_or_default();
+    let cached = db.identities_get(account).ok().flatten();
+    if let Some((list, at)) = &cached {
+        if !force && chrono::Utc::now().timestamp() - at < TTL_SECS {
+            return list.clone();
+        }
+    }
+    let fetched: Option<Result<Vec<Identity>, String>> = tokio::runtime::Builder::new_current_thread().enable_all().build().ok().map(|rt| {
+        match omalook::accounts::provider_of(account) {
+            "gmail" => rt.block_on(omalook::providers::gmail::GmailProvider::new(account, None).fetch_identities(&email)).map_err(|e| e.to_string()),
+            "exchange" => rt.block_on(GraphEmailProvider::new(AuthManager::for_account(account)).fetch_identities(&email)).map_err(|e| e.to_string()),
+            _ => Ok(Vec::new()),
+        }
+    });
+    match fetched {
+        Some(Ok(list)) => {
+            let list = ensure_primary(list, &email);
+            if let Err(e) = db.identities_replace(account, &list) {
+                warn!("Could not cache identities of {}: {}", account, e);
+            }
+            list
+        }
+        other => {
+            if let Some(Err(e)) = other {
+                warn!("Identities of {} not read: {}", account, e);
+            }
+            match cached {
+                Some((list, _)) => list,
+                None => ensure_primary(Vec::new(), &email),
+            }
+        }
+    }
+}
+
+/// GET /compose/identities?account=ID[&refresh=1] -> `{identities:[{email,name,primary}], default}`. POST
+/// /compose/identity_default?account=ID&email=ADDR remembers the account's default From (empty email clears it).
+fn identities_response(config_dir: &PathBuf, first_line: &str) -> String {
+    let err = |m: &str| serde_json::json!({ "error": m }).to_string();
+    let account = query_param(first_line, "account").unwrap_or_default();
+    if account.is_empty() {
+        return err("missing account");
+    }
+    let db = match Database::open(config_dir.join("messages.db").to_str().unwrap_or("messages.db")) {
+        Ok(db) => db,
+        Err(e) => return err(&format!("database: {}", e)),
+    };
+    let email = db.account_email(&account).ok().flatten().unwrap_or_default();
+    let list = identities_for(&db, &account, query_param(first_line, "refresh").as_deref() == Some("1"));
+    if first_line.contains("POST /compose/identity_default") {
+        let want = query_param(first_line, "email").unwrap_or_default();
+        let chosen = match omalook::identities::choose_from(&list, &email, &want) {
+            Ok(c) => c,
+            Err(e) => return err(&e),
+        };
+        // The account address itself is stored as "no preference", like the provider default.
+        return match db.identity_pref_set(&account, if chosen.is_empty() && !want.trim().is_empty() { &email } else { &chosen }) {
+            Ok(()) => serde_json::json!({ "ok": true }).to_string(),
+            Err(e) => err(&e.to_string()),
+        };
+    }
+    let pref = db.identity_pref_get(&account).ok().flatten();
+    serde_json::json!({
+        "identities": list.iter().map(|i| serde_json::json!({ "email": i.email, "name": i.name, "primary": i.primary })).collect::<Vec<_>>(),
+        "default": omalook::identities::default_identity(&list, pref.as_deref(), &email),
+    }).to_string()
+}
+
 /// POST /compose/send — queue a composed message. The body is the JSON the compose pane builds
 /// (`omalook::compose::OutgoingMessage`). It is stored in the outbox to go out after the
 /// `[mail] send_delay_secs` setting (0 = now) and the account's outbox worker is woken, so the
@@ -1153,6 +1225,14 @@ fn compose_send_response(config_dir: &PathBuf, stream: &mut std::net::TcpStream,
     msg.settle_inline();
     if let Err(e) = msg.validate() {
         return err(&e);
+    }
+    // Sent as an alias (OL-051): it must be one of the account's identities; the account's own address needs no override.
+    if !msg.from.trim().is_empty() {
+        let acct_email = db.account_email(&msg.account_id).ok().flatten().unwrap_or_default();
+        match omalook::identities::choose_from(&identities_for(&db, &msg.account_id, false), &acct_email, &msg.from) {
+            Ok(f) => msg.from = f,
+            Err(e) => return err(&e),
+        }
     }
     // A signed-out account has no worker, so the message would sit unsent without anyone knowing.
     if !SCHEDULER.get().map(|s| s.is_running(&msg.account_id)).unwrap_or(false) {
@@ -3368,6 +3448,36 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                 // ── Render cache (OL-028): GET /render/get?id&width&scale&images · POST /render/adopt?id&width&scale&images&file ──
                 if first_line.contains("GET /render/get") || first_line.contains("POST /render/adopt") {
                     let (dir, line) = (config_dir.clone(), first_line.to_string());
+                // ── GET /compose/identities?account=ID, POST /compose/identity_default?account=ID&email= — send-as addresses (OL-051). Slow (provider call), own thread. ──
+                if first_line.contains("GET /compose/identities") || first_line.contains("POST /compose/identity_default") {
+                    let first = first_line.to_string();
+                    let dir = config_dir.clone();
+                    std::thread::spawn(move || {
+                        let body = identities_response(&dir, &first);
+                        let response = format!(
+                            "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                            body.len(), body
+                        );
+                        let _ = stream.write_all(response.as_bytes());
+                    });
+                    continue;
+                }
+
+                // ── GET /messages/list-info?id=ID — List-Id / List-Post of a message (lazy provider fetch, cached). ──
+                if first_line.contains("GET /messages/list-info") {
+                    let id = query_param(first_line, "id").unwrap_or_default();
+                    let dir = config_dir.clone();
+                    std::thread::spawn(move || {
+                        let body = list_info_json(&dir, &id);
+                        let response = format!(
+                            "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                            body.len(), body
+                        );
+                        let _ = stream.write_all(response.as_bytes());
+                    });
+                    continue;
+                }
+
                     std::thread::spawn(move || {
                         let body = if line.contains("GET /render/get") { render_get_json(&dir, &line) } else { render_adopt_json(&dir, &line) };
                         let response = format!(

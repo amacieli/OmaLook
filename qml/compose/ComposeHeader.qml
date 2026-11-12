@@ -3,6 +3,7 @@ import QtQuick.Layouts
 import qs.Commons
 import qs.Ui
 import "../common"
+import "identity.js" as Ident
 
 // From / To / Cc / Bcc / Subject. Pure view: the owner reads recipients and subject back
 // from the aliased fields.
@@ -11,6 +12,8 @@ ColumnLayout {
 
   property var accounts: []          // [{ id, provider, email, signed_in }]
   property string accountId: ""
+  property var identities: ({})        // {accountId: {identities: [{email, name, primary}], default}} (OL-051)
+  property string fromAddress: ""      // the address the message goes out as
   property var contacts: []
   property var lists: []
   property bool showCc: false
@@ -24,6 +27,7 @@ ColumnLayout {
   readonly property alias subject: subjectField
 
   signal accountPicked(string id)
+  signal fromPicked(string email)      // after accountPicked: the address chosen in the From dropdown
   signal edited()
 
   spacing: Style.spacing.md
@@ -32,15 +36,15 @@ ColumnLayout {
 
   RowLayout {
     Layout.fillWidth: true
-    visible: root._signedIn.length > 1
+    visible: Ident.showRow(root.accounts, root.identities, root.accountId)
     spacing: Style.spacing.lg
     UiText { Layout.preferredWidth: Style.space(52); text: "From"; dim: true; font.pixelSize: Style.font.caption }
     Dropdown {
       Layout.preferredWidth: Style.space(320)
       showLabel: false
-      value: root.accountId
-      options: root._signedIn.map(function(a) { return { value: a.id, label: a.email } })
-      onChanged: function(v) { root.accountPicked(v) }
+      value: Ident.key(root.accountId, root.fromAddress)
+      options: Ident.options(root.accounts, root.identities)
+      onChanged: function(v) { var p = Ident.parse(v); root.accountPicked(p.account); root.fromPicked(p.email) }
     }
     Item { Layout.fillWidth: true }
   }

@@ -15,3 +15,12 @@ impl GmailProvider {
         Ok(crate::list_headers::headers_from_gmail(&m))
     }
 }
+
+impl GmailProvider {
+    /// The account's send-as identities (`users.settings.sendAs`, scope `gmail.settings.basic`): the primary address
+    /// and the verified aliases. An account that signed in before that scope was added gets a 403, which is passed on.
+    pub async fn fetch_identities(&self, account_email: &str) -> Result<Vec<crate::identities::Identity>> {
+        let json = self.api.get(&format!("{}/settings/sendAs", BASE)).await?;
+        Ok(crate::identities::ensure_primary(crate::identities::parse_gmail_send_as(&json), account_email))
+    }
+}

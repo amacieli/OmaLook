@@ -1,6 +1,7 @@
 import QtQuick
 import Quickshell
 import "../mail/format.js" as Fmt
+import "../compose/identity.js" as Ident
 
 // All non-visual state: navigation + focus model, folder/message data, and the
 // backend (Rust daemon, local HTTP) calls. Components read properties and call
@@ -728,6 +729,7 @@ Item {
       try {
         var list = JSON.parse(xhr.responseText)
         root.accounts = list
+        root.loadIdentities()
         // The backend resolves the address asynchronously — re-poll until it's there
         accountRetry.running = list.some(function(a) { return !a.email })
       } catch (e) { console.log("[Accounts] parse error:", e) }
@@ -1263,8 +1265,11 @@ Item {
       } else {
         init.subject = /^re:/i.test(subj) ? subj : "Re: " + subj
         init.to = _addr(m)
+        // Who the original went to: a reply starts From the alias that was addressed (OL-051).
+        init.origRecipients = Fmt.parseAddresses((m.to_text || "") + ", " + (m.cc_text || "")).map(function(x) { return x.email })
         if (kind === "replyAll") {
-          var r = Fmt.replyAllRecipients(m, accounts.map(function(a) { return a.email }).concat([m.account_email]))
+          // The user's own aliases are not cc'd on a reply-all either.
+          var r = Fmt.replyAllRecipients(m, Ident.ownAddresses(accounts, identities).concat([m.account_email]))
           init.to = r.to; init.cc = r.cc; init.bcc = r.bcc
         }
       }
@@ -1273,7 +1278,37 @@ Item {
     composeStatus = ""
     composeInitial = init
     composing = true
-    loadComposeContacts(); loadLists()
+    loadComposeContacts(); loadLists(); loadIdentities()
+  }
+
+  // Send-as addresses per account (OL-051), {accountId: {identities: [{email, name, primary}], default}}. The backend
+  // caches them for hours; the compose From dropdown and a reply-all's own-address filter read this.
+  property var identities: ({})
+  function loadIdentities() {
+    accounts.filter(function(a) { return a.signed_in && a.email }).forEach(function(a) {
+      request("GET", "/compose/identities?account=" + encodeURIComponent(a.id), function(xhr) {
+        var r = null
+        try { r = JSON.parse(xhr.responseText) } catch (e) {}
+        if (xhr.status !== 200 || !r || r.error || !r.identities) return
+        var next = {}
+        for (var k in identities) next[k] = identities[k]
+        next[a.id] = r
+        identities = next
+      })
+    })
+  }
+  // The user chose another default From for new mail on an account.
+  function setDefaultIdentity(accountId, email) {
+    request("POST", "/compose/identity_default?account=" + encodeURIComponent(accountId) + "&email=" + encodeURIComponent(email), function(xhr) {
+      var r = null
+      try { r = JSON.parse(xhr.responseText) } catch (e) {}
+      if (r && r.error) notify(r.error)
+      else {
+        var next = {}
+        for (var k in identities) next[k] = identities[k]
+        if (next[accountId]) { next[accountId] = { identities: next[accountId].identities, default: email }; identities = next }
+      }
+    })
   }
 
   // File browser for attachments: the daemon lists one folder at a time; the last folder used is
@@ -1583,11 +1618,11 @@ Item {
       to: _addrText(m.to), cc: _addrText(m.cc), bcc: _addrText(m.bcc),
       toEntries: m.to, ccEntries: m.cc, bccEntries: m.bcc,
       subject: m.subject, quote: null, restore: m.body, mode: m.mode, attachments: m.attachments || [],
-      draftId: m.draft_id || "",
+      draftId: m.draft_id || "", from: m.from || "",
       forwardedKeep: m.forwarded_keep
     }
     composing = true
-    loadComposeContacts(); loadLists()
+    loadComposeContacts(); loadLists(); loadIdentities()
   }
 
   // The newest message still inside its delay (what `u` takes back).

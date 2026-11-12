@@ -1,0 +1,25 @@
+const fs=require('fs');
+const src=fs.readFileSync('qml/compose/identity.js','utf8').replace('.pragma library','');
+const I=new Function(src+';return {options,showRow,key,parse,autoFrom,override,ownAddresses}')();
+const eq=(a,b,m)=>{ const x=JSON.stringify(a), y=JSON.stringify(b); if(x!==y){console.error('FAIL',m,x,y);process.exit(1)} };
+const A={id:'exchange-1',email:'adam@corp.com',signed_in:true}, G={id:'gmail-1',email:'me@gmail.com',signed_in:true}, Off={id:'x',email:'off@x.org',signed_in:false};
+const ids={'exchange-1':{identities:[{email:'adam@corp.com',primary:true},{email:'sales@corp.com',primary:false}],default:'adam@corp.com'},
+           'gmail-1':{identities:[{email:'me@gmail.com',primary:true},{email:'work@co.org',primary:false}],default:'work@co.org'}};
+eq(I.options([A,G,Off],ids).map(o=>o.label),['adam@corp.com','sales@corp.com  (alias)','me@gmail.com','work@co.org  (alias)'],'options');
+eq(I.options([A],{}).map(o=>o.label),['adam@corp.com'],'before the identities load, the account address');
+eq(I.showRow([A],{},'exchange-1'),false,'one account, no alias: no row');
+eq(I.showRow([A],ids,'exchange-1'),true,'one account with an alias: row');
+eq(I.showRow([A,G],{}, 'x'),true,'two accounts: row');
+eq(I.parse(I.key('exchange-1','sales@corp.com')),{account:'exchange-1',email:'sales@corp.com'},'key round trip');
+eq(I.autoFrom(ids,A,'new',[]),'adam@corp.com','new: default');
+eq(I.autoFrom(ids,G,'new',[]),'work@co.org','new: provider default');
+eq(I.autoFrom(ids,A,'reply',['team@x.org','Sales@Corp.com']),'sales@corp.com','reply keeps the alias addressed');
+eq(I.autoFrom(ids,A,'replyAll',['Adam@corp.com']),'adam@corp.com','reply to the primary');
+eq(I.autoFrom(ids,A,'reply',['team@x.org']),'adam@corp.com','reply to others: default');
+eq(I.autoFrom(ids,A,'forward',['sales@corp.com']),'adam@corp.com','forward is not a reply');
+eq(I.autoFrom({},A,'new',[]),'adam@corp.com','identities not loaded yet');
+eq(I.autoFrom(ids,null,'new',[]),'','no account');
+eq(I.override('Adam@Corp.com',A),'','own address sends no override');
+eq(I.override('sales@corp.com',A),'sales@corp.com','alias is an override');
+eq(I.ownAddresses([A,G],ids),['adam@corp.com','adam@corp.com','sales@corp.com','me@gmail.com','me@gmail.com','work@co.org'],'own addresses');
+console.log('ok');

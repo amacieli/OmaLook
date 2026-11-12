@@ -12,6 +12,7 @@ import "attach.js" as Att
 import "../mail/format.js" as Fmt
 import "external.js" as External
 import "signature.js" as Sig
+import "identity.js" as Ident
 
 // Compose pane. Takes the reading pane's slot in MailView (PLAN-compose.md decision Q3).
 //
@@ -60,6 +61,12 @@ FocusScope {
 
   property string mode: defaultMode
   property string accountId: initial.accountId || ""
+  // OL-051: the send-as addresses per account (from the owner) and the From address. The user's pick wins; until then
+  // a reply starts as the alias the original was addressed to, anything else as the account's default.
+  property var identities: ({})
+  property var rememberFrom: null              // function(accountId, email), from the owner: the new default for new mail
+  property string pickedFrom: initial.from || ""      // an undone send reopens with the alias it was sent as
+  readonly property string fromAddress: root.pickedFrom !== "" ? root.pickedFrom : Ident.autoFrom(root.identities, root._account, initial.kind, initial.origRecipients)
   // "" | "discard" | "nosubject" | "flatten"
   property string confirming: ""
   property int audience: 0            // recipients counted at the last Send, lists included
@@ -391,6 +398,7 @@ FocusScope {
     return {
       kind: initial.kind,
       account_id: root.accountId,
+      from: Ident.override(root.fromAddress, root._account),
       in_reply_to: initial.inReplyTo || "",
       to: _recipientsOf(header.to), cc: _recipientsOf(header.cc), bcc: _recipientsOf(header.bcc),
       subject: header.subject.text,
@@ -624,10 +632,16 @@ else if (ctrl && !shift && e.key === Qt.Key_V) { root.startPaste(); e.accepted =
       Layout.margins: Style.spacing.lg
       accounts: root.accounts
       accountId: root.accountId
+      identities: root.identities
+      fromAddress: root.fromAddress
       nextFocus: editor
       contacts: root.contacts
       lists: root.lists
       onAccountPicked: function(id) { root.accountId = id }
+      onFromPicked: function(email) {
+        root.pickedFrom = email
+        if (initial.kind === "new" && root.rememberFrom) root.rememberFrom(root.accountId, email)
+      }
     }
 
     // ---- OL-023: external recipients. No close button: it stays while any external recipient is in

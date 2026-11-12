@@ -88,6 +88,8 @@ RowLayout {
     }
     onLoaded: {
       item.accounts = Qt.binding(function() { return root.app.accounts })
+      item.identities = Qt.binding(function() { return root.app.identities })
+      item.rememberFrom = function(accountId, email) { root.app.setDefaultIdentity(accountId, email) }
       item.contacts = Qt.binding(function() { return root.app.composeContacts })
       item.lists = Qt.binding(function() { return root.app.composeLists })
       item.signatures = Qt.binding(function() { return root.app.signatures })

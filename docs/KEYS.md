@@ -163,6 +163,15 @@ mail it starts with a `-- ` line; in HTML mail it is plain lines. Switching From
 |-----|--------|
 | `Ctrl+G` | Turn the signature off or on for this message only (also `:signature` in the palette). An edited signature is left alone, and the status line says so |
 
+## Sending as another address (aliases)
+
+The compose **From** dropdown lists every address you can send as: the account itself plus its aliases (Gmail: verified *send mail as* addresses; Exchange: the mailbox's `proxyAddresses`, never the `*.onmicrosoft.com` routing ones). It is shown when you have more than one account or the account has an alias. Pick one with the normal dropdown keys; no extra key.
+
+- A reply or reply-all starts From the alias the original was addressed to (a match in its To / Cc), else the account's default. A forward and a new mail start from the default.
+- Choosing an address in a **new** mail remembers it as that account's default; a pick in a reply applies to that reply only.
+- Reply-all never copies your own aliases.
+- Gmail puts the alias in the From header of the message; Exchange gets `from` on the message. Exchange accepts or refuses it per tenant (send-as / send-on-behalf permission); a refusal appears as the send error in the outbox, and *u* within the undo window takes the message back as usual.
+
 ## Reply to a mailing list
 
 | Key | Action |

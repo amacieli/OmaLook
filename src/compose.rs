@@ -106,6 +106,10 @@ pub struct OutgoingMessage {
     pub bcc: Vec<Address>,
     #[serde(default)]
     pub subject: String,
+    /// Send-as address (OL-051): an alias of the account to put in From. Empty = the account's own address.
+    /// Checked against the account's identities when the message is queued.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub from: String,
     /// "system" | "html": system mode never sends font / size / colour.
     #[serde(default)]
     pub mode: String,
@@ -578,13 +582,18 @@ pub fn graph_message_json_with(msg: &OutgoingMessage, present: &[String]) -> ser
         Some(h) => serde_json::json!({ "contentType": "HTML", "content": h }),
         None => serde_json::json!({ "contentType": "Text", "content": text }),
     };
-    serde_json::json!({
+    let mut j = serde_json::json!({
         "subject": msg.subject,
         "body": body,
         "toRecipients": graph_recipients(&msg.to),
         "ccRecipients": graph_recipients(&msg.cc),
         "bccRecipients": graph_recipients(&msg.bcc),
-    })
+    });
+    // Sent as an alias: Exchange accepts or refuses it for the tenant (the refusal reaches the user as the send error).
+    if let Some(f) = crate::identities::graph_from_json(&msg.from) {
+        j["from"] = f;
+    }
+    j
 }
 
 /// Body of `POST /me/sendMail`.
@@ -760,8 +769,10 @@ fn mime_headers(msg: &OutgoingMessage, from: &str, reply: Option<&ReplyHeaders>,
         h.push_str(v);
         h.push_str("\r\n");
     }
+    // A send-as alias chosen in the compose pane replaces the account address (OL-051).
+    let from = if msg.from.trim().is_empty() { from } else { msg.from.as_str() };
     if !from.trim().is_empty() {
-        line(&mut h, "From", from.trim());
+        line(&mut h, "From", &from.trim().replace(['\r', '\n', '<', '>'], ""));
     }
     if !msg.to.is_empty() {
         line(&mut h, "To", &address_list(&msg.to));
@@ -1103,6 +1114,25 @@ mod tests {
         let (h, t) = prepare_bodies(&msg("text", "a < b & c", "system"));
         assert!(h.is_none());
         assert_eq!(t, "a < b & c");
+    }
+
+    #[test]
+    fn send_as_goes_into_the_mime_from_and_the_graph_from() {
+        let mut m = msg("text", "hi", "system");
+        m.to = vec![addr("t@x.org", "")];
+        let plain = build_mime(&m, "me@x.org", None, "b", "Thu, 12 Nov 2026 10:00:00 +0000");
+        assert!(plain.contains("From: me@x.org\r\n"));
+        assert!(graph_message_json(&m).get("from").is_none(), "no override, no from");
+        m.from = "alias@x.org".into();
+        let raw = build_mime(&m, "me@x.org", None, "b", "Thu, 12 Nov 2026 10:00:00 +0000");
+        assert!(raw.contains("From: alias@x.org\r\n") && !raw.contains("me@x.org"));
+        assert_eq!(graph_message_json(&m)["from"]["emailAddress"]["address"], "alias@x.org");
+        assert_eq!(graph_send_mail_json(&m)["message"]["from"]["emailAddress"]["address"], "alias@x.org");
+        m.from = "a@x.org>\r\nBcc: evil@y.org".into();
+        let raw = build_mime(&m, "me@x.org", None, "b", "d");
+        assert!(!raw.contains("\r\nBcc: evil"), "a From cannot inject a header");
+        let back: OutgoingMessage = serde_json::from_str(&serde_json::to_string(&m).unwrap()).unwrap();
+        assert_eq!(back.from, m.from);
     }
 
     #[test]
