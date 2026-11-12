@@ -1,6 +1,7 @@
 import QtQuick
 import qs.Commons
 import qs.Commons as Commons
+import qs.Ui
 
 // A question with up to three choices (ConfirmDialog has two), styled like it. Left / Right / Tab move the
 // selection, Enter picks it, a click picks that button. Esc picks `escapeIndex`; -1 means Esc only dismisses.
