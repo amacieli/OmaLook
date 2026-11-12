@@ -45,7 +45,7 @@ Only Microsoft work/school accounts can create events so far. While the editor i
 | `Ctrl-Enter` | Save: the event is queued and waits the undo window (`[mail] send_delay_secs`), then goes to the server |
 | `Esc` | Close; once edited it asks, and a second `Esc` discards |
 | `Up` / `Down` on When | Start +-15 minutes; `Shift` +-1 day; `Alt` length +-15 minutes |
-| `Left` / `Right` / `Space` on Account or Show as | Change the choice |
+| `Left` / `Right` / `Space` on Account, Meeting or Show as | Change the choice (Meeting: None, Teams or Meet for the account, personal link, Jitsi; Zoom and Webex show "needs setup" and are skipped) |
 
 When takes typed text (`tomorrow 3pm`, `fri 10-10:30`, `+30m`, `all day mon`; `qml/calendar/when.js`) and always shows the resolved time and any overlap with
 existing events; Repeat takes `weekly`, `every 2 weeks on tue,thu`, `monthly 2nd tue`, `daily for 10`, `until 29 dec` (`qml/calendar/recurrence.js`) and shows the sentence and the next dates.
