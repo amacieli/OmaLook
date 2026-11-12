@@ -304,6 +304,7 @@ Item {
       property string payload: ""
       property string outFile: ""
       property bool gotOutput: false
+      property string adoptQuery: ""      // set when the backend should keep this render (render cache)
       stdinEnabled: true
       onStarted: { write(payload); stdinEnabled = false }
       stdout: StdioCollector {
@@ -320,6 +321,11 @@ Item {
           root.shotBg = r.bg || "#ffffff"
           root.shotSource = "file://" + proc.outFile
           root.shotPending = false
+          if (proc.adoptQuery !== "") {
+            var ad = new XMLHttpRequest()
+            ad.open("POST", root._backend + "/render/adopt?" + proc.adoptQuery + "&file=" + encodeURIComponent(proc.outFile))
+            ad.send()
+          }
         }
       }
       onExited: function(code, status) {
@@ -337,14 +343,45 @@ Item {
     }
   }
 
+  // The render cache (OL-028, backend `GET /render/get`): a message already drawn at this width is shown from the cache;
+  // otherwise the helper runs here as before and the result is handed to the backend to keep (`POST /render/adopt`).
+  readonly property string _backend: "http://127.0.0.1:" + (Quickshell.env("OMALOOK_PORT") || "27182")
+  function _shotQuery(w, sc, imgs) {
+    return "id=" + encodeURIComponent(String(root.message ? root.message.id : "")) + "&width=" + w + "&scale=" + sc + "&images=" + (imgs ? 1 : 0)
+  }
   function _startShot() {
     _stopShot()
+    var w = Math.max(300, Math.floor(htmlScroll.availableWidth)), sc = Math.max(1, Screen.devicePixelRatio), imgs = imagesAllowed
+    var seq = _seq
+    if (!root.message || !root.message.id) { _runHelper(w, sc, imgs); return }
+    var xhr = new XMLHttpRequest()
+    xhr.onreadystatechange = function() {
+      if (xhr.readyState !== XMLHttpRequest.DONE) return
+      if (seq !== root._seq) return          // moved on while asking
+      var r = null
+      try { r = JSON.parse(xhr.responseText) } catch (e) { r = null }
+      if (xhr.status === 200 && r && r.hit === true && r.meta && r.meta.width) {
+        root.shotScale = r.meta.scale
+        root.shotPixelWidth = r.meta.width
+        root.shotPixelHeight = r.meta.height
+        root.shotLinks = r.meta.links || []
+        root.shotBg = r.meta.bg || "#ffffff"
+        root.shotSource = "file://" + r.file
+        root.shotPending = false
+      } else {
+        root._runHelper(w, sc, imgs)
+      }
+    }
+    xhr.open("GET", _backend + "/render/get?" + _shotQuery(w, sc, imgs))
+    xhr.send()
+  }
+  function _runHelper(w, sc, imgs) {
     var run = Quickshell.env("XDG_RUNTIME_DIR") || "/tmp"
     var out = run + "/omalook-render-" + (_seq % 6) + ".png"
-    var args = [helperPath, "--width", String(Math.max(300, Math.floor(htmlScroll.availableWidth))),
-                "--scale", String(Math.max(1, Screen.devicePixelRatio)), "--out", out]
-    if (imagesAllowed) args.splice(1, 0, "--images")
-    var p = shotProcess.createObject(root, { seq: _seq, payload: String(root.body.content || ""), outFile: out, command: args })
+    var args = [helperPath, "--width", String(w), "--scale", String(sc), "--out", out]
+    if (imgs) args.splice(1, 0, "--images")
+    var p = shotProcess.createObject(root, { seq: _seq, payload: String(root.body.content || ""), outFile: out, command: args,
+                                             adoptQuery: root.message && root.message.id ? _shotQuery(w, sc, imgs) : "" })
     _shotProc = p
     p.running = true
   }

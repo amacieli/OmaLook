@@ -262,6 +262,18 @@ fn initialize_app(config_dir: &PathBuf, db_path: &str, settings_path: &str) -> o
         start_http_trigger_server(&config_dir_http);
     });
     
+    // Pre-render: mail from "always HTML" senders is drawn ahead of time into the render cache (OL-028).
+    let config_dir_render = config_dir.clone();
+    std::thread::Builder::new().name("prerender".into()).spawn(move || {
+        let cache = omalook::render_cache::RenderCache::new(omalook::render_cache::RenderCache::default_dir(), omalook::render_cache::CAP_BYTES);
+        let db = config_dir_render.join("messages.db");
+        std::thread::sleep(std::time::Duration::from_secs(45));      // let the first sync and the window settle
+        loop {
+            omalook::render_cache::prerender_round(db.to_str().unwrap_or("messages.db"), &cache, &render_helper_path(), 3);
+            std::thread::sleep(std::time::Duration::from_secs(30));
+        }
+    }).ok();
+
     // Per-account sync (mail + calendar threads for every signed-in account)
     let scheduler = Arc::new(omalook::scheduler::SyncScheduler::new(config_dir));
     let _ = SCHEDULER.set(Arc::clone(&scheduler));
@@ -728,6 +740,59 @@ fn sms_route(config_dir: &PathBuf, first_line: &str) -> String {
         }
         (true, "/sms/sync") => serde_json::json!({ "ok": omalook::sms_daemon::request_sync() }).to_string(),
         _ => err("unknown sms route"),
+    }
+}
+
+/// Path of the WebKit render helper (the reading pane looks in the same place).
+fn render_helper_path() -> PathBuf { resolve_qml_dir().join("..").join("bin").join("omalook-render") }
+
+/// GET /render/get?id&width&scale&images -> {"hit":false} or {"hit":true,"file":PNG,"meta":{width,height,scale,bg,links}}.
+/// Also remembers the width and scale so the background pre-render draws at the size the pane really uses.
+fn render_get_json(config_dir: &PathBuf, line: &str) -> String {
+    let miss = "{\"hit\":false}".to_string();
+    let id = query_param(line, "id").unwrap_or_default();
+    let width: u32 = query_param(line, "width").and_then(|v| v.parse().ok()).unwrap_or(0);
+    let scale: f64 = query_param(line, "scale").and_then(|v| v.parse().ok()).unwrap_or(1.0);
+    let images = query_param(line, "images").as_deref() == Some("1");
+    if id.is_empty() || width < 100 { return miss; }
+    let cache = omalook::render_cache::RenderCache::new(omalook::render_cache::RenderCache::default_dir(), omalook::render_cache::CAP_BYTES);
+    cache.write_hint(omalook::render_cache::Hint { width, scale });
+    let Ok(db) = Database::open(config_dir.join("messages.db").to_str().unwrap_or("messages.db")) else { return miss };
+    let Ok(Some((t, body))) = db.cached_body(&id) else { return miss };
+    if t != "html" { return miss; }
+    let k = omalook::render_cache::key(&id, &body, width, scale, images);
+    match cache.lookup(&k) {
+        Some((png, meta)) => {
+            let m: serde_json::Value = serde_json::from_str(&meta).unwrap_or(serde_json::Value::Null);
+            serde_json::json!({ "hit": true, "file": png.to_string_lossy(), "meta": m }).to_string()
+        }
+        None => miss,
+    }
+}
+
+/// POST /render/adopt?id&width&scale&images&file=PNG: the pane just rendered a message itself (helper output beside the
+/// PNG as PNG.json); keep a copy in the render cache. Only the pane's own temp files (XDG_RUNTIME_DIR/omalook-render-N.png).
+fn render_adopt_json(config_dir: &PathBuf, line: &str) -> String {
+    let err = |m: &str| format!("{{\"ok\":false,\"error\":{}}}", serde_json::to_string(m).unwrap());
+    let id = query_param(line, "id").unwrap_or_default();
+    let width: u32 = query_param(line, "width").and_then(|v| v.parse().ok()).unwrap_or(0);
+    let scale: f64 = query_param(line, "scale").and_then(|v| v.parse().ok()).unwrap_or(1.0);
+    let images = query_param(line, "images").as_deref() == Some("1");
+    let file = PathBuf::from(query_param(line, "file").unwrap_or_default());
+    let run = PathBuf::from(env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".into()));
+    let name = file.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    if file.parent() != Some(run.as_path()) || !name.starts_with("omalook-render-") || !name.ends_with(".png") { return err("not a render output"); }
+    let Ok(json) = std::fs::read_to_string(format!("{}.json", file.display())) else { return err("no helper output") };
+    let Ok(db) = Database::open(config_dir.join("messages.db").to_str().unwrap_or("messages.db")) else { return err("database") };
+    let Ok(Some((t, body))) = db.cached_body(&id) else { return err("no cached body") };
+    if t != "html" { return err("not html"); }
+    let received: String = rusqlite::Connection::open(config_dir.join("messages.db")).ok()
+        .and_then(|c| c.query_row("SELECT COALESCE(received_at,'') FROM messages WHERE id = ?1", [&id], |r| r.get(0)).ok()).unwrap_or_default();
+    let cache = omalook::render_cache::RenderCache::new(omalook::render_cache::RenderCache::default_dir(), omalook::render_cache::CAP_BYTES);
+    let k = omalook::render_cache::key(&id, &body, width, scale, images);
+    match cache.store(&k, &id, &received, &file, &json) {
+        Ok(kept) => format!("{{\"ok\":true,\"kept\":{}}}", kept),
+        Err(e) => err(&e.to_string()),
     }
 }
 
@@ -2993,6 +3058,20 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                     let dir = config_dir.clone();
                     std::thread::spawn(move || {
                         let body = if saving { save_attachments_json(&dir, &id, att.as_deref()) } else { message_attachments_json(&dir, &id) };
+                        let response = format!(
+                            "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                            body.len(), body
+                        );
+                        let _ = stream.write_all(response.as_bytes());
+                    });
+                    continue;
+                }
+
+                // ── Render cache (OL-028): GET /render/get?id&width&scale&images · POST /render/adopt?id&width&scale&images&file ──
+                if first_line.contains("GET /render/get") || first_line.contains("POST /render/adopt") {
+                    let (dir, line) = (config_dir.clone(), first_line.to_string());
+                    std::thread::spawn(move || {
+                        let body = if line.contains("GET /render/get") { render_get_json(&dir, &line) } else { render_adopt_json(&dir, &line) };
                         let response = format!(
                             "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                             body.len(), body

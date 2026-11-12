@@ -33,6 +33,7 @@ pub mod calendar_write;
 pub mod calendar_outbox;
 pub mod join_link;
 pub mod invites;
+pub mod render_cache;
 pub mod attachments;
 pub mod local_rules;
 pub mod gmail_filters;

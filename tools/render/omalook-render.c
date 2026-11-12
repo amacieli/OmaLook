@@ -55,6 +55,14 @@ static void on_links(GObject *src, GAsyncResult *res, gpointer data) {
          cairo_image_surface_get_width(surf), cairo_image_surface_get_height(surf),
          scale, bg, json ? json : "[]");
   fflush(stdout);
+  // The same line beside the PNG (OUT.json), so the app can keep both in its render cache without re-reading stdout.
+  {
+    char *jpath = g_strdup_printf("%s.json", out_path);
+    char *line = g_strdup_printf("{\"width\":%d,\"height\":%d,\"scale\":%g,\"bg\":\"%s\",\"links\":%s}\n",
+        cairo_image_surface_get_width(surf), cairo_image_surface_get_height(surf), scale, bg, json ? json : "[]");
+    g_file_set_contents(jpath, line, -1, NULL);
+    g_free(line); g_free(jpath);
+  }
   g_free(json);
   cairo_surface_destroy(surf);
   finish(0);
