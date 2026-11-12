@@ -46,6 +46,7 @@ Item {
     property var  marks: ({})                  // id -> true
     readonly property int markCount: Object.keys(marks).length
     property bool detailOpen: false
+    property bool detailFocus: false           // j/k, Ctrl-d/u, gg/G scroll the detail pane (Enter/Esc/h go back to the list)
     property var  detail: null
     property bool detailLoading: false
     property int  _detailSerial: 0
@@ -140,7 +141,12 @@ Item {
         xhr.onreadystatechange = function() {
             if (xhr.readyState !== XMLHttpRequest.DONE || serial !== root._detailSerial) return
             root.detailLoading = false
-            try { root.detail = JSON.parse(xhr.responseText) } catch (e) { root.detail = { ok: false, error: "unreadable answer" } }
+            try {
+                var d = JSON.parse(xhr.responseText)
+                // Gmail contacts keep no full object: show what the list row has instead of nothing
+                if (d && d.ok === true && (!d.contact || typeof d.contact !== "object") && root.selected && root.selected.id === d.id) { d.contact = PF.fromRow(root.selected); d.cached_only = true }
+                root.detail = d
+            } catch (e) { root.detail = { ok: false, error: "unreadable answer" } }
         }
         xhr.open("GET", backendUrl + "/contacts/get?id=" + encodeURIComponent(id))
         xhr.send()
@@ -198,6 +204,7 @@ Item {
     }
     function editContact() {
         if (!selected) return "No contact selected"
+        if (!_writableAccount(selected.account_id)) return "That account's contacts are read-only here (Gmail editing is a later phase)"
         var id = selected.id
         // live=1: the backend also reads the extra properties (fax, pager, anniversary, ...) from the server
         var xhr = new XMLHttpRequest()
@@ -428,7 +435,7 @@ Item {
     onAccountFilterChanged: { cur = 0; load() }
     onSearchTextChanged: { cur = 0; load() }
     onSelectedIdChanged: if (detailOpen) { loadDetail(); loadPhoto() }
-    onDetailOpenChanged: if (detailOpen) { loadDetail(); loadPhoto() }
+    onDetailOpenChanged: { if (detailOpen) { loadDetail(); loadPhoto() } else detailFocus = false }
     Component.onCompleted: { load(); loadFolders() }
 
     // the initial sync fills the address book over time, and the daemon changes rows: keep the list fresh
@@ -438,14 +445,25 @@ Item {
     function _clamp(i) { return Math.max(0, Math.min(contacts.length - 1, i)) }
     function _show() { list.positionViewAtIndex(cur, ListView.Contain) }
     function keyMove(dx, dy) {
+        if (detailFocus) {
+            if (dy !== 0) { scrollDetail(dy * 48); return true }
+            if (dx < 0) { detailFocus = false; return true }
+            return true
+        }
         if (dy !== 0) { cur = _clamp(cur + dy); _show(); return true }
-        if (dx > 0) { if (selected) detailOpen = true; return true }
+        if (dx > 0) { if (selected) { detailOpen = true; detailFocus = true } return true }
         if (dx < 0) { if (detailOpen) { detailOpen = false; return true } return false }
         return true
     }
-    function keyPage(frac) { cur = _clamp(cur + Math.round(frac * Math.max(1, Math.floor(list.height / rowHeight)))); _show() }
-    function keyEdge(bottom) { cur = bottom ? contacts.length - 1 : 0; _show() }
-    function keyActivate() { if (selected) detailOpen = !detailOpen; return true }
+    function keyPage(frac) { if (detailFocus) { scrollDetail(frac * Math.max(100, detailPane.height - 60)); return } cur = _clamp(cur + Math.round(frac * Math.max(1, Math.floor(list.height / rowHeight)))); _show() }
+    function keyEdge(bottom) { if (detailFocus) { scrollDetail(bottom ? 1e6 : -1e6); return } cur = bottom ? contacts.length - 1 : 0; _show() }
+    // Enter: open the detail and move into it; Enter again comes back to the list
+    function keyActivate() {
+        if (!selected) return true
+        if (!detailOpen) { detailOpen = true; detailFocus = true }
+        else detailFocus = !detailFocus
+        return true
+    }
     function pageScroll(dir) { keyPage(dir * 0.9) }
 
     // `/`: type a filter; Enter keeps it, Esc drops it
@@ -604,6 +622,15 @@ Item {
                     Keys.onReturnPressed: root.endSearch(true)
                     Keys.onEnterPressed: root.endSearch(true)
                     Keys.onEscapePressed: root.endSearch(false)
+                    // move through the results while typing
+                    Keys.onDownPressed: root.keyMove(0, 1)
+                    Keys.onUpPressed: root.keyMove(0, -1)
+                    Keys.onPressed: function(e) {
+                        if (e.key === Qt.Key_PageDown) { root.keyPage(1); e.accepted = true }
+                        else if (e.key === Qt.Key_PageUp) { root.keyPage(-1); e.accepted = true }
+                        else if ((e.modifiers & Qt.ControlModifier) && e.key === Qt.Key_N) { root.keyMove(0, 1); e.accepted = true }
+                        else if ((e.modifiers & Qt.ControlModifier) && e.key === Qt.Key_P) { root.keyMove(0, -1); e.accepted = true }
+                    }
                 }
                 Timer { id: searchDebounce; interval: 160; onTriggered: root.searchText = searchField.text }
 
@@ -712,7 +739,7 @@ Item {
                                      : (rowHover.hovered ? Qt.rgba(root.textColor.r, root.textColor.g, root.textColor.b, 0.05) : "transparent")
                         opacity: modelData.sync_state === "pending" ? 0.7 : 1
                         HoverHandler { id: rowHover }
-                        TapHandler { onTapped: { root.cur = row.index; root.detailOpen = true } }
+                        TapHandler { onTapped: { root.cur = row.index; root.detailOpen = true; root.detailFocus = false } }
 
                         Rectangle { visible: row.isCur; width: 3; height: parent.height; color: root.accentColor }
                         Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: Qt.rgba(root.textColor.r, root.textColor.g, root.textColor.b, 0.08) }
@@ -794,6 +821,8 @@ Item {
                 detail: root.detail
                 loading: root.detailLoading
                 photoPath: root.photoPath
+                // the pane that has the keys wears the accent, as the mail panes do
+                Rectangle { anchors.fill: parent; color: "transparent"; z: 5; visible: root.detailFocus; border.width: 2; border.color: root.accentColor }
             }
         }
     }

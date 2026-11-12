@@ -162,3 +162,25 @@ function vcard(c) {
   l.push("END:VCARD")
   return l.join("\r\n")
 }
+
+
+// A contact that only has the cached list row (Gmail contacts keep no full object): the same shape
+// the detail pane reads from the server, built from what the row has.
+function fromRow(r) {
+  if (!r) return null
+  var c = { displayName: s(r.display_name), givenName: s(r.given_name), surname: s(r.surname), companyName: s(r.company), jobTitle: s(r.job_title),
+            emailAddresses: [], homePhones: [], businessPhones: [], mobilePhone: "", categories: arr(r.categories) }
+  var seen = {}
+  arr(r.emails).forEach(function(e) { var k = s(e).toLowerCase(); if (k !== "" && !seen[k]) { seen[k] = true; c.emailAddresses.push({ address: s(e) }) } })
+  arr(r.phones).forEach(function(p) {
+    var k = s(p.kind).toLowerCase()
+    if (k === "mobile" && c.mobilePhone === "") c.mobilePhone = s(p.number)
+    else if (k === "home") c.homePhones.push(s(p.number))
+    else c.businessPhones.push(s(p.number))
+  })
+  arr(r.addresses).forEach(function(a) {
+    var key = s(a.kind) === "home" ? "homeAddress" : (s(a.kind) === "work" || s(a.kind) === "business" ? "businessAddress" : "otherAddress")
+    if (!c[key]) c[key] = { street: s(a.text) }
+  })
+  return c
+}

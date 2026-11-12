@@ -722,7 +722,7 @@ Item {
     { id: "people.search",  title: "Filter contacts\u2026", scope: "contacts/list", keys: ["/"], ex: ["find"], run: function() { content.startSearch() } },
     { id: "people.back",    title: "Close detail / clear filter / unmark", scope: "contacts/list", keys: ["Esc"],
       when: function() { return !!content && content.detailOpen !== undefined && (content.detailOpen || content.searchText !== "" || content.markCount > 0) },
-      run: function() { if (content.detailOpen) content.detailOpen = false; else if (content.searchText !== "") content.clearSearch(); else content.clearMarks() } },
+      run: function() { if (content.detailFocus) content.detailFocus = false; else if (content.detailOpen) content.detailOpen = false; else if (content.searchText !== "") content.clearSearch(); else content.clearMarks() } },
     { id: "people.fav",     title: "Favorite / unfavorite", scope: "contacts/list", keys: ["f"], run: function() { var m = content.toggleFavorite(); if (m) say(m) } },
     { id: "people.sort",    title: "Cycle the sort order", scope: "contacts/list", keys: ["o"], run: function() { say(content.cycleSort()) } },
     { id: "people.view",    title: "Cycle all / favorites / folders", scope: "contacts/list", keys: ["V"], run: function() { say(content.cycleView()) } },

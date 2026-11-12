@@ -1,6 +1,6 @@
 const fs=require('fs');
 const src=fs.readFileSync('qml/people/fields.js','utf8').replace('.pragma library','');
-const F=new Function(src+';return {displayName,oneLine,manyLines,birthdayText,sections,targets,openableUrl,mapUrl,asText,vcard}')();
+const F=new Function(src+';return {displayName,oneLine,manyLines,birthdayText,sections,targets,openableUrl,mapUrl,asText,vcard,fromRow}')();
 const eq=(a,b,m)=>{ const x=JSON.stringify(a), y=JSON.stringify(b); if(x!==y){console.error('FAIL',m,x,y);process.exit(1)} };
 eq(F.displayName({displayName:'Ada L'}),'Ada L','display');
 eq(F.displayName({givenName:'Ada',surname:'L'}),'Ada L','parts');
@@ -34,4 +34,7 @@ const v=F.vcard(c); if(!v.startsWith('BEGIN:VCARD')||!v.endsWith('END:VCARD')||!
 eq(F.sections({}),[], 'empty contact');
 const sx=F.sections({singleValueExtendedProperties:[{id:'String 0x3a23',value:'555'},{id:'SystemTime 0x3a41',value:'2001-02-03T11:59:00Z'},{id:'Integer 0x3a4d',value:'2'}]});
 eq(sx.map(s=>s.title),['Phone','Personal'],'ext sections'); eq(sx[0].rows[0].label+':'+sx[0].rows[0].number,'Fax:555','fax row'); eq(sx[1].rows.map(r=>r.label+':'+r.value),['Anniversary:3 Feb 2001','Gender:male'],'personal ext');
+const fr=F.fromRow({display_name:'Adam M',given_name:'Adam',surname:'M',emails:['a@x.org','A@x.org','b@x.org'],phones:[{kind:'home',number:'+1 (212) 404-6947'},{kind:'mobile',number:'917'}],addresses:[{kind:'home',text:'1 Rd, Town'}],categories:[]});
+eq(fr.emailAddresses.length,2,'fromRow dedupes emails'); eq(fr.homePhones,['+1 (212) 404-6947'],'home phone'); eq(fr.mobilePhone,'917','mobile');
+eq(F.sections(fr).map(s=>s.title).includes('Phone'),true,'fromRow phone section'); eq(F.fromRow(null),null,'fromRow null');
 console.log('ok contacts');

@@ -193,6 +193,14 @@ FocusScope {
                             width: parent.width - x
                             height: row.multi ? Math.max(implicitHeight, Style.space(110)) : 0
                             wrapMode: TextEdit.Wrap
+                            // the same face, size and colors as the single-line fields (a bare TextArea uses the system font)
+                            font.family: Style.font.family
+                            font.pixelSize: Style.font.body
+                            color: Commons.Color.foreground
+                            placeholderTextColor: Qt.darker(Commons.Color.foreground, 1.8)
+                            selectionColor: Commons.Color.accent
+                            selectedTextColor: Commons.Color.background
+                            background: Rectangle { color: "transparent"; border.width: 1; border.color: field.activeFocus ? Commons.Color.accent : Qt.darker(Commons.Color.foreground, 2.4); radius: 4 }
                             placeholderText: row.modelData.hint || ""
                             activeFocusOnTab: row.multi
                             Component.onCompleted: text = root.values[row.modelData.id] || ""
