@@ -12,6 +12,7 @@
 //! - [`token`]: the bearer token file.
 
 pub mod admin;
+pub mod calendar_tools;
 pub mod policy;
 pub mod read;
 pub mod registry;

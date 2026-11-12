@@ -1848,6 +1848,11 @@ fn calendar_event_response(config_dir: &PathBuf, stream: &mut std::net::TcpStrea
         Ok(d) => d,
         Err(e) => return err(&e),
     };
+    if !draft.attendees.is_empty() {
+        if let Some(m) = omalook::accounts::personal_refusal(&account_id, omalook::accounts::PersonalLimit::Invite) {
+            return err(m);
+        }
+    }
     // Google accounts get Google's body (OL-021 track C). The dry run names the body by provider.
     let google = omalook::accounts::provider_of(&account_id) == "gmail";
     let graph_body = match if google { omalook::providers::google_calendar_write::create_body(&draft) } else { draft.to_graph_json() } {
@@ -1962,6 +1967,11 @@ fn calendar_change_response(config_dir: &PathBuf, stream: &mut std::net::TcpStre
         req["transaction_id"] = serde_json::json!(tx);
         req["series"] = serde_json::json!(target.series);
         req.clone()
+        if !draft.attendees.is_empty() {
+            if let Some(m) = omalook::accounts::personal_refusal(&account_id, omalook::accounts::PersonalLimit::Invite) {
+                return err(m);
+            }
+        }
     } else {
         serde_json::json!({ "account_id": account_id, "comment": req["comment"].as_str().unwrap_or(""),
             "subject": target.subject, "start": target.start, "end": target.end, "all_day": target.all_day,

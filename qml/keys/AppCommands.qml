@@ -668,6 +668,7 @@ Item {
     { id: "mail.draft.edit", title: "Edit this draft (Drafts folder; Enter does too)", scope: "mail", keys: ["e"], when: function() { return onMessages && !app.composing && app.currentIsDraft }, run: function() { app.openDraftRow() } },
     { id: "mail.replyall", title: "Reply all",     scope: "mail", keys: ["R"], run: function() { app.openCompose("replyAll") } },
     { id: "mail.forward",  title: "Forward",       scope: "mail", keys: ["f"], run: function() { app.openCompose("forward") } },
+    { id: "mail.newevent", title: "New calendar event from this message (prefilled; nothing is sent until you save)", scope: "mail", keys: ["C-e"], ex: ["event from mail", "newevent"], when: function() { return onMessages && !app.composing && app.currentMessageId !== "" }, run: function() { app.openEventFromMail() } },
     { id: "mail.bounce", title: "Bounce: send this message on to someone else (arrives from you, replies go to the author)", scope: "mail", keys: ["B"], ex: ["bounce"], pick: pickBounce, when: function() { return onMessages && !app.composing && app.currentMessageId !== "" }, run: function() { root.paletteRequested("bounce ") } },
     { id: "mail.replylist", title: "Reply to the mailing list (List-Post), not the sender", scope: "mail", keys: ["L"], ex: ["replylist", "rl"], when: function() { return onMessages && app.currentMessageId !== "" }, run: function() { app.replyToList() } },
     { id: "mail.read",     title: "Mark read / unread", scope: "mail", keys: ["z"], run: function() { app.toggleRead() } },

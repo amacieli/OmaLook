@@ -61,6 +61,10 @@ pub static TOOLS: &[ToolSpec] = &[
     // calendar
     t("calendar_list_events", Calendar, R, "List calendar events overlapping a date range (from and to as YYYY-MM-DD; default today + 14 days; at most 366 days).", true),
     t("calendar_get_event", Calendar, R, "Details of one event.", true),
+    t("calendar_find_times", Calendar, R, "Ranked free slots for a meeting with the given attendees (work and school accounts only). from and to as YYYY-MM-DD; duration in minutes.", true),
+    t("calendar_create_event", Calendar, W2, "Create an event. Queued behind the undo window: invitations go out only after it. Personal Microsoft accounts: no attendees.", true),
+    t("calendar_update_event", Calendar, W2, "Change a single (non-recurring) event: the same fields as create, replacing the event. Queued behind the undo window.", true),
+    t("calendar_cancel_event", Calendar, W2, "Cancel an event (organiser's cancel, optional message to attendees) or delete it. Queued behind the undo window.", true),
     t("calendar_respond_invite", Calendar, W2, "Accept, tentatively accept or decline a meeting invite (tells the organiser).", false),
     // contacts
     t("contacts_list", Contacts, R, "List contacts (view: all or favorites; sort: first, last, company, recent).", true),
@@ -109,6 +113,29 @@ pub fn input_schema(name: &str) -> Value {
             "to": { "type": "string", "description": "Last day, YYYY-MM-DD, inclusive (default from + 14 days)." },
             "account": account, "limit": limit, "cursor": cursor,
         }), &[]),
+        "calendar_find_times" => obj(json!({
+            "account": account,
+            "from": { "type": "string", "description": "First day, YYYY-MM-DD." },
+            "to": { "type": "string", "description": "Day after the last day to search, YYYY-MM-DD." },
+            "duration": { "type": "integer", "description": "Meeting length in minutes." },
+            "attendees": { "type": "array", "items": { "type": "string" }, "description": "Required attendee emails." },
+            "optional": { "type": "array", "items": { "type": "string" }, "description": "Optional attendee emails." },
+            "accounts": { "type": "array", "items": { "type": "string" }, "description": "Other account ids to check for the organiser." },
+            "limit": { "type": "integer", "description": "Slots to return (1 to 20, default 5)." },
+        }), &["account", "from", "to", "duration"]),
+        "calendar_create_event" => obj(event_fields(&account), &["account", "start", "end"]),
+        "calendar_update_event" => {
+            let mut v = event_fields(&account);
+            v["id"] = json!({ "type": "string", "description": "Event id from calendar_list_events." });
+            obj(v, &["account", "id", "start", "end"])
+        }
+        "calendar_cancel_event" => obj(json!({
+            "account": account,
+            "id": { "type": "string", "description": "Event id from calendar_list_events." },
+            "kind": { "type": "string", "enum": ["cancel", "delete"], "description": "cancel: tell attendees (default). delete: remove without telling anyone." },
+            "comment": { "type": "string", "description": "Message to attendees with a cancel (not allowed on personal Microsoft accounts)." },
+            "dry_run": { "type": "boolean", "description": "Say what would be queued; queue nothing." },
+        }), &["account", "id"]),
         "contacts_list" => obj(json!({
             "account": account, "limit": limit, "cursor": cursor,
             "view": { "type": "string", "enum": ["all", "favorites"] },
@@ -134,6 +161,25 @@ pub fn input_schema(name: &str) -> Value {
     }
 }
 
+/// The event fields shared by create and update (what the editor sends; see `calendar_tools::editor_json`).
+fn event_fields(account: &Value) -> Value {
+    json!({
+        "account": account,
+        "subject": { "type": "string" },
+        "body": { "type": "string", "description": "Plain-text notes." },
+        "start": { "type": "string", "description": "Local start, YYYY-MM-DDTHH:MM (a date for all-day events)." },
+        "end": { "type": "string", "description": "Local end, YYYY-MM-DDTHH:MM (a date for all-day events)." },
+        "time_zone": { "type": "string", "description": "IANA zone name (default: this computer's zone)." },
+        "all_day": { "type": "boolean" },
+        "location": { "type": "string" },
+        "attendees": { "type": "array", "items": { "type": "string" }, "description": "Required attendee emails. Inviting them queues the invitation behind the undo window." },
+        "optional": { "type": "array", "items": { "type": "string" }, "description": "Optional attendee emails." },
+        "reminder_minutes": { "type": "integer", "minimum": 0 },
+        "show_as": { "type": "string", "enum": ["busy", "free", "tentative", "oof"] },
+        "dry_run": { "type": "boolean", "description": "Return the event and the invitee count; queue nothing." },
+    })
+}
+
 /// Run an implemented tool. The caller has already applied the policy.
 pub fn call(ctx: &Ctx, name: &str, args: &Value) -> Result<Value, String> {
     use super::read as r;
@@ -148,6 +194,10 @@ pub fn call(ctx: &Ctx, name: &str, args: &Value) -> Result<Value, String> {
         "mail_list_categories" => r::mail_list_categories(ctx, args),
         "calendar_list_events" => r::calendar_list_events(ctx, args),
         "calendar_get_event" => r::calendar_get_event(ctx, args),
+        "calendar_find_times" => super::calendar_tools::find_times(ctx, args),
+        "calendar_create_event" => super::calendar_tools::create_event(ctx, args),
+        "calendar_update_event" => super::calendar_tools::update_event(ctx, args),
+        "calendar_cancel_event" => super::calendar_tools::cancel_event(ctx, args),
         "contacts_list" => r::contacts_list(ctx, args),
         "contacts_search" => r::contacts_search(ctx, args),
         "contacts_get" => r::contacts_get(ctx, args),

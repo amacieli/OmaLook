@@ -290,6 +290,12 @@ The calendar has a keyboard cursor (the highlighted day; in the day and week gri
 With more than one account, event bars take the account's colour and the header shows the filter. The join link is the provider's own link
 when there is one, else a known meeting host found in the location or body, else the first `https` URL in the location.
 
+## Create an event from a mail (OL-021 track D)
+
+| Key | What |
+|---|---|
+| `C-e` in the mail view | Open the calendar event editor prefilled from the selected message (`mail.newevent`; also `:event from mail`). Title is the subject, sender and To are required attendees, Cc optional (your own addresses left out), the body excerpt is the notes, the time comes from a date in the text (`tomorrow 3pm`) or else the next free hour. Nothing is sent: Ctrl-Enter in the editor starts the undo window as usual. |
+
 ## Find a free time (OL-021 track A)
 
 | Key | What |

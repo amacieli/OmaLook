@@ -45,6 +45,58 @@ pub fn provider_of(account_id: &str) -> &str {
     account_id.split('-').next().unwrap_or(account_id)
 }
 
+/// Personal Microsoft accounts (Outlook.com, Hotmail, Live) are the `outlook` provider; work and school
+/// accounts are `exchange`.
+pub fn is_personal_microsoft(account_id: &str) -> bool {
+    provider_of(account_id) == "outlook"
+}
+
+/// What a personal Microsoft account cannot do with calendar entries. Create, edit and plain delete work;
+/// Microsoft documents the scheduling and invitation calls as not supported for personal accounts
+/// (docs/PLAN-calendar-events.md, "Personal Microsoft accounts").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PersonalLimit {
+    /// Attendees on a create or an edit.
+    Invite,
+    /// Cancel that tells attendees (an organiser's cancel with a message).
+    CancelWithMessage,
+    /// The free-time finder (`getSchedule`, `findMeetingTimes`).
+    Finder,
+}
+
+/// `Some(polite refusal)` when `account_id` is personal and the action is one of its limits; `None` otherwise.
+pub fn personal_refusal(account_id: &str, limit: PersonalLimit) -> Option<&'static str> {
+    if !is_personal_microsoft(account_id) {
+        return None;
+    }
+    Some(match limit {
+        PersonalLimit::Invite => "Personal Microsoft accounts can't invite attendees: Microsoft does not support that for them. Create the entry without attendees, or use a work or school account.",
+        PersonalLimit::CancelWithMessage => "Personal Microsoft accounts can't cancel with a message to attendees: Microsoft does not support that for them. Delete the entry instead.",
+        PersonalLimit::Finder => "Personal Microsoft accounts have no free-time finder: Microsoft does not support the scheduling lookups for them. Use a work or school account.",
+    })
+}
+
+#[cfg(test)]
+mod personal_tests {
+    use super::*;
+
+    #[test]
+    fn only_outlook_accounts_are_personal() {
+        assert!(is_personal_microsoft("outlook-bbbbbb"));
+        assert!(!is_personal_microsoft("exchange-1"));
+        assert!(!is_personal_microsoft("gmail-2"));
+    }
+
+    #[test]
+    fn personal_limits_are_refused_politely_and_work_accounts_pass() {
+        assert!(personal_refusal("exchange-1", PersonalLimit::Invite).is_none());
+        for l in [PersonalLimit::Invite, PersonalLimit::CancelWithMessage, PersonalLimit::Finder] {
+            let m = personal_refusal("outlook-1", l).expect("refused");
+            assert!(m.contains("Microsoft does not support") && !m.contains("error"));
+        }
+    }
+}
+
 /// Provider-supplied ids that are only unique within one mailbox (Gmail message / label ids,
 /// Google event and contact ids) are stored as `<account id>:<provider id>` so two accounts can
 /// never collide in the shared tables. Account ids contain no ':'.

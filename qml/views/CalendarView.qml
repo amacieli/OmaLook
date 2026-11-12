@@ -9,6 +9,8 @@ import "../common"
 import "CalendarUtil.js" as CU
 import "../calendar"
 import "../calendar/draft.js" as Draft
+import "../calendar/frommail.js" as FromMail
+import "../calendar/when.js" as When
 
 // CalendarView — header (view dropdown, navigation, title) above one of four
 // separate views: DayView, WorkWeekView, FullWeekView, MonthView.
@@ -81,6 +83,9 @@ Item {
     property bool   editorOpen: false
     readonly property bool editing: editorOpen || askMode !== "" || finderOpen    // AppShell hands every key to the editor's fields, the question or the finder meanwhile
     property var    editorRestore: null
+    property var    pendingMail: null          // create-from-mail hand-off from AppState.openEventFromMail (Ctrl-E)
+    signal mailPrefillTaken()
+    signal notice(string text)
     property string editorAccount: ""
     property var    meetingOptions: []           // the editor's Online meeting rows for editorAccount (GET /calendar/meeting-options)
     property int    _meetSerial: 0
@@ -150,6 +155,33 @@ Item {
         editorRestore = null
         editorOpen = true
         return ""
+    }
+
+    // ── create-from-mail (Ctrl-E; qml/calendar/frommail.js). Opens the editor prefilled from the message; nothing is sent.
+    function takeMailPrefill() {
+        var p = pendingMail
+        if (!p || editorOpen) return
+        pendingMail = null
+        mailPrefillTaken()
+        var m = p.msg || {}
+        var busy = events.map(function(e) {
+            var s = e.startDate, en = e.endDate
+            return { start: new Date(s.getFullYear(), s.getMonth(), s.getDate(), 0, e.allDay ? 0 : e.startMin),
+                     end: new Date(en.getFullYear(), en.getMonth(), en.getDate() + (e.allDay ? 1 : 0), 0, e.allDay ? 0 : e.endMin) }
+        })
+        var d = FromMail.prefill(m, { now: new Date(), ownEmails: p.ownEmails || [], body: p.body || "",
+                                      parseWhen: When.parseWhen, defaultMinutes: eventDefaults.minutes,
+                                      defaultReminder: eventDefaults.reminder, busy: busy })
+        var acc = Draft.chooseAccount(appAccounts, { filterEmail: accountFilter, cursorEmail: m.account_email || "",
+                                                     defaultAccount: eventDefaults.account, lastUsed: lastAccount })
+        if (acc === "") { notice("No signed-in account can create events yet (Microsoft work/school or Google)"); return }
+        editorStart = d.start
+        editorMode = "create"
+        editorOriginal = null
+        editorAccount = acc
+        editorStatus = "From the mail. Nothing is sent until you save (Ctrl-Enter)."
+        editorRestore = d.restore
+        editorOpen = true
     }
 
     // ── free-time finder (track A; docs/PLAN-calendar-events.md 5.6). Opened from the editor (its attendees, start and length)
@@ -542,7 +574,8 @@ Item {
     onAnchorDateChanged: { selIdx = 0; loadEvents(false) }
     onCursorMinChanged:  selIdx = 0
     onSelectedEventChanged: if (!selectedEvent) detailOpen = false
-    Component.onCompleted: { loadEvents(true); pollOutbox() }
+    Component.onCompleted: { loadEvents(true); pollOutbox(); takeMailPrefill() }
+    onPendingMailChanged: takeMailPrefill()
 
     // ── sidebar width (OL-031): characters relative to the default, kept as [ui] calendar_pane_offset ──
     TextMetrics { id: charMetrics; text: "0"; font.family: Style.font.family; font.pixelSize: Style.font.body }

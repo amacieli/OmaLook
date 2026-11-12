@@ -56,7 +56,7 @@ function conflicts(events, start, end, allDay) {
 }
 
 // Microsoft work/school (Graph) and Google accounts can create and change events (Google: OL-021 track C).
-function canCreate(account) { return !!account && account.signed_in !== false && (account.provider === "exchange" || account.provider === "gmail") }
+function canCreate(account) { return !!account && account.signed_in !== false && (account.provider === "exchange" || account.provider === "gmail" || account.provider === "outlook") }
 
 // Which account a new event goes to (plan 5.1): the filtered one, else the one under the cursor, else
 // the pinned default, else the one used last, else the first that can create. Returns an account id or "".
@@ -192,7 +192,7 @@ function editRefusal(raw, account) {
     if (!raw) return "No event selected"
     if (raw.pending === true) return "That event is not saved yet"
     if (!account) return "This calendar is not connected any more"
-    if (account.provider !== "exchange" && account.provider !== "gmail") return "This calendar cannot be changed in OmaLook"
+    if (account.provider !== "exchange" && account.provider !== "gmail" && account.provider !== "outlook" && account.provider !== "outlook") return "This calendar cannot be changed in OmaLook"
     if (!isMine(raw, account)) return "Only the organiser can change this meeting. x declines it."
     return ""
 }
@@ -203,7 +203,7 @@ function removeKind(raw, account) {
     if (!raw) return { error: "No event selected" }
     if (raw.pending === true) return { error: "That event is not saved yet" }
     if (!account) return { error: "This calendar is not connected any more" }
-    if (account.provider !== "exchange" && account.provider !== "gmail") return { error: "This calendar cannot be changed in OmaLook" }
+    if (account.provider !== "exchange" && account.provider !== "gmail" && account.provider !== "outlook" && account.provider !== "outlook") return { error: "This calendar cannot be changed in OmaLook" }
     if (!isMine(raw, account)) {
         if ((raw.organizer_email || "") !== "") return { kind: "decline" }
         return { error: "Not your event: only its organiser can delete it" }

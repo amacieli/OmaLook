@@ -614,7 +614,8 @@ impl FindRequest {
 }
 
 fn is_exchange(account_id: &str) -> bool {
-    matches!(crate::accounts::provider_of(account_id), "exchange" | "outlook")
+    // Work and school only: personal Microsoft accounts (`outlook`) have no free/busy (plan: no finder).
+    crate::accounts::provider_of(account_id) == "exchange"
 }
 
 /// Google accounts answer free/busy through `freeBusy` (OL-021 track C), behind the same finder shape.

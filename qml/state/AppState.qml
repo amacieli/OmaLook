@@ -1288,6 +1288,19 @@ Item {
   property var smsDraftTo: null
   function textTo(label, number) { smsDraftTo = { label: label, number: number }; gotoView("sms") }
 
+  // Create-from-mail (Ctrl-E in the mail view): the message, its loaded body and the account's own addresses.
+  // CalendarView takes it, builds the editor prefill (qml/calendar/frommail.js) and clears it. Nothing is sent.
+  property var pendingEventMail: null
+  function openEventFromMail() {
+    var m = currentMessage
+    if (!m) { notify("Open a message first"); return }
+    var own = accounts.map(function(a) { return a.email || "" }).filter(function(e) { return e !== "" })
+    var b = currentBody
+    var body = b && b.id === m.id && b.state === "ready" && b.type !== "html" ? String(b.content || "") : ""
+    pendingEventMail = { msg: m, body: body, ownEmails: own }
+    gotoView("calendar")
+  }
+
   function openCompose(kind, preset) {
     var m = currentMessage
     var init = { kind: kind, accountId: "", to: "", cc: "", bcc: "", subject: "", quote: null, inReplyTo: "" }
