@@ -57,6 +57,27 @@ pub trait CalendarProvider: Send + Sync {
     async fn create_event(&self, _draft: &crate::calendar_write::EventDraft) -> Result<crate::calendar_write::CreatedEvent> {
         Err(OmarchyError::HttpError("creating events is not supported for this account type yet".to_string()))
     }
+
+    /// Edit an event (plan section 4, phase 3). `target` is the occurrence id (the provider makes an exception)
+    /// or, when `series`, the series master id (the whole series changes). Attendees receive the update.
+    async fn update_event(&self, _target: &str, _draft: &crate::calendar_write::EventDraft, _series: bool) -> Result<crate::calendar_write::CreatedEvent> {
+        Err(OmarchyError::HttpError("editing events is not supported for this account type yet".to_string()))
+    }
+
+    /// Delete a personal entry, or one occurrence of one (nobody is told). Missing already = done.
+    async fn delete_event(&self, _target: &str) -> Result<()> {
+        Err(OmarchyError::HttpError("deleting events is not supported for this account type yet".to_string()))
+    }
+
+    /// Organiser: cancel a meeting, which sends the cancellation (with `comment`) to every attendee.
+    async fn cancel_event(&self, _target: &str, _comment: &str) -> Result<()> {
+        Err(OmarchyError::HttpError("cancelling meetings is not supported for this account type yet".to_string()))
+    }
+
+    /// Attendee: decline a meeting; the organiser is told, with `comment`.
+    async fn decline_event(&self, _target: &str, _comment: &str) -> Result<()> {
+        Err(OmarchyError::HttpError("declining meetings is not supported for this account type yet".to_string()))
+    }
 }
 
 /// Local midnight of `date` as an RFC 3339 instant with its UTC offset.
@@ -87,6 +108,27 @@ pub struct GraphCalendarProvider {
 impl GraphCalendarProvider {
     pub fn new(auth: AuthManager) -> Self {
         Self { auth: Mutex::new(auth), time_zone: local_time_zone() }
+    }
+
+    /// One Graph call that must succeed; the body of the answer (possibly empty) comes back.
+    async fn graph_call(&self, method: reqwest::Method, path: &str, body: Option<serde_json::Value>, time_zone: Option<&str>) -> Result<String> {
+        let token = self.get_token().await?;
+        let mut req = super::http_client()
+            .request(method, format!("https://graph.microsoft.com/v1.0/{}", path))
+            .header("Authorization", format!("Bearer {}", token));
+        if let Some(tz) = time_zone {
+            req = req.header("Prefer", format!("outlook.timezone=\"{}\", outlook.body-content-type=\"text\"", tz));
+        }
+        if let Some(b) = body {
+            req = req.header("Content-Type", "application/json").body(b.to_string());
+        }
+        let response = req.send().await.map_err(|e| OmarchyError::HttpError(e.to_string()))?;
+        let status = response.status();
+        let text = response.text().await.map_err(|e| OmarchyError::HttpError(e.to_string()))?;
+        if !status.is_success() {
+            return Err(OmarchyError::HttpError(format!("Graph API error: {} — {}", status, text)));
+        }
+        Ok(text)
     }
 
     async fn get_token(&self) -> Result<String> {
@@ -257,6 +299,38 @@ impl CalendarProvider for GraphCalendarProvider {
             is_series: raw["type"].as_str() == Some("seriesMaster"),
             raw,
         })
+    }
+
+    async fn update_event(&self, target: &str, draft: &crate::calendar_write::EventDraft, series: bool) -> Result<crate::calendar_write::CreatedEvent> {
+        let body = draft.to_graph_patch_json(series).map_err(|e| OmarchyError::HttpError(format!("Invalid event: {}", e)))?;
+        let text = self.graph_call(reqwest::Method::PATCH, &format!("me/events/{}", urlencoding::encode(target)), Some(body), Some(&draft.time_zone)).await?;
+        let raw: serde_json::Value = serde_json::from_str(&text).unwrap_or(serde_json::Value::Null);
+        Ok(crate::calendar_write::CreatedEvent {
+            id: raw["id"].as_str().unwrap_or(target).to_string(),
+            web_link: raw["webLink"].as_str().unwrap_or("").to_string(),
+            join_url: raw["onlineMeeting"]["joinUrl"].as_str().unwrap_or("").to_string(),
+            is_series: raw["type"].as_str() == Some("seriesMaster"),
+            raw,
+        })
+    }
+
+    async fn delete_event(&self, target: &str) -> Result<()> {
+        match self.graph_call(reqwest::Method::DELETE, &format!("me/events/{}", urlencoding::encode(target)), None, None).await {
+            Ok(_) => Ok(()),
+            // Already gone (deleted from another client): the state the user asked for is there.
+            Err(e) if e.to_string().contains("404") => Ok(()),
+            Err(e) => Err(e),
+        }
+    }
+
+    async fn cancel_event(&self, target: &str, comment: &str) -> Result<()> {
+        self.graph_call(reqwest::Method::POST, &format!("me/events/{}/cancel", urlencoding::encode(target)), Some(serde_json::json!({ "comment": comment })), None).await?;
+        Ok(())
+    }
+
+    async fn decline_event(&self, target: &str, comment: &str) -> Result<()> {
+        self.graph_call(reqwest::Method::POST, &format!("me/events/{}/decline", urlencoding::encode(target)), Some(serde_json::json!({ "comment": comment, "sendResponse": true })), None).await?;
+        Ok(())
     }
 
     async fn set_event_tags(&self, id: &str, tags: &[String]) -> Result<Vec<String>> {

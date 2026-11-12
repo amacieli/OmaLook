@@ -7,6 +7,7 @@ use crate::token_store::DEFAULT_ACCOUNT;
 use log::{debug, info, warn};
 use rusqlite::{Connection, params, OptionalExtension};
 use chrono::Utc;
+use crate::calendar_write::CalEventRef;
 
 /// Folder kinds that get an "all accounts" row when two or more accounts have one.
 /// Only names that mean the same thing across providers (Graph and Gmail well-known names).
@@ -1328,6 +1329,38 @@ impl Database {
     pub fn cal_event_tags(&self, event_id: &str) -> Vec<String> {
         self.conn.query_row("SELECT tags_json FROM calendar_events WHERE id = ?1 AND account_id = ?2", params![event_id, self.account_id], |r| r.get::<_, String>(0))
             .ok().and_then(|j| serde_json::from_str(&j).ok()).unwrap_or_default()
+    }
+
+    /// What an edit, cancel, decline or delete acts on (plan phase 3). `series` asks for the whole series: a
+    /// member resolves to its master id. Without it the id is the event itself (one occurrence alone).
+    /// A series master always changes as a whole, since it has no occurrence id of its own.
+    pub fn cal_event_ref(&self, event_id: &str, series: bool) -> std::result::Result<Option<CalEventRef>, String> {
+        let row = self.conn
+            .query_row("SELECT id, series_master_id, event_type, subject, start_at, end_at, is_all_day, location, attendees_json
+                        FROM calendar_events WHERE id = ?1 AND account_id = ?2",
+                       params![event_id, self.account_id],
+                       |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?, r.get::<_, String>(2)?,
+                                r.get::<_, String>(3)?, r.get::<_, String>(4)?, r.get::<_, String>(5)?,
+                                r.get::<_, bool>(6)?, r.get::<_, String>(7)?, r.get::<_, String>(8)?)))
+            .optional().map_err(|e| e.to_string())?;
+        let Some((id, master, kind, subject, start, end, all_day, location, attendees)) = row else { return Ok(None) };
+        let member = kind == "seriesMaster" || kind == "occurrence" || kind == "exception";
+        let whole = (series || kind == "seriesMaster") && member;
+        let target = if whole { master.filter(|m| !m.is_empty()).unwrap_or(id) } else { id };
+        let invitees = crate::calendar_write::invitee_count_json(&attendees);
+        Ok(Some(CalEventRef { target, series: whole, subject, start, end, all_day, location, invitees }))
+    }
+
+    /// Queue one edit / cancel / decline / delete of an event (plan phase 3). The payload gets the resolved
+    /// `target` and `series`, and at most one such change may wait per target (a second edit would race the first).
+    pub fn cal_queue_event_change(&self, outbox_id: &str, op: &str, target: &str, payload: &serde_json::Value, attendees: usize, due_ms: i64) -> std::result::Result<(), String> {
+        let pending: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM calendar_outbox WHERE account_id = ?1 AND op IN ('update','cancel','decline','delete') AND state IN ('pending','sending') AND payload_json LIKE ?2",
+            params![self.account_id, format!("%\"target\":{}%", serde_json::to_string(target).unwrap_or_default())], |r| r.get(0)).map_err(|e| e.to_string())?;
+        if pending > 0 { return Err("a change to this event is already waiting".into()) }
+        let mut p = payload.clone();
+        p["target"] = serde_json::json!(target);
+        self.cal_outbox_enqueue(outbox_id, &self.account_id, op, &p.to_string(), attendees, outbox_id, due_ms).map_err(|e| e.to_string())
     }
 
     pub fn cal_outbox_status(&self, id: &str) -> Result<Option<(String, Option<String>, Option<String>)>> {

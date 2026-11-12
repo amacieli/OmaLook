@@ -96,6 +96,10 @@ impl CalendarOutboxWorker {
                 self.run_set_tags(&id, &payload, attempt).await;
                 continue;
             }
+            if matches!(op.as_str(), "update" | "cancel" | "decline" | "delete") {
+                self.run_change(&id, &op, &payload, &tx, attempt).await;
+                continue;
+            }
             if op != "create" {
                 let _ = self.db.cal_outbox_mark_failed(&id, &format!("unknown operation: {op}"));
                 continue;
@@ -117,7 +121,7 @@ impl CalendarOutboxWorker {
                     if let Err(e) = self.db.cal_outbox_mark_sent(&id, &created.id) {
                         error!("Calendar outbox {}: created {} but could not record it: {}", self.account_id, id, e);
                     }
-                    self.refresh_cache(&draft, created.is_series || draft.recurrence.is_some()).await;
+                    self.refresh_cache(draft.start.date(), created.is_series || draft.recurrence.is_some()).await;
                 }
                 Err(e) if is_transient(&e) && attempt < MAX_ATTEMPTS => {
                     let wait = retry_delay_secs(attempt);
@@ -169,8 +173,58 @@ impl CalendarOutboxWorker {
         }
     }
 
-    /// Make the new event visible now instead of at the next poll.
-    async fn refresh_cache(&self, draft: &EventDraft, series: bool) {
+    /// One edit, cancel, decline or delete (plan phase 3). The same rules as a create: a transient failure retries
+    /// with the same pending mark; a refusal fails with the provider's words. All four are safe to repeat.
+    async fn run_change(&self, id: &str, op: &str, payload: &str, tx: &str, attempt: i64) {
+        let v = match serde_json::from_str::<serde_json::Value>(payload) {
+            Ok(v) => v,
+            Err(_) => {
+                let _ = self.db.cal_outbox_mark_failed(id, "the queued change could not be read");
+                return;
+            }
+        };
+        let target = v["target"].as_str().unwrap_or_default().to_string();
+        let series = v["series"].as_bool().unwrap_or(false);
+        let day = v["start"].as_str().and_then(|s| s.get(..10)).and_then(|d| chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").ok());
+        let comment = v["comment"].as_str().unwrap_or_default().to_string();
+        // `Some(draft)` for an update, which changes the cache by its new time; `None` for the removals.
+        let outcome: crate::errors::Result<Option<EventDraft>> = match op {
+            "update" => match EventDraft::from_request(&v, tx) {
+                Ok(draft) => self.provider.update_event(&target, &draft, series).await.map(|_| Some(draft)),
+                Err(e) => Err(crate::errors::OmarchyError::HttpError(format!("the queued event could not be read: {e}"))),
+            },
+            "cancel" => self.provider.cancel_event(&target, &comment).await.map(|_| None),
+            "decline" => self.provider.decline_event(&target, &comment).await.map(|_| None),
+            "delete" => self.provider.delete_event(&target).await.map(|_| None),
+            other => Err(crate::errors::OmarchyError::HttpError(format!("unknown operation: {other}"))),
+        };
+        match outcome {
+            Ok(draft) => {
+                info!("Calendar outbox {}: {} of {} done (attempt {})", self.account_id, op, id, attempt);
+                if let Err(e) = self.db.cal_outbox_mark_sent(id, &target) {
+                    error!("Calendar outbox {}: {} done but not recorded: {}", self.account_id, id, e);
+                }
+                let day = draft.as_ref().map(|d| d.start.date()).or(day);
+                match day {
+                    Some(day) => self.refresh_cache(day, series).await,
+                    None => sync_state::bump_mail("calendar event changed"),
+                }
+            }
+            Err(e) if is_transient(&e) && attempt < MAX_ATTEMPTS => {
+                let wait = retry_delay_secs(attempt);
+                warn!("Calendar outbox {}: {} of {} not done ({}); retrying in {}s", self.account_id, op, id, e, wait);
+                let _ = self.db.cal_outbox_mark_retry(id, &short_error(&e), Database::now_ms() + wait * 1000);
+            }
+            Err(e) => {
+                error!("Calendar outbox {}: {} of {} failed: {}", self.account_id, op, id, e);
+                let _ = self.db.cal_outbox_mark_failed(id, &short_error(&e));
+            }
+        }
+    }
+
+    /// Make the new event visible now instead of at the next poll: the few days around one occurrence, or the
+    /// whole configured window for a series.
+    async fn refresh_cache(&self, day: chrono::NaiveDate, series: bool) {
         let cfg = CalendarDaemonConfig { settings_path: self.settings_path.clone(), ..CalendarDaemonConfig::default() };
         let daemon = CalendarDaemon::new(cfg, self.db.clone(), self.provider.clone());
         let r = if series {
@@ -180,12 +234,12 @@ impl CalendarOutboxWorker {
             tokio::time::sleep(Duration::from_secs(6)).await;
             near.and(daemon.refresh_full_window().await)
         } else {
-            daemon.refresh_around(draft.start.date()).await
+            daemon.refresh_around(day).await
         };
         if let Err(e) = r {
-            warn!("Calendar outbox {}: event created, cache not refreshed yet: {}", self.account_id, e);
+            warn!("Calendar outbox {}: event written, cache not refreshed yet: {}", self.account_id, e);
         }
-        sync_state::bump_mail("calendar event created");
+        sync_state::bump_mail("calendar event written");
     }
 }
 
@@ -405,5 +459,96 @@ mod tests {
         let (_w, _f, db) = tag_setup(vec![]);
         db.cal_queue_event_tags("t1", "S", &t(&["X"]), 0).unwrap();
         assert!(db.cal_outbox_list().unwrap().iter().any(|r| r.2 == "set_tags"), "the outbox list carries the op; draft.js only draws creates as marks");
+    }
+
+    // ── edit, cancel, decline, delete (plan phase 3) ──
+
+    #[derive(Default)]
+    struct ChangeFake { script: Mutex<Vec<Result<()>>>, seen: Mutex<Vec<String>> }
+    #[async_trait]
+    impl CalendarProvider for ChangeFake {
+        async fn fetch_events(&self, _l: usize) -> Result<Vec<CalendarEvent>> { Ok(vec![]) }
+        async fn fetch_all_events(&self, _tx: tokio::sync::mpsc::Sender<Vec<CalendarEvent>>) -> Result<usize> { Ok(0) }
+        async fn fetch_window(&self, _f: chrono::NaiveDate, _t: chrono::NaiveDate) -> Result<Vec<CalendarEvent>> { Ok(vec![]) }
+        async fn is_token_valid(&self) -> Result<bool> { Ok(true) }
+        async fn update_event(&self, target: &str, d: &EventDraft, series: bool) -> Result<crate::calendar_write::CreatedEvent> {
+            self.seen.lock().unwrap().push(format!("update {target} series={series} subject={}", d.subject));
+            self.script.lock().unwrap().remove(0)?;
+            Ok(crate::calendar_write::CreatedEvent { id: target.into(), ..Default::default() })
+        }
+        async fn delete_event(&self, target: &str) -> Result<()> { self.seen.lock().unwrap().push(format!("delete {target}")); self.script.lock().unwrap().remove(0) }
+        async fn cancel_event(&self, target: &str, comment: &str) -> Result<()> { self.seen.lock().unwrap().push(format!("cancel {target} [{comment}]")); self.script.lock().unwrap().remove(0) }
+        async fn decline_event(&self, target: &str, _c: &str) -> Result<()> { self.seen.lock().unwrap().push(format!("decline {target}")); self.script.lock().unwrap().remove(0) }
+    }
+
+    fn change_setup(script: Vec<Result<()>>) -> (CalendarOutboxWorker, Arc<ChangeFake>, Arc<Database>) {
+        static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let dir = std::env::temp_dir().join(format!("omalook-calchange-{}-{}", std::process::id(), N.fetch_add(1, std::sync::atomic::Ordering::SeqCst)));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = Arc::new(Database::open_for_account(dir.join("m.db").to_str().unwrap(), "exchange-test").unwrap());
+        let ev = |id: &str, kind: &str, master: Option<&str>| CalendarEvent { id: id.into(), subject: id.into(), start: "2026-10-05T09:00:00".into(), end: "2026-10-05T10:00:00".into(),
+            event_type: kind.into(), series_master_id: master.map(String::from), ..Default::default() };
+        db.upsert_event(&ev("M", "seriesMaster", None)).unwrap();
+        db.upsert_event(&ev("O1", "occurrence", Some("M"))).unwrap();
+        db.upsert_event(&ev("S", "singleInstance", None)).unwrap();
+        let fake = Arc::new(ChangeFake { script: Mutex::new(script), ..Default::default() });
+        (CalendarOutboxWorker::new("exchange-test", db.clone(), fake.clone(), None), fake, db)
+    }
+
+    fn change_payload(subject: &str) -> serde_json::Value {
+        serde_json::json!({"subject": subject, "start": "2026-10-05T09:00", "end": "2026-10-05T10:00", "time_zone": "America/New_York"})
+    }
+
+    #[test]
+    fn an_occurrence_edit_targets_the_occurrence_and_a_series_edit_the_master() {
+        let (_w, _f, db) = change_setup(vec![]);
+        let one = db.cal_event_ref("O1", false).unwrap().unwrap();
+        assert_eq!((one.target.as_str(), one.series), ("O1", false));
+        let all = db.cal_event_ref("O1", true).unwrap().unwrap();
+        assert_eq!((all.target.as_str(), all.series), ("M", true), "'all occurrences' resolves to the master");
+        let master = db.cal_event_ref("M", false).unwrap().unwrap();
+        assert_eq!((master.target.as_str(), master.series), ("M", true), "a master always changes as a whole");
+        let single = db.cal_event_ref("S", true).unwrap().unwrap();
+        assert_eq!((single.target.as_str(), single.series), ("S", false));
+        assert!(db.cal_event_ref("nope", false).unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn an_occurrence_edit_is_sent_once_with_its_target_and_only_one_change_waits_per_event() {
+        let (w, fake, db) = change_setup(vec![Ok(())]);
+        let r = db.cal_event_ref("O1", false).unwrap().unwrap();
+        db.cal_queue_event_change("u1", "update", &r.target, &change_payload("Moved"), 0, 0).unwrap();
+        assert!(db.cal_queue_event_change("u2", "delete", &r.target, &serde_json::json!({}), 0, 0).unwrap_err().contains("already waiting"));
+        assert_eq!(w.drain().await, 1);
+        assert_eq!(fake.seen.lock().unwrap().as_slice(), &["update O1 series=false subject=Moved".to_string()]);
+        assert_eq!(db.cal_outbox_status("u1").unwrap().unwrap().0, "sent");
+    }
+
+    #[tokio::test]
+    async fn cancel_and_delete_reach_the_provider_with_their_comment_and_are_recorded() {
+        let (w, fake, db) = change_setup(vec![Ok(()), Ok(())]);
+        db.cal_queue_event_change("c1", "cancel", "S", &serde_json::json!({"comment": "Moved to Friday"}), 2, 0).unwrap();
+        db.cal_queue_event_change("d1", "delete", "O1", &serde_json::json!({"start": "2026-10-05T09:00"}), 0, 0).unwrap();
+        assert_eq!(w.drain().await, 2);
+        assert_eq!(fake.seen.lock().unwrap().as_slice(), &["cancel S [Moved to Friday]".to_string(), "delete O1".to_string()]);
+        assert_eq!(db.cal_outbox_status("c1").unwrap().unwrap().0, "sent");
+        assert_eq!(db.cal_outbox_status("d1").unwrap().unwrap().0, "sent");
+    }
+
+    #[tokio::test]
+    async fn a_transient_failure_retries_and_a_refusal_fails_with_the_providers_words() {
+        let (w, _f, db) = change_setup(vec![
+            Err(OmarchyError::HttpError("Graph API error: 503 Service Unavailable — {}".into())),
+            Err(OmarchyError::HttpError("Graph API error: 403 Forbidden — {}".into())),
+        ]);
+        db.cal_queue_event_change("d1", "delete", "S", &serde_json::json!({}), 0, 0).unwrap();
+        w.drain().await;
+        assert_eq!(db.cal_outbox_status("d1").unwrap().unwrap().0, "pending");
+        db.cal_outbox_mark_retry("d1", "again", 0).unwrap();   // skip the backoff wait
+        w.drain().await;
+        let (state, err, _) = db.cal_outbox_status("d1").unwrap().unwrap();
+        assert_eq!(state, "failed");
+        assert!(err.unwrap().contains("not allowed"), "a 403 says what to do, not the raw Graph body");
     }
 }

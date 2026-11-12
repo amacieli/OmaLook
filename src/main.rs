@@ -1461,6 +1461,98 @@ fn calendar_event_response(config_dir: &PathBuf, stream: &mut std::net::TcpStrea
     serde_json::json!({ "ok": true, "id": id, "delay_secs": delay, "attendees": draft.attendees.len() }).to_string()
 }
 
+/// PATCH /calendar/event?id=ID&scope=occurrence|series[&dry_run=1] — edit an event (phase 3): the body is the editor's
+/// JSON (as for a create) with `account_id`. `scope=series` changes the whole series (the id resolves to its master);
+/// `occurrence` makes one exception. POST /calendar/event/cancel?id=ID&scope=…&kind=cancel|decline|delete[&dry_run=1] —
+/// cancel a meeting you organise (sends the cancellation), decline one you were invited to, or delete an entry; the
+/// body is `{account_id, comment}`. Every one waits the undo window (`POST /calendar/event/undo?id=`) and is sent by
+/// the account's calendar outbox. `invitees` counts the people the change reaches, shown before the user confirms.
+/// `?dry_run=1` answers what would be sent and queues nothing. Answers `{ok, id, target, series, invitees, delay_secs}`.
+fn calendar_change_response(config_dir: &PathBuf, stream: &mut std::net::TcpStream, initial: &[u8], first_line: &str) -> String {
+    use omalook::calendar_write::{invitee_count, EventDraft};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let err = |m: &str| serde_json::json!({ "ok": false, "error": m }).to_string();
+
+    let raw = match read_post_body(stream, initial, 256 * 1024) {
+        Ok(b) => b,
+        Err(e) => return err(&e),
+    };
+    let mut req: serde_json::Value = match serde_json::from_str(&raw) {
+        Ok(v) => v,
+        Err(e) => return err(&format!("unreadable change: {}", e)),
+    };
+    let account_id = req["account_id"].as_str().unwrap_or("").to_string();
+    if account_id.is_empty() {
+        return err("no calendar account selected");
+    }
+    let event_id = query_param(first_line, "id").unwrap_or_default();
+    if event_id.is_empty() {
+        return err("missing id");
+    }
+    let whole_series = query_param(first_line, "scope").as_deref() == Some("series");
+    let update = first_line.starts_with("PATCH ");
+    let kind = if update { "update".to_string() } else { query_param(first_line, "kind").unwrap_or_else(|| "cancel".into()) };
+    if !matches!(kind.as_str(), "update" | "cancel" | "decline" | "delete") {
+        return err("unknown change");
+    }
+    let now = Database::now_ms();
+    let tx = format!("ol-{:x}-{:03x}", now, COUNTER.fetch_add(1, Ordering::Relaxed) & 0xfff);
+    let db = match Database::open(config_dir.join("messages.db").to_str().unwrap_or("messages.db")) {
+        Ok(db) => db,
+        Err(e) => return err(&format!("database: {}", e)),
+    };
+    let target = match db.cal_event_ref(&event_id, whole_series) {
+        Ok(Some(r)) => r,
+        Ok(None) => return err("that event is not in the calendar cache; refresh the calendar and try again"),
+        Err(e) => return err(&e),
+    };
+    // What the change reaches, and (for an edit) what it will send to the provider, checked before anything queues.
+    let (invitees, graph) = if update {
+        if req["time_zone"].as_str().unwrap_or("").is_empty() {
+            req["time_zone"] = serde_json::json!(omalook::providers::calendar::local_time_zone());
+        }
+        let draft = match EventDraft::from_request(&req, &tx) {
+            Ok(d) => d,
+            Err(e) => return err(&e),
+        };
+        let graph = match draft.to_graph_patch_json(target.series) {
+            Ok(b) => b,
+            Err(e) => return err(&e.to_string()),
+        };
+        (invitee_count(&draft.attendees), Some(graph))
+    } else {
+        // A decline tells only the organiser; a cancel or a delete of a meeting tells every cached invitee.
+        (if kind == "decline" { 0 } else { target.invitees }, None)
+    };
+    if query_param(first_line, "dry_run").as_deref() == Some("1") {
+        return serde_json::json!({ "ok": true, "dry_run": true, "kind": kind, "id": event_id, "target": target.target,
+            "series": target.series, "invitees": invitees, "graph": graph }).to_string();
+    }
+    if !SCHEDULER.get().map(|s| s.is_running(&account_id)).unwrap_or(false) {
+        return err("that account is not signed in, so it cannot change events");
+    }
+    let delay = omalook::settings::read_send_delay(&config_dir.join("settings.toml"));
+    let out_id = format!("cu-{:x}-{:03x}", now, COUNTER.fetch_add(1, Ordering::Relaxed) & 0xfff);
+    let payload = if update {
+        req["account_id"] = serde_json::json!(account_id);
+        req["transaction_id"] = serde_json::json!(tx);
+        req["series"] = serde_json::json!(target.series);
+        req.clone()
+    } else {
+        serde_json::json!({ "account_id": account_id, "comment": req["comment"].as_str().unwrap_or(""),
+            "subject": target.subject, "start": target.start, "end": target.end, "all_day": target.all_day,
+            "location": target.location, "transaction_id": tx, "series": target.series })
+    };
+    if let Err(e) = db.cal_queue_event_change(&out_id, &kind, &target.target, &payload, invitees, now + delay as i64 * 1000) {
+        return err(&e);
+    }
+    omalook::sync_state::request_cal_outbox_run();
+    info!("Calendar: queued {} {} of {} ({} invitee(s)), runs in {}s", kind, out_id, target.target, invitees, delay);
+    serde_json::json!({ "ok": true, "id": out_id, "kind": kind, "target": target.target, "series": target.series,
+        "invitees": invitees, "delay_secs": delay }).to_string()
+}
+
 /// POST /calendar/event/undo?id=ID (take a queued write back while it is inside its undo window),
 /// GET /calendar/outbox (queued, running and failed writes, and the ones that finished in the last
 /// minute: the editor draws them as pending marks) and GET /calendar/event/status?id=ID.
@@ -1479,6 +1571,7 @@ fn calendar_outbox_response(config_dir: &PathBuf, first_line: &str) -> String {
                     "error": error, "due_at": due_at, "result_id": result,
                     "subject": p["subject"], "start": p["start"], "end": p["end"], "all_day": p["all_day"],
                     "location": p["location"], "transaction_id": p["transaction_id"],
+                    "target": p["target"], "series": p["series"],
                 })
             }).collect::<Vec<_>>() }).to_string(),
             Err(e) => err(&e.to_string()),
@@ -2736,6 +2829,16 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                 }
                 if first_line.contains("POST /calendar/tags") {
                     let body = calendar_tags_response(config_dir, first_line);
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                        body.len(), body
+                    );
+                    let _ = stream.write_all(response.as_bytes());
+                    continue;
+                }
+                // ── PATCH /calendar/event (edit) and POST /calendar/event/cancel?kind= (cancel, decline, delete) — phase 3 ──
+                if first_line.starts_with("PATCH /calendar/event") || first_line.contains("POST /calendar/event/cancel") {
+                    let body = calendar_change_response(config_dir, &mut stream, &buf[..n], first_line);
                     let response = format!(
                         "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                         body.len(), body

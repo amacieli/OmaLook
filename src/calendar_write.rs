@@ -190,6 +190,54 @@ impl EventDraft {
         }
         Ok(body)
     }
+
+    /// The `PATCH /me/events/{id}` body for an edit (plan section 4, phase 3). Unlike the create body it
+    /// always carries `attendees` (an empty list removes every invitee), never the `transactionId` (only a
+    /// create has one), never the online-meeting fields (a link is not added or changed by an edit), and it
+    /// carries `recurrence` only when editing the series master: an occurrence cannot take a new pattern.
+    pub fn to_graph_patch_json(&self, series: bool) -> Result<Value, DraftError> {
+        let mut body = self.to_graph_json()?;
+        let obj = body.as_object_mut().expect("to_graph_json returns an object");
+        obj.remove("transactionId");
+        obj.remove("isOnlineMeeting");
+        obj.remove("onlineMeetingProvider");
+        if !series {
+            obj.remove("recurrence");
+        }
+        if !obj.contains_key("attendees") {
+            obj.insert("attendees".to_string(), Value::Array(vec![]));
+        }
+        Ok(body)
+    }
+}
+
+/// How many people a change would reach: the required and optional attendees with an address (a room or
+/// other resource is not a person, and the organiser is never listed). The editor shows this number as
+/// "Invitations will be sent to N people".
+pub fn invitee_count(attendees: &[Attendee]) -> usize {
+    attendees.iter().filter(|a| a.role != "resource" && !a.email.trim().is_empty()).count()
+}
+
+/// `invitee_count` for the cached `attendees_json` column (`[{name,email,role,response}]`, or empty).
+pub fn invitee_count_json(attendees_json: &str) -> usize {
+    serde_json::from_str::<Vec<serde_json::Value>>(attendees_json).map(|list| {
+        list.iter().filter(|a| a["role"].as_str() != Some("resource") && a["email"].as_str().is_some_and(|e| !e.trim().is_empty())).count()
+    }).unwrap_or(0)
+}
+
+/// The cached event an edit, cancel, decline or delete acts on (see `Database::cal_event_ref`). `target` is the
+/// id the provider is asked to change; `series` says the whole series changes; `invitees` is how many people
+/// the cached event reaches, shown before the user confirms.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CalEventRef {
+    pub target: String,
+    pub series: bool,
+    pub subject: String,
+    pub start: String,
+    pub end: String,
+    pub all_day: bool,
+    pub location: String,
+    pub invitees: usize,
 }
 
 fn validate_recurrence(rec: &Recurrence, start: NaiveDate) -> Result<(), DraftError> {
@@ -693,4 +741,45 @@ mod tests {
         assert_eq!(existing_event_id(r#"{"error":{"code":"ErrorInvalidRequest"}}"#), None);
         assert_eq!(existing_event_id(r#"{"error":{"code":"ErrorDuplicateTransactionId"}}"#), None);
     }
+
+    // ── edit (plan phase 3) ──
+
+    fn invitee(email: &str, role: &str) -> Attendee {
+        Attendee { name: String::new(), email: email.into(), role: role.into() }
+    }
+
+    #[test]
+    fn an_edit_body_drops_the_create_only_fields_and_keeps_an_empty_invitation_list() {
+        let mut d = base();
+        d.transaction_id = "tx-edit".into();
+        d.recurrence = Some(Recurrence { pattern: Pattern::Weekly { interval: 1, days: vec![chrono::Weekday::Tue] }, range: Range::NoEnd });
+        let occurrence = d.to_graph_patch_json(false).unwrap();
+        assert!(occurrence.get("transactionId").is_none(), "only a create carries a transaction id");
+        assert!(occurrence.get("recurrence").is_none(), "an occurrence cannot take a new pattern");
+        assert_eq!(occurrence["attendees"], json!([]), "no attendees is an explicit empty list, so invitees are removed");
+        assert!(occurrence.get("isOnlineMeeting").is_none());
+        let series = d.to_graph_patch_json(true).unwrap();
+        assert!(series.get("recurrence").is_some(), "the series master keeps its pattern");
+        assert_eq!(series["subject"], "Quarterly planning");
+    }
+
+    #[test]
+    fn an_edit_keeps_the_attendees_it_is_given() {
+        let mut d = base();
+        d.attendees = vec![invitee("pat@example.com", "required"), invitee("lee@example.com", "optional")];
+        let body = d.to_graph_patch_json(false).unwrap();
+        assert_eq!(body["attendees"].as_array().unwrap().len(), 2);
+        assert_eq!(body["attendees"][1]["type"], "optional");
+    }
+
+    #[test]
+    fn the_invitee_count_is_people_with_an_address_not_rooms() {
+        let list = vec![invitee("pat@example.com", "required"), invitee("lee@example.com", "optional"),
+                        invitee("", "required"), invitee("room@example.com", "resource")];
+        assert_eq!(invitee_count(&list), 2, "a room is not a person; an address-less row is not an invitation");
+        assert_eq!(invitee_count_json(""), 0);
+        assert_eq!(invitee_count_json(r#"[{"email":"a@x.com","role":"required"},{"email":"r@x.com","role":"resource"}]"#), 1);
+        assert_eq!(invitee_count_json("not json"), 0);
+    }
 }
+
