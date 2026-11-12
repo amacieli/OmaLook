@@ -40,6 +40,8 @@ FocusScope {
   // the binding: after the first send attempt no backend error (e.g. "account is not signed in") ever showed.
   property string localStatus: ""
   readonly property string shownStatus: localStatus !== "" ? localStatus : status
+  // progress and "saved ..." lines are plain information, not errors
+  readonly property bool statusIsInfo: shownStatus.indexOf("…") >= 0 || /^(saved|saving|inserted|attached)/i.test(shownStatus)
   onStatusChanged: if (status !== "") localStatus = ""
   // Attachments: [{ path, name, size }]. `listDir(path, hidden, cb)` and `browseDir` come from the
   // owner (the daemon lists folders for the file browser; the last folder used is remembered).
@@ -603,8 +605,8 @@ else if (ctrl && !shift && e.key === Qt.Key_V) { root.startPaste(); e.accepted =
       UiText {
         text: root.shownStatus
         visible: text !== ""
-        foreground: root.shownStatus.indexOf("…") >= 0 ? Commons.Color.foreground : Commons.Color.urgent
-        dim: root.shownStatus.indexOf("…") >= 0
+        foreground: root.statusIsInfo ? Commons.Color.foreground : Commons.Color.urgent
+        dim: root.statusIsInfo
         font.pixelSize: Style.font.caption
         elide: Text.ElideRight
         Layout.maximumWidth: Style.space(360)
@@ -920,7 +922,7 @@ else if (ctrl && !shift && e.key === Qt.Key_V) { root.startPaste(); e.accepted =
     id: confirmDialog
     anchors.fill: parent
     z: 1000
-    opened: root.confirming !== ""
+    opened: root.confirming !== "" && root.confirming !== "close"
     message: root.confirming === "discard" ? "Discard this message?"
       : root.confirming === "nosubject" ? "Send without a subject?"
       : root.confirming === "audience" ? "Send to about " + root.audience + " people?"
