@@ -1055,6 +1055,129 @@ fn drafts_save_response(config_dir: &PathBuf, stream: &mut std::net::TcpStream, 
     }
 }
 
+/// Local drafts that are not sent yet, as message rows for the Drafts folder (`GET /messages`, first page).
+/// `id` is `draft:<local id>`, `draft_id` the local id, `draft_pushed` true once the provider holds the copy.
+/// The provider's own copy of a draft we hold is hidden from the same list (dedupe in `GET /messages`).
+fn local_draft_rows(conn: &rusqlite::Connection, account: Option<&str>, folder: &str) -> Vec<String> {
+    let mut sql = String::from(
+        "SELECT d.local_id, d.account_id, COALESCE(a.email, ''), d.remote_id, d.payload_json, d.updated_at, d.dirty \
+         FROM drafts d LEFT JOIN accounts a ON a.id = d.account_id WHERE d.state != 'sent'",
+    );
+    let mut args: Vec<String> = Vec::new();
+    if let Some(a) = account {
+        sql.push_str(" AND (d.account_id = ?1 OR lower(a.email) = lower(?1))");
+        args.push(a.to_string());
+    }
+    sql.push_str(" ORDER BY d.updated_at DESC");
+    let Ok(mut stmt) = conn.prepare(&sql) else { return Vec::new() };
+    let found: Vec<(String, String, String, Option<String>, String, i64, bool)> = stmt
+        .query_map(rusqlite::params_from_iter(args.iter()), |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get::<_, i64>(6)? != 0))
+        })
+        .map(|it| it.filter_map(|r| r.ok()).collect())
+        .unwrap_or_default();
+    let names = |p: &serde_json::Value, k: &str| -> String {
+        p[k].as_array().map(|v| v.iter().map(|a| {
+            let e = a["email"].as_str().unwrap_or("");
+            let n = a["name"].as_str().unwrap_or("");
+            if n.is_empty() { e.to_string() } else { format!("{} <{}>", n, e) }
+        }).collect::<Vec<_>>().join(", ")).unwrap_or_default()
+    };
+    found.into_iter().map(|(local, account_id, email, remote, payload, updated, dirty)| {
+        let p: serde_json::Value = serde_json::from_str(&payload).unwrap_or(serde_json::Value::Null);
+        let to = names(&p, "to");
+        let from = p["from"].as_str().filter(|s| !s.is_empty()).map(|s| s.to_string()).unwrap_or_else(|| email.clone());
+        let received = chrono::DateTime::<chrono::Utc>::from_timestamp_millis(updated).unwrap_or_else(chrono::Utc::now).to_rfc3339();
+        serde_json::json!({
+            "id": format!("draft:{}", local),
+            "draft_id": local,
+            "draft_pushed": remote.is_some() && !dirty,
+            "subject": p["subject"].as_str().unwrap_or(""),
+            "from_email": from,
+            "from_name": if to.is_empty() { "(no recipient)".to_string() } else { format!("To: {}", to) },
+            "received_at": received,
+            "is_read": true,
+            "account_id": account_id,
+            "account_email": email,
+            "to_text": to,
+            "cc_text": names(&p, "cc"),
+            "bcc_text": names(&p, "bcc"),
+            "sent_at": "",
+            "cats": "[]",
+            "importance": "",
+            "has_attachments": false,
+            "conversation_id": "",
+            "folder_id": folder,
+            "is_drafts": true,
+        }).to_string()
+    }).collect()
+}
+
+/// POST /drafts/adopt?id=<message id>: a draft that lives only on the provider (a row in the Drafts folder with no
+/// local copy) gets a local copy built from the cached message, so it resumes like any other draft. The local copy
+/// keeps the provider's id and is marked clean, so nothing is pushed until the user edits it. Answers {ok, id}.
+/// The cache has no In-Reply-To, so an adopted reply opens as a new message.
+fn drafts_adopt(config_dir: &PathBuf, first_line: &str) -> String {
+    let err = |m: &str| serde_json::json!({ "ok": false, "error": m }).to_string();
+    let Some(mid) = query_param(first_line, "id") else { return err("missing id") };
+    let db_path = config_dir.join("messages.db");
+    let db_str = db_path.to_str().unwrap_or("messages.db").to_string();
+    let conn = match rusqlite::Connection::open(&db_path) {
+        Ok(c) => c,
+        Err(e) => return err(&format!("database: {}", e)),
+    };
+    let row: rusqlite::Result<(String, String, String, String, String, String, String, String)> = conn.query_row(
+        "SELECT COALESCE(m.account_id, ''), COALESCE(m.subject, ''), COALESCE(m.from_email, ''), COALESCE(m.to_text, ''), \
+                COALESCE(m.cc_text, ''), COALESCE(m.bcc_text, ''), COALESCE(m.body_preview, ''), COALESCE(a.email, '') \
+         FROM messages m LEFT JOIN accounts a ON a.id = m.account_id WHERE m.id = ?1",
+        [&mid],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?)),
+    );
+    let Ok((account, subject, from_email, to, cc, bcc, preview, account_email)) = row else {
+        return err("no such message");
+    };
+    if account.is_empty() {
+        return err("the message has no account");
+    }
+    let db = match Database::open_for_account(&db_str, &account) {
+        Ok(d) => d,
+        Err(e) => return err(&format!("database: {}", e)),
+    };
+    if let Ok(Some(local)) = db.draft_local_for_remote(&account, &mid) {
+        return serde_json::json!({ "ok": true, "id": local, "existing": true }).to_string();
+    }
+    let (mode, format, content) = match db.cached_body(&mid) {
+        Ok(Some((t, c))) if t.eq_ignore_ascii_case("html") => ("html", "html", c),
+        Ok(Some((_, c))) => ("system", "text", c),
+        _ => ("system", "text", preview),
+    };
+    // An alias the draft was written from stays the From; the account's own address is the default.
+    let from = if !from_email.is_empty() && !from_email.eq_ignore_ascii_case(&account_email) { from_email } else { String::new() };
+    let addrs = |t: &str| -> Vec<serde_json::Value> {
+        omalook::addresses::parse_addresses(t).into_iter()
+            .map(|(name, email)| serde_json::json!({ "email": email, "name": name })).collect()
+    };
+    let mut msg: omalook::compose::OutgoingMessage = match serde_json::from_value(serde_json::json!({
+        "kind": "new", "account_id": account, "in_reply_to": "",
+        "to": addrs(&to), "cc": addrs(&cc), "bcc": addrs(&bcc),
+        "subject": subject, "from": from, "mode": mode,
+        "body": { "format": format, "content": content }, "attachments": [],
+    })) {
+        Ok(m) => m,
+        Err(e) => return err(&format!("draft: {}", e)),
+    };
+    let local = match omalook::draft_sync::save_local(&db, &omalook::draft_sync::default_root(), &mut msg, "saved") {
+        Ok(l) => l,
+        Err(e) => return err(&e),
+    };
+    let sig = omalook::draft_sync::push_signature(&msg);
+    let read_at = match db.draft_get(&local) { Ok(Some(r)) => r.updated_at, _ => 0 };
+    if let Err(e) = db.draft_mark_pushed(&local, read_at, &mid, None, &sig) {
+        return err(&e.to_string());
+    }
+    serde_json::json!({ "ok": true, "id": local, "existing": false }).to_string()
+}
+
 /// GET /drafts, GET /drafts/get?id=, POST /drafts/discard?id= (see the route comment in the loop).
 /// Discard deletes the provider's copy first and the local row only after that succeeded.
 fn drafts_route(config_dir: &PathBuf, first_line: &str) -> String {
@@ -1092,6 +1215,9 @@ fn drafts_route(config_dir: &PathBuf, first_line: &str) -> String {
             Ok(()) => serde_json::json!({ "ok": true, "discarded": true, "id": id }).to_string(),
             Err(e) => err(&e.to_string()),
         };
+    }
+    if first_line.contains("POST /drafts/adopt") {
+        return drafts_adopt(config_dir, first_line);
     }
     if first_line.contains("GET /drafts/get") {
         let id = match query_param(first_line, "id") {
@@ -2522,6 +2648,8 @@ fn messages_response(config_dir: &PathBuf, first_line: &str, req_t: std::time::I
                                     "has_attachments": row.get::<_, Option<bool>>(14)?.unwrap_or(false),
                                     "conversation_id": row.get::<_, Option<String>>(15)?.unwrap_or_default(),
                                     "folder_id": row.get::<_, String>(16)?,
+                                    // True for a row in the Drafts folder: Enter / `e` resume it (see POST /drafts/adopt).
+                                    "is_drafts": row.get::<_, i64>(17)? != 0,
                                 }).to_string())
                             };
 
@@ -2538,6 +2666,12 @@ fn messages_response(config_dir: &PathBuf, first_line: &str, req_t: std::time::I
                                 .unwrap_or(0);
                             let mut conds: Vec<String> = Vec::new();
                             let mut args: Vec<rusqlite::types::Value> = Vec::new();
+                            // The Drafts folder also lists the local drafts that are not sent yet (first page only).
+                            let drafts_view = match folder_id.as_deref() {
+                                Some("all:drafts") => true,
+                                Some(f) => conn.query_row("SELECT 1 FROM folders WHERE id = ?1 AND well_known_name = 'drafts'", [f], |_| Ok(())).is_ok(),
+                                None => false,
+                            };
                             if let Some(ref fid) = folder_id {
                                 // "all:<kind>" = that kind of folder across every account (Inbox - all accounts).
                                 if let Some(kind) = fid.strip_prefix("all:") {
@@ -2588,7 +2722,7 @@ fn messages_response(config_dir: &PathBuf, first_line: &str, req_t: std::time::I
                                         COALESCE(m.account_id, ''), COALESCE(a.email, ''), \
                                         m.to_text, m.cc_text, m.bcc_text, m.sent_at, m.categories, m.importance, \
                                         COALESCE((SELECT c.has_real FROM attachment_cache c WHERE c.message_id = m.id), m.has_attachments), \
-                                        m.conversation_id, COALESCE(m.folder_id, '') \
+                                        m.conversation_id, COALESCE(m.folder_id, ''), COALESCE((SELECT f.well_known_name = 'drafts' FROM folders f WHERE f.id = m.folder_id), 0) \
                                  FROM messages m LEFT JOIN accounts a ON a.id = m.account_id{} \
                                  ORDER BY m.received_at DESC LIMIT ?{} OFFSET ?{}",
                                 where_sql, args.len() - 1, args.len()
@@ -2599,6 +2733,12 @@ fn messages_response(config_dir: &PathBuf, first_line: &str, req_t: std::time::I
                                     .unwrap_or_default(),
                                 Err(e) => { warn!("GET /messages: bad query: {}", e); Vec::new() }
                             };
+                            let mut rows = rows;
+                            if drafts_view && offset == 0 && search_q.is_none() {
+                                let mut local = local_draft_rows(&conn, query_param(first_line, "account").as_deref(), folder_id.as_deref().unwrap_or(""));
+                                local.extend(rows);
+                                rows = local;
+                            }
                             format!("[{}]", rows.join(","))
                         }
                         Err(e) => {

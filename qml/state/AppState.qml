@@ -372,7 +372,7 @@ Item {
   // Ordinary mail ("none") never changes; invitations can be answered or cancelled elsewhere,
   // so they are looked up again after a minute (the backend keeps its own five-minute cache).
   function loadInvite(id) {
-    if (id === "") { invite = _emptyInvite("", "idle"); return }
+    if (id === "" || id.indexOf("draft:") === 0) { invite = _emptyInvite("", "idle"); return }
     var hit = _inviteCache[id]
     if (hit && (hit.r.type === "none" || Date.now() - hit.at < 60000)) { _setInvite(id, _inviteFrom(id, hit.r, "ready")); return }
     _setInvite(id, _emptyInvite(id, "loading"))
@@ -469,6 +469,8 @@ Item {
 
   function loadBody(id) {
     if (id === "") { _setBody({ id: "", state: "idle", type: "", content: "" }); return }
+    // A local draft row (Drafts folder) has no body on the backend: it is opened with Enter / `e`.
+    if (id.indexOf("draft:") === 0) { _setBody({ id: id, state: "ready", type: "text", content: "Draft not sent yet. Press Enter or e to edit it." }); return }
     var hit = _bodyCache[id]
     if (hit) { _setBody({ id: id, state: "ready", type: hit.type, content: hit.content }); return }
     // The snippet the list already holds shows at once; the full body replaces it when it lands.
@@ -1371,6 +1373,22 @@ Item {
   }
 
   function closeCompose() { composing = false; composeStatus = ""; focusRequested() }
+
+  // ---- Drafts folder (OL-048): Enter or `e` on a draft row opens it in the compose pane. A local draft
+  // (`draft_id`) resumes directly; a provider-only draft (a Drafts row with no local copy) first gets one
+  // from the cached message (POST /drafts/adopt), then resumes.
+  readonly property bool currentIsDraft: !!currentMessage && (!!currentMessage.draft_id || currentMessage.is_drafts === true)
+  function openDraftRow() {
+    var m = currentMessage
+    if (!m || composing) return
+    if (m.draft_id) { resumeDraft(String(m.draft_id)); return }
+    request("POST", "/drafts/adopt?id=" + encodeURIComponent(String(m.id)), function(xhr) {
+      var r = null
+      try { r = JSON.parse(xhr.responseText) } catch (e) {}
+      if (xhr.status === 200 && r && r.ok && r.id) resumeDraft(String(r.id))
+      else notify(r && r.error ? "Could not open the draft: " + r.error : "Could not open the draft (is the backend running?)")
+    })
+  }
 
   // ---- drafts (OL-048 Phase B2) ----------------------------------------------------------------
   // Save the compose pane's draft locally (POST /drafts/save?state=editing|saved); `done` gets the
@@ -2510,7 +2528,8 @@ Item {
       focusPane = "msg"
       msgIndex = 0
     } else if (focusPane === "msg" && currentView === "mail" && currentMessage) {
-      focusPane = "reader"
+      if (currentIsDraft) openDraftRow()
+      else focusPane = "reader"
     } else if (focusPane === "msg" && currentView === "sms" && smsHasThread) {
       focusPane = "reader"
     }

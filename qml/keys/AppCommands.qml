@@ -665,6 +665,7 @@ Item {
     { id: "mail.new",      title: "New message",   scope: "mail", keys: ["c", "C-n"], ex: ["compose", "new"], run: function() { if (!inMail) app.gotoView("mail"); app.openCompose("new") } },
     { id: "mail.refresh",  title: "Refresh mail from server", scope: "mail", keys: ["F5"], ex: ["refreshmail"], run: function() { app.syncMail() } },
     { id: "mail.reply",    title: "Reply",         scope: "mail", keys: ["r"], run: function() { app.openCompose("reply") } },
+    { id: "mail.draft.edit", title: "Edit this draft (Drafts folder; Enter does too)", scope: "mail", keys: ["e"], when: function() { return onMessages && !app.composing && app.currentIsDraft }, run: function() { app.openDraftRow() } },
     { id: "mail.replyall", title: "Reply all",     scope: "mail", keys: ["R"], run: function() { app.openCompose("replyAll") } },
     { id: "mail.forward",  title: "Forward",       scope: "mail", keys: ["f"], run: function() { app.openCompose("forward") } },
     { id: "mail.bounce", title: "Bounce: send this message on to someone else (arrives from you, replies go to the author)", scope: "mail", keys: ["B"], ex: ["bounce"], pick: pickBounce, when: function() { return onMessages && !app.composing && app.currentMessageId !== "" }, run: function() { root.paletteRequested("bounce ") } },
@@ -731,6 +732,7 @@ Item {
     { id: "cal.tagfilter", title: "Show only events with a tag\u2026", scope: "calendar/list", keys: ["f"], ex: ["tagfilter", "filter"], pick: pickEventTagFilter, run: function() { openEventTagFilter() } },
     { id: "cal.edit",  title: "Edit the selected event",       scope: "calendar/list", keys: ["e"], ex: ["edit"], run: function() { var m = content.keyEdit(); if (m) say(m) } },
     { id: "cal.remove", title: "Delete, cancel or decline the selected event", scope: "calendar/list", keys: ["x"], ex: ["cancel", "decline", "delete"], run: function() { var m = content.keyRemove(); if (m) say(m) } },
+    { id: "cal.find", title: "Find a free time for the selected event's people", scope: "calendar/list", keys: ["C-f"], ex: ["freetime"], run: function() { var m = content.openFinder(false); if (m) say(m) } },
     { id: "cal.new",   title: "New event",       scope: "calendar/list", keys: ["c", "n"], run: function() { var m = content.newEvent(); if (m) say(m) } },
     { id: "cal.undo",  title: "Undo the event just saved (while its undo bar shows)", scope: "calendar/list", keys: ["C-z"], when: function() { return !!content && content.undoId !== undefined && content.undoId !== "" }, run: function() { var m = content.undoLast(); if (m) say(m) } },
 
