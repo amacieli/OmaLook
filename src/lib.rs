@@ -43,6 +43,7 @@ pub mod attachments;
 pub mod local_rules;
 pub mod gmail_filters;
 pub mod calendar_tags;
+pub mod google_meet;
 pub mod attach_spool;
 pub mod contacts_daemon;
 pub mod contacts_api;

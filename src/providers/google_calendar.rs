@@ -175,6 +175,28 @@ impl super::CalendarProvider for GoogleCalendarProvider {
     async fn is_token_valid(&self) -> Result<bool> {
         self.api.is_token_valid().await
     }
+
+    // Writes: OL-021 track C. The request builders and the Google rules live in google_calendar_write.rs.
+    async fn create_event(&self, draft: &crate::calendar_write::EventDraft) -> Result<crate::calendar_write::CreatedEvent> {
+        super::google_calendar_write::create(&self.api, &self.account_id, draft).await
+    }
+
+    async fn update_event(&self, target: &str, draft: &crate::calendar_write::EventDraft, series: bool) -> Result<crate::calendar_write::CreatedEvent> {
+        super::google_calendar_write::update(&self.api, &self.account_id, target, draft, series).await
+    }
+
+    async fn delete_event(&self, target: &str) -> Result<()> {
+        super::google_calendar_write::delete(&self.api, &self.account_id, target, false).await
+    }
+
+    /// Google's delete has no message field, so `_comment` is not sent (the attendees get Google's own notice).
+    async fn cancel_event(&self, target: &str, _comment: &str) -> Result<()> {
+        super::google_calendar_write::delete(&self.api, &self.account_id, target, true).await
+    }
+
+    async fn decline_event(&self, target: &str, comment: &str) -> Result<()> {
+        super::google_calendar_write::decline(&self.api, &self.account_id, target, comment).await
+    }
 }
 
 #[cfg(test)]

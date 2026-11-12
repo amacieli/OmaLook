@@ -617,11 +617,29 @@ fn is_exchange(account_id: &str) -> bool {
     matches!(crate::accounts::provider_of(account_id), "exchange" | "outlook")
 }
 
+/// Google accounts answer free/busy through `freeBusy` (OL-021 track C), behind the same finder shape.
+fn is_google(account_id: &str) -> bool {
+    crate::accounts::provider_of(account_id) == "gmail"
+}
+
+fn is_supported(account_id: &str) -> bool {
+    is_exchange(account_id) || is_google(account_id)
+}
+
+/// The account's events in a window, from whichever provider the account is on.
+async fn window_events(account_id: &str, from: NaiveDate, to: NaiveDate) -> crate::errors::Result<Vec<crate::models::CalendarEvent>> {
+    if is_google(account_id) {
+        crate::providers::GoogleCalendarProvider::new(account_id).fetch_window(from, to).await
+    } else {
+        GraphCalendarProvider::new(AuthManager::for_account(account_id)).fetch_window(from, to).await
+    }
+}
+
 /// Answer `GET /calendar/find`. Blocking (runs its own runtime). Returns the JSON answer or the error text.
 pub fn find_free_time(config_dir: &Path, req: &FindRequest) -> Result<Value, String> {
     req.validate()?;
-    if !is_exchange(&req.account_id) {
-        return Err("the free-time finder needs a work or school (Exchange) account for the editor's account".into());
+    if !is_supported(&req.account_id) {
+        return Err("the free-time finder needs a work or school (Exchange) or Google account for the editor's account".into());
     }
     let db = Database::open(config_dir.join("messages.db").to_str().unwrap_or("messages.db"))
         .map_err(|e| format!("database: {}", e))?;
@@ -635,6 +653,8 @@ pub fn find_free_time(config_dir: &Path, req: &FindRequest) -> Result<Value, Str
     let start = req.from.and_hms_opt(0, 0, 0).expect("midnight");
     let end = req.to.and_hms_opt(0, 0, 0).expect("midnight");
     let provider = GraphCalendarProvider::new(AuthManager::for_account(&req.account_id));
+    let google = is_google(&req.account_id);
+    let google_api = crate::providers::google_api::GoogleApi::new(&req.account_id);
 
     // Who to ask: you first, then each distinct attendee.
     let mut addresses = vec![self_email.clone()];
@@ -651,7 +671,14 @@ pub fn find_free_time(config_dir: &Path, req: &FindRequest) -> Result<Value, Str
     // getSchedule in chunks of 20 mailboxes (Graph's limit per call is conservative here).
     let mut answers: HashMap<String, Result<ScheduleAnswer, String>> = HashMap::new();
     for chunk in addresses.chunks(20) {
-        match rt.block_on(provider.get_schedule(chunk, start, end, GRID_MINUTES as u32)) {
+        let answered = rt.block_on(async {
+            if google {
+                crate::providers::google_calendar_write::schedule(&google_api, chunk, start, end, GRID_MINUTES as u32).await
+            } else {
+                provider.get_schedule(chunk, start, end, GRID_MINUTES as u32).await
+            }
+        });
+        match answered {
             Ok(list) => {
                 for a in list {
                     answers.insert(a.schedule_id.to_lowercase(), Ok(a));
@@ -692,7 +719,7 @@ pub fn find_free_time(config_dir: &Path, req: &FindRequest) -> Result<Value, Str
         Err(e) => {
             mode = "own";
             reason = Some(format!("free/busy for your account is not available ({}); showing your calendar only", e));
-            let events = rt.block_on(provider.fetch_window(req.from, req.to)).map_err(|e| e.to_string())?;
+            let events = rt.block_on(window_events(&req.account_id, req.from, req.to)).map_err(|e| e.to_string())?;
             own_busy = busy_from_events(&events);
         }
     }
@@ -708,12 +735,11 @@ pub fn find_free_time(config_dir: &Path, req: &FindRequest) -> Result<Value, Str
         if id == &req.account_id {
             continue;
         }
-        if !is_exchange(id) {
+        if !is_supported(id) {
             other_unread.push(json!({"account_id": id, "reason": "free/busy for this account type is not built yet"}));
             continue;
         }
-        let p = GraphCalendarProvider::new(AuthManager::for_account(id));
-        match rt.block_on(p.fetch_window(req.from, req.to)) {
+        match rt.block_on(window_events(id, req.from, req.to)) {
             Ok(events) => {
                 other_checked += 1;
                 own_busy.extend(busy_from_events(&events));

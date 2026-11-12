@@ -259,5 +259,6 @@ pub mod gmail;
 pub use gmail::GmailProvider;
 pub mod google_calendar;
 pub use google_calendar::GoogleCalendarProvider;
+pub mod google_calendar_write;
 pub mod google_contacts;
 pub use google_contacts::GoogleContactsProvider;

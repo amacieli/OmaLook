@@ -1789,12 +1789,15 @@ fn calendar_event_response(config_dir: &PathBuf, stream: &mut std::net::TcpStrea
         Ok(d) => d,
         Err(e) => return err(&e),
     };
-    let graph_body = match draft.to_graph_json() {
+    // Google accounts get Google's body (OL-021 track C). The dry run names the body by provider.
+    let google = omalook::accounts::provider_of(&account_id) == "gmail";
+    let graph_body = match if google { omalook::providers::google_calendar_write::create_body(&draft) } else { draft.to_graph_json() } {
         Ok(b) => b,
         Err(e) => return err(&e.to_string()),
     };
     if query_param(first_line, "dry_run").as_deref() == Some("1") {
-        return serde_json::json!({ "ok": true, "dry_run": true, "graph": graph_body }).to_string();
+        let key = if google { "google" } else { "graph" };
+        return serde_json::json!({ "ok": true, "dry_run": true, "provider": key, key: graph_body }).to_string();
     }
     // A signed-out account has no worker, so the event would sit unsaved without anyone knowing.
     if !SCHEDULER.get().map(|s| s.is_running(&account_id)).unwrap_or(false) {
@@ -1870,7 +1873,8 @@ fn calendar_change_response(config_dir: &PathBuf, stream: &mut std::net::TcpStre
             Ok(d) => d,
             Err(e) => return err(&e),
         };
-        let graph = match draft.to_graph_patch_json(target.series) {
+        let google = omalook::accounts::provider_of(&account_id) == "gmail";
+        let graph = match if google { omalook::providers::google_calendar_write::patch_body(&draft, target.series) } else { draft.to_graph_patch_json(target.series) } {
             Ok(b) => b,
             Err(e) => return err(&e.to_string()),
         };
@@ -1880,8 +1884,10 @@ fn calendar_change_response(config_dir: &PathBuf, stream: &mut std::net::TcpStre
         (if kind == "decline" { 0 } else { target.invitees }, None)
     };
     if query_param(first_line, "dry_run").as_deref() == Some("1") {
-        return serde_json::json!({ "ok": true, "dry_run": true, "kind": kind, "id": event_id, "target": target.target,
-            "series": target.series, "invitees": invitees, "graph": graph }).to_string();
+        let google = omalook::accounts::provider_of(&account_id) == "gmail";
+        let key = if google { "google" } else { "graph" };
+        return serde_json::json!({ "ok": true, "dry_run": true, "provider": key, "kind": kind, "id": event_id, "target": target.target,
+            "series": target.series, "invitees": invitees, key: graph }).to_string();
     }
     if !SCHEDULER.get().map(|s| s.is_running(&account_id)).unwrap_or(false) {
         return err("that account is not signed in, so it cannot change events");

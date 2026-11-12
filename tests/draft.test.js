@@ -38,11 +38,11 @@ eq(D.chooseAccount(acc, { filterEmail: 'b@x', lastUsed: 'exchange-a' }), 'exchan
 eq(D.chooseAccount(acc, { cursorEmail: 'b@x', lastUsed: 'exchange-a' }), 'exchange-b', 'then the cursor event');
 eq(D.chooseAccount(acc, { defaultAccount: 'exchange-b', lastUsed: 'exchange-a' }), 'exchange-b', 'then the pinned default');
 eq(D.chooseAccount(acc, { lastUsed: 'exchange-b' }), 'exchange-b', 'then last used');
-eq(D.chooseAccount(acc, { filterEmail: 'g@x' }), 'exchange-a', 'a gmail filter cannot create yet: falls through to the first creatable');
-eq(D.chooseAccount(acc, { lastUsed: 'exchange-c' }), 'exchange-a', 'signed-out last-used is skipped');
-eq(D.chooseAccount([acc[0]], {}), '', 'nothing can create');
+eq(D.chooseAccount(acc, { filterEmail: 'g@x' }), 'gmail-g', 'a gmail filter creates on the Google account (OL-021 track C)');
+eq(D.chooseAccount(acc, { lastUsed: 'exchange-c' }), 'gmail-g', 'signed-out last-used is skipped; the first creatable is the Google account now');
+eq(D.chooseAccount([{ id: 'imap-x', provider: 'imap', email: 'i@x', signed_in: true }], {}), '', 'nothing can create');
 eq(D.cycleAccount(acc, 'exchange-a', 1), 'exchange-b', 'cycle');
-eq(D.cycleAccount(acc, 'exchange-b', 1), 'exchange-a', 'wraps');
+eq(D.cycleAccount(acc, 'exchange-b', 1), 'gmail-g', 'wraps through the Google account');
 
 // pending marks
 const item = { id: 'co-1', account_id: 'exchange-a', op: 'create', state: 'pending', subject: 'Plan', start: '2026-10-28T10:00', end: '2026-10-28T10:30', all_day: false, error: null };
@@ -91,7 +91,7 @@ eq([D.isRecurring({ event_type: 'occurrence', series_master_id: 'm1' }), D.isRec
     D.isRecurring({ event_type: 'singleInstance', series_master_id: '' }), D.isRecurring({ event_type: 'singleInstance' })],
    [true, true, false, false], 'recurring kinds');
 eq(D.editRefusal({ pending: true }, acct), 'That event is not saved yet', 'pending row refused');
-eq(D.editRefusal({}, gmail), 'Google calendars are read-only in OmaLook for now', 'google refused');
+eq(D.editRefusal({}, gmail), 'Only the organiser can change this meeting. x declines it.', 'google calendars are editable now; a non-organiser is still refused');
 eq(D.editRefusal({}, null), 'This calendar is not connected any more', 'unknown account refused');
 eq(D.editRefusal({ is_organizer: false, organizer_email: 'boss@x.org' }, acct), 'Only the organiser can change this meeting. x declines it.', 'attendee cannot edit');
 eq(D.editRefusal({ is_organizer: true }, acct), '', 'organiser can edit');
@@ -105,7 +105,7 @@ eq(D.removeKind({ is_organizer: true, attendees: att }, acct), { kind: 'cancel' 
 eq(D.removeKind({ is_organizer: true, attendees: [{ email: 'room@x.org', role: 'resource' }] }, acct), { kind: 'delete' }, 'rooms are not invitees');
 eq(D.removeKind({ is_organizer: false, organizer_email: 'boss@x.org', attendees: att }, acct), { kind: 'decline' }, 'meeting you attend is declined');
 eq(D.removeKind({ is_organizer: false, organizer_email: '' }, acct), { error: 'Not your event: only its organiser can delete it' }, 'not yours, not deleted');
-eq(D.removeKind({ is_organizer: true, attendees: [] }, gmail).error, 'Google calendars are read-only in OmaLook for now', 'google removal refused');
+eq(D.removeKind({ is_organizer: true, attendees: [] }, gmail).kind, 'delete', 'google personal entries can be removed (OL-021 track C)');
 
 // paths and messages
 eq(D.changePath('update', 'id 1', 'series', '', false), '/calendar/event?id=id%201&scope=series', 'patch path');
