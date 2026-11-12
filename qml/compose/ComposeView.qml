@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
+import Quickshell.Io
 import qs.Commons
 import qs.Commons as Commons
 import qs.Ui
@@ -169,6 +170,72 @@ FocusScope {
   }
 
   // The palette twins of the keys (`:attach`, `:attachments`, `:detach`, `:detach-all`).
+  // ---- Ctrl+V with files on the clipboard (a file copied in the file manager) attaches them; anything else
+  // pastes as text into whatever field has the focus. The decision is asynchronous (wl-paste), so the key is
+  // always taken here and the text paste is replayed on the focused field when the clipboard holds no files.
+  property var _pasteTarget: null
+  property string _pasteType: ""
+  Process {
+    id: pasteTypes
+    command: ["wl-paste", "--list-types"]
+    stdout: StdioCollector {
+      onStreamFinished: {
+        root._pasteType = Att.clipboardFileType(text)
+        if (root._pasteType === "") root._pasteText()
+        else { pasteBody.command = ["wl-paste", "--no-newline", "--type", root._pasteType]; pasteBody.running = true }
+      }
+    }
+    onExited: function(code) { if (code !== 0) root._pasteText() }
+  }
+  Process {
+    id: pasteBody
+    stdout: StdioCollector { onStreamFinished: root._pasteFiles(Att.pathsFromClipboard(text)) }
+  }
+  function startPaste() { _pasteTarget = root.Window.activeFocusItem; pasteTypes.running = true }
+  function _pasteText() {
+    var t = _pasteTarget
+    if (t && t.paste !== undefined) t.paste()
+  }
+  // Fill in each file's size from its folder's listing, then add; folders and unreadable paths are named, not added.
+  function _pasteFiles(paths) {
+    if (paths.length === 0) { _pasteText(); return }
+    var dirs = {}, files = [], skipped = 0, waiting = 0
+    paths.forEach(function(p) { var d = Att.dirName(p); (dirs[d] = dirs[d] || []).push(p) })
+    var finish = function() {
+      if (files.length > 0) root.addAttachments(files)
+      if (skipped > 0) root.localStatus = skipped + (skipped === 1 ? " item" : " items") + " on the clipboard could not be attached (folders, or not readable)."
+      else if (files.length > 0) root.localStatus = "Attached " + files.length + (files.length === 1 ? " file" : " files") + " from the clipboard."
+    }
+    var names = Object.keys(dirs)
+    if (!root.listDir) { skipped = paths.length; finish(); return }
+    waiting = names.length
+    names.forEach(function(d) {
+      root.listDir(d, true, function(r) {
+        var by = {}
+        ;(r && r.entries ? r.entries : []).forEach(function(e) { by[e.name] = e })
+        dirs[d].forEach(function(p) {
+          var e = by[Att.baseName(p)]
+          if (e && !e.dir) files.push({ path: p, name: e.name, size: e.size || 0 })
+          else skipped++
+        })
+        if (--waiting === 0) finish()
+      })
+    })
+  }
+
+  // Drag files from a file manager onto the pane. Not yet seen to work under Quickshell (needs a real drag):
+  // if the compositor never delivers the drop, nothing happens and Ctrl+V / the browser still work.
+  DropArea {
+    anchors.fill: parent
+    keys: ["text/uri-list"]
+    onDropped: function(drop) {
+      if (!drop.hasUrls) return
+      var paths = drop.urls.map(function(u) { var m = /^file:\/\/(\/.*)$/.exec(String(u)); try { return m ? decodeURIComponent(m[1]) : "" } catch (e) { return "" } }).filter(function(p) { return p !== "" })
+      root._pasteFiles(paths)
+      drop.accept()
+    }
+  }
+
   signal paletteRequested()
   // Back from the command palette: the editor gets the keys again, unless the command that was run opened a panel.
   function focusAfterPalette() {
@@ -279,7 +346,8 @@ FocusScope {
     else if (ctrl && e.key === Qt.Key_B) { handler.toggleBold(); e.accepted = true }
     else if (ctrl && e.key === Qt.Key_I) { handler.toggleItalic(); e.accepted = true }
     else if (ctrl && e.key === Qt.Key_U) { handler.toggleUnderline(); e.accepted = true }
-else if (ctrl && !shift && e.key === Qt.Key_P) { root.paletteRequested(); e.accepted = true }   // the shell's keys are off while composing, so the palette (and its :attach twins) needs its own way in
+else if (ctrl && !shift && e.key === Qt.Key_V) { root.startPaste(); e.accepted = true }
+    else if (ctrl && !shift && e.key === Qt.Key_P) { root.paletteRequested(); e.accepted = true }   // the shell's keys are off while composing, so the palette (and its :attach twins) needs its own way in
         else if (ctrl && shift && e.key === Qt.Key_A) { root.openAttach(); e.accepted = true }
     else if (ctrl && shift && e.key === Qt.Key_L) { root.openList(); e.accepted = true }
     else if (ctrl && shift && e.key === Qt.Key_Backspace && root.rows.length > 0) { root.removeRow(root.rows.length - 1); e.accepted = true }
@@ -512,6 +580,13 @@ else if (ctrl && !shift && e.key === Qt.Key_P) { root.paletteRequested(); e.acce
     limits: root.limits
     onRemoveRequested: function(row) { root.removeRow(row) }
     onAddRequested: { attachList.close(); root.openAttach() }
+    onRenameRequested: function(row, name) {
+      var r = root.rows[row]
+      if (!r || r.origin === "original") return
+      var next = root.attachments.slice()
+      next[r.ref] = { path: next[r.ref].path, name: name, size: next[r.ref].size }
+      root.attachments = next
+    }
     onClosed: editor.forceActiveFocus()
   }
 

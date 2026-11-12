@@ -1,6 +1,6 @@
 const fs=require('fs');
 const src=fs.readFileSync('qml/compose/attach.js','utf8').replace('.pragma library','');
-const A=new Function(src+';return {layout,counted,capacity,meter,states,displayNames,combine,defaultLimits,encodedPart}')();
+const A=new Function(src+';return {layout,counted,capacity,meter,states,displayNames,combine,defaultLimits,encodedPart,clipboardFileType,pathsFromClipboard,baseName,dirName}')();
 const eq=(a,b,m)=>{ const x=JSON.stringify(a), y=JSON.stringify(b); if(x!==y){console.error('FAIL',m,x,y);process.exit(1)} };
 const MB=1048576;
 
@@ -53,4 +53,14 @@ eq(A.displayNames([{name:'scan.pdf'},{name:'b.txt'},{name:'Scan.pdf'},{name:'sca
 // originals first, then picked files, each remembering its own index
 const rows=A.combine([{name:'o1',size:1},{name:'o2',size:2}],[{name:'p1',size:3}]);
 eq(rows.map(r=>r.origin+':'+r.ref),['original:0','original:1','picked:0'],'combined order');
+
+// clipboard files
+eq(A.clipboardFileType('text/plain\ntext/uri-list\n'),'text/uri-list','uri-list wins');
+eq(A.clipboardFileType('x-special/gnome-copied-files\nSTRING\n'),'x-special/gnome-copied-files','gnome');
+eq(A.clipboardFileType('text/plain\ntext/html\n'),'','plain text is not files');
+eq(A.clipboardFileType(''),'','empty');
+eq(A.pathsFromClipboard('copy\nfile:///home/a/My%20Doc.pdf\nfile:///tmp/x.png\n'),['/home/a/My Doc.pdf','/tmp/x.png'],'gnome body');
+eq(A.pathsFromClipboard('# c\r\nfile://localhost/tmp/a.txt\r\nhttps://x.org/y\r\nfile:///tmp/a.txt\r\nfile:///tmp/%E2%82%AC.txt'),['/tmp/a.txt','/tmp/\u20ac.txt'],'uri-list: comments, remote, duplicates, utf-8');
+eq(A.pathsFromClipboard('file:///tmp/%ZZ'),[],'bad escape ignored');
+eq([A.baseName('/a/b/c.txt'),A.dirName('/a/b/c.txt'),A.dirName('/c.txt')],['c.txt','/a/b','/'],'names');
 console.log('ok attach');

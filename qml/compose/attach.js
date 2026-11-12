@@ -102,3 +102,35 @@ function combine(originals, picked) {
   for (var j = 0; j < picked.length; j++) out.push({ name: picked[j].name, size: picked[j].size, origin: "picked", ref: j })
   return out
 }
+
+
+// ---- files on the clipboard (Ctrl+V in the compose pane; phase 5) -----------------------------------------
+// `types` is `wl-paste --list-types`, `text` the content of the best file type (see clipboardFileType).
+// Which clipboard type carries files, or "" when the clipboard holds none (then Ctrl+V is an ordinary text paste).
+function clipboardFileType(types) {
+  var t = String(types || "").split("\n").map(function(x) { return x.trim() })
+  if (t.indexOf("text/uri-list") >= 0) return "text/uri-list"
+  if (t.indexOf("x-special/gnome-copied-files") >= 0) return "x-special/gnome-copied-files"
+  return ""
+}
+
+// Local file paths out of a uri-list or a gnome-copied-files body (first line "copy" or "cut"): file:// URIs only,
+// percent-decoded, comments and anything else ignored, no duplicates.
+function pathsFromClipboard(text) {
+  var out = [], seen = {}
+  String(text || "").split(/\r?\n/).forEach(function(line) {
+    line = line.trim()
+    if (line === "" || line.charAt(0) === "#" || line === "copy" || line === "cut") return
+    var m = /^file:\/\/(?:localhost)?(\/.*)$/i.exec(line)
+    if (!m) return
+    var p
+    try { p = decodeURIComponent(m[1]) } catch (e) { return }
+    if (p.indexOf("\0") >= 0 || seen[p]) return
+    seen[p] = true
+    out.push(p)
+  })
+  return out
+}
+
+function baseName(p) { var i = String(p).lastIndexOf("/"); return i < 0 ? String(p) : String(p).slice(i + 1) }
+function dirName(p) { var i = String(p).lastIndexOf("/"); return i <= 0 ? "/" : String(p).slice(0, i) }

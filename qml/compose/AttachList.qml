@@ -12,6 +12,7 @@ import "attach.js" as Att
 //
 //   j / Down, k / Up   move          x / Delete   remove the highlighted file
 //   a                  add more (opens the file browser)        Esc   back to the editor
+//   r                  rename the highlighted file as it is sent (the file on disk keeps its name)
 FocusScope {
   id: root
 
@@ -25,6 +26,8 @@ FocusScope {
 
   signal removeRequested(int row)
   signal addRequested()
+  signal renameRequested(int row, string name)
+  property bool renaming: false
   signal closed()
 
   readonly property var verdict: Att.states(limits, items)
@@ -40,6 +43,7 @@ FocusScope {
     forceActiveFocus()
   }
   function close() {
+    renaming = false
     opened = false
     closed()
   }
@@ -67,6 +71,10 @@ FocusScope {
     else if (e.key === Qt.Key_End) { _move(items.length); e.accepted = true }
     else if (e.key === Qt.Key_Delete || e.key === Qt.Key_Backspace || (!ctrl && e.key === Qt.Key_X)) { if (items.length > 0) removeRequested(cur); e.accepted = true }
     else if (!ctrl && e.key === Qt.Key_A) { addRequested(); e.accepted = true }
+    else if (!ctrl && e.key === Qt.Key_R) {
+      if (items.length > 0 && items[cur].origin !== "original") { renameInput.text = items[cur].name; renaming = true; renameInput.forceActiveFocus(); renameInput.selectAll() }
+      e.accepted = true
+    }
     // While the list is open nothing may reach the compose pane's own shortcuts (Ctrl+Enter would send).
     else e.accepted = true
   }
@@ -140,13 +148,44 @@ FocusScope {
 
       UiText {
         id: foot
+        visible: !root.renaming
         Layout.fillWidth: true
         elide: Text.ElideRight
         font.pixelSize: Style.font.caption
         readonly property string why: root.verdict.reason[root.cur] || ""
-        text: why !== "" ? why : "j/k move \u00b7 x remove \u00b7 a add more \u00b7 Esc close"
+        text: why !== "" ? why : "j/k move \u00b7 x remove \u00b7 r rename \u00b7 a add more \u00b7 Esc close"
         foreground: why !== "" ? Commons.Color.urgent : Commons.Color.foreground
         dim: why === ""
+      }
+
+      // rename as sent: Enter keeps it, Esc leaves the name alone
+      Rectangle {
+        visible: root.renaming
+        Layout.fillWidth: true
+        implicitHeight: renameInput.implicitHeight + Style.spacing.sm * 2
+        radius: Style.cornerRadius
+        color: "transparent"
+        border.width: Style.normalBorderWidth
+        border.color: Commons.Color.accent
+        TextInput {
+          id: renameInput
+          anchors.fill: parent
+          anchors.margins: Style.spacing.sm
+          color: Commons.Color.popups.text
+          selectionColor: Commons.Color.accent
+          selectedTextColor: Commons.Color.background
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
+          clip: true
+          Keys.onPressed: function(e) {
+            if (e.key === Qt.Key_Escape) { root.renaming = false; root.forceActiveFocus(); e.accepted = true }
+            else if (e.key === Qt.Key_Return || e.key === Qt.Key_Enter) {
+              var n = text.replace(/[\/\\\n\r]/g, "_").trim()
+              if (n !== "") root.renameRequested(root.cur, n)
+              root.renaming = false; root.forceActiveFocus(); e.accepted = true
+            }
+          }
+        }
       }
     }
   }

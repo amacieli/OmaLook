@@ -168,10 +168,11 @@ files appear first, marked `↪`, ticked by default; remove the ones you do not 
 | `Ctrl+Shift+A` | Open the file browser (same as the **Attach** button) |
 | `Ctrl+Shift+L` | Open the attachment list (or click the strip) |
 | `Ctrl+Shift+Backspace` | Remove the last file (works from the recipient fields too) |
+| `Ctrl+V` | Files on the clipboard (copied in the file manager) are attached; anything else pastes as text as usual. Dropping files from a file manager onto the pane does the same (untested under Quickshell) |
 | `Ctrl+P` | Open the command palette (the shell's own keys are off while composing; this is how `:attach` and the others are reached) |
 
 The list is a panel of at most six rows under the strip, scrolling: `j`/`k` or `Down`/`Up` move, `PgUp`/`PgDn`/`Home`/`End`
-jump, `x` or `Delete` removes the highlighted file, `a` adds more (opens the file browser), `Esc` returns to the editor. Nothing
+jump, `x` or `Delete` removes the highlighted file, `r` renames it as it will be sent (Enter keeps, Esc cancels; the file on disk is untouched), `a` adds more (opens the file browser), `Esc` returns to the editor. Nothing
 else reaches the editor while it is open. Palette twins (only while a compose pane is open): `:attach`, `:attachments`,
 `:detach` (the last file), `:detach-all`. Commands: `compose.attach`, `compose.attachments`, `compose.detach`,
 `compose.detachall`.
