@@ -60,6 +60,10 @@ Item {
     readonly property bool editing: searching || editorOpen   // AppShell hands every key to the field / editor meanwhile
 
     signal notice(string text)
+    signal focusRequested()                    // give the keyboard back to the shell's key catcher
+    // A field or the editor that closes leaves no one holding the keys (hidden items drop focus into the
+    // void); without this `g m`, `e` and every other key stay dead after `/` or the editor.
+    onEditingChanged: if (!editing) Qt.callLater(root.focusRequested)
 
     readonly property int rowHeight: 64
     readonly property int lineHeight: 16
@@ -445,7 +449,7 @@ Item {
     function pageScroll(dir) { keyPage(dir * 0.9) }
 
     // `/`: type a filter; Enter keeps it, Esc drops it
-    function startSearch() { searching = true; searchField.text = searchText; searchField.forceActiveFocus(); searchField.selectAll() }
+    function startSearch() { searching = true; searchField.text = searchText; searchField.forceActiveFocus(); searchField.selectAll(); Qt.callLater(function() { if (root.searching) searchField.forceActiveFocus() }) }
     function endSearch(keep) {
         searching = false
         if (!keep) { searchField.text = ""; searchText = "" }
