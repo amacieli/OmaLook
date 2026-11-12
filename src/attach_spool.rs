@@ -119,6 +119,8 @@ pub fn snapshot(root: &Path, outbox_id: &str, attachments: &[OutgoingAttachment]
                 size,
                 content_type: a.content_type.clone(),
                 source_path: if a.source_path.is_empty() { a.path.clone() } else { a.source_path.clone() },
+                inline_cid: a.inline_cid.clone(),
+                mtime: mtime_secs(Path::new(&a.path)),
             });
         }
         Ok(out)
@@ -127,6 +129,103 @@ pub fn snapshot(root: &Path, outbox_id: &str, attachments: &[OutgoingAttachment]
         remove(root, outbox_id);
     }
     result
+}
+
+/// Modification time of a file in unix seconds (0 when unknown).
+pub fn mtime_secs(path: &Path) -> i64 {
+    fs::metadata(path)
+        .ok()
+        .and_then(|m| m.modified().ok())
+        .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+/// Spool for a draft (docs/PLAN-compose.md Phase B2, OL-035 phase 7): the same copies as
+/// `snapshot`, kept under `<root>/<draft id>` until the draft is sent or discarded. A file already
+/// copied for this draft is reused when the picked file has the same name, size and modification
+/// time, so an autosave does not copy the attachments again. Copies no longer attached are removed.
+/// Returns the attachments pointing at their copies, in the given order.
+pub fn snapshot_draft(root: &Path, draft_id: &str, attachments: &[OutgoingAttachment], previous: &[OutgoingAttachment]) -> Result<Vec<OutgoingAttachment>, String> {
+    if !safe_id(draft_id) {
+        return Err("invalid draft id".into());
+    }
+    let dir = spool_dir(root, draft_id);
+    let mut out: Vec<OutgoingAttachment> = Vec::with_capacity(attachments.len());
+    let mut reused: HashSet<String> = HashSet::new();
+    let result = (|| {
+        for (i, a) in attachments.iter().enumerate() {
+            let name = a.display_name();
+            let src = if a.source_path.is_empty() { a.path.clone() } else { a.source_path.clone() };
+            let now_mtime = mtime_secs(Path::new(&src));
+            let hit = previous.iter().find(|p| {
+                let p_src = if p.source_path.is_empty() { p.path.clone() } else { p.source_path.clone() };
+                p_src == src && p.size == fs::metadata(&src).map(|m| m.len()).unwrap_or(u64::MAX) && p.mtime == now_mtime && Path::new(&p.path).is_file()
+            });
+            if let Some(p) = hit {
+                if reused.insert(p.path.clone()) {
+                    out.push(OutgoingAttachment { name, source_path: src, mtime: p.mtime, ..p.clone() });
+                    continue;
+                }
+            }
+            // A fresh copy goes in its own slot: the slot number is unique within this draft.
+            let slot = dir.join(format!("{}-{}", i, SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0)));
+            fs::create_dir_all(&slot).map_err(|e| {
+                if is_disk_full(&e) {
+                    format!("not enough disk space to keep {} with the draft", name)
+                } else {
+                    format!("cannot keep {} with the draft: {}", name, e)
+                }
+            })?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = fs::set_permissions(&dir, fs::Permissions::from_mode(0o700));
+                let _ = fs::set_permissions(&slot, fs::Permissions::from_mode(0o700));
+            }
+            let dest = slot.join("file");
+            let size = copy_one(Path::new(&src), &dest, &name)?;
+            out.push(OutgoingAttachment {
+                path: dest.to_string_lossy().into_owned(),
+                name,
+                size,
+                content_type: a.content_type.clone(),
+                source_path: src,
+                inline_cid: a.inline_cid.clone(),
+                mtime: now_mtime,
+            });
+        }
+        Ok(())
+    })();
+    if let Err(e) = result {
+        // Copies made in this call are dropped; the draft's earlier copies are untouched.
+        for a in &out {
+            if !reused.contains(&a.path) {
+                if let Some(parent) = Path::new(&a.path).parent() {
+                    let _ = fs::remove_dir_all(parent);
+                }
+            }
+        }
+        return Err(e);
+    }
+    // Copies the draft no longer attaches go; the reused ones and the fresh ones stay.
+    let keep: HashSet<&str> = out.iter().map(|a| a.path.as_str()).collect();
+    for p in previous {
+        if !keep.contains(p.path.as_str()) {
+            if let Some(parent) = Path::new(&p.path).parent() {
+                if parent.starts_with(&dir) {
+                    let _ = fs::remove_dir_all(parent);
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Spooled copies of a draft that are no longer on disk (their names, for the '!' chip). An
+/// attachment whose copy is missing is never sent silently without it.
+pub fn missing_copies(attachments: &[OutgoingAttachment]) -> Vec<String> {
+    attachments.iter().filter(|a| !Path::new(&a.path).is_file()).map(|a| a.display_name()).collect()
 }
 
 /// Check, just before a message goes out, that what is about to be sent is what was queued:
@@ -328,5 +427,60 @@ mod tests {
         assert!(snapshot(&root, "ob-10", &[]).unwrap().is_empty());
         assert!(!spool_dir(&root, "ob-10").exists());
         fs::remove_dir_all(&root).ok();
+    }
+}
+
+#[cfg(test)]
+mod draft_spool_tests {
+    use super::*;
+
+    fn picked(dir: &Path, name: &str, body: &[u8]) -> OutgoingAttachment {
+        let p = dir.join(name);
+        fs::write(&p, body).unwrap();
+        OutgoingAttachment { path: p.to_string_lossy().into_owned(), name: name.into(), size: body.len() as u64, ..Default::default() }
+    }
+
+    #[test]
+    fn unchanged_attachment_is_reused_and_removed_ones_are_dropped() {
+        let base = std::env::temp_dir().join(format!("omalook-draft-spool-{}", std::process::id()));
+        let picks = base.join("picks");
+        let root = base.join("spool");
+        fs::create_dir_all(&picks).unwrap();
+        let a = picked(&picks, "a.txt", b"aaa");
+        let b = picked(&picks, "b.txt", b"bbbb");
+        let first = snapshot_draft(&root, "d1", &[a.clone(), b.clone()], &[]).unwrap();
+        assert_eq!(first.len(), 2);
+        assert!(missing_copies(&first).is_empty());
+        assert_eq!(fs::read(&first[0].path).unwrap(), b"aaa");
+        // Autosave with the same files: the copies are reused, not made again.
+        let second = snapshot_draft(&root, "d1", &[a.clone(), b.clone()], &first).unwrap();
+        assert_eq!(second[0].path, first[0].path);
+        assert_eq!(second[1].path, first[1].path);
+        // b is removed from the draft: its copy goes, a's stays.
+        let third = snapshot_draft(&root, "d1", &[a.clone()], &second).unwrap();
+        assert_eq!(third.len(), 1);
+        assert!(Path::new(&third[0].path).is_file());
+        assert!(!Path::new(&second[1].path).exists(), "removed attachment's copy is deleted");
+        // A missing copy is reported, never silently dropped.
+        fs::remove_file(&third[0].path).unwrap();
+        assert_eq!(missing_copies(&third), vec!["a.txt".to_string()]);
+        fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn changed_file_is_copied_again() {
+        let base = std::env::temp_dir().join(format!("omalook-draft-spool-chg-{}", std::process::id()));
+        let picks = base.join("picks");
+        let root = base.join("spool");
+        fs::create_dir_all(&picks).unwrap();
+        let a = picked(&picks, "a.txt", b"aaa");
+        let first = snapshot_draft(&root, "d1", &[a.clone()], &[]).unwrap();
+        // The picked file changes size: the old copy is not reused.
+        let a2 = picked(&picks, "a.txt", b"aaaaaaaa");
+        let second = snapshot_draft(&root, "d1", &[a2], &first).unwrap();
+        assert_ne!(second[0].path, first[0].path);
+        assert_eq!(fs::read(&second[0].path).unwrap(), b"aaaaaaaa");
+        assert!(!Path::new(&first[0].path).exists());
+        fs::remove_dir_all(&base).ok();
     }
 }

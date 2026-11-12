@@ -55,9 +55,22 @@ pub struct OutgoingAttachment {
     /// the spool copy and this is the file the user picked. Empty for a message not yet queued.
     #[serde(default)]
     pub source_path: String,
+    /// Content-ID of an inline picture (no angle brackets). Set for a picture the body shows, which
+    /// refers to it as `cid:<inline_cid>`. Empty for an ordinary file. See `settle_inline`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub inline_cid: String,
+    /// Modification time (unix seconds) of the picked file. With `size` and the original path it
+    /// tells a draft's spooled copy is still the file the user picked (`attach_spool`). 0 = unknown.
+    #[serde(default)]
+    pub mtime: i64,
 }
 
 impl OutgoingAttachment {
+    /// True for a picture that is part of the HTML body (not a file listed beside it).
+    pub fn is_inline(&self) -> bool {
+        !self.inline_cid.is_empty()
+    }
+
     /// The name the recipient sees: the given one, else the file's own, with path separators and
     /// control characters made harmless.
     pub fn display_name(&self) -> String {
@@ -104,6 +117,10 @@ pub struct OutgoingMessage {
     /// all until phase 3 teaches it to drop the others.
     #[serde(default)]
     pub forwarded_keep: Option<Vec<String>>,
+    /// Local id of the draft this message was sent from (docs/PLAN-compose.md Phase B2). Empty
+    /// for a message never saved as a draft. Its provider copy is then sent, not copied.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub draft_id: String,
 }
 
 /// Largest body accepted (the HTTP layer reads at most this much anyway).
@@ -287,6 +304,33 @@ impl OutgoingMessage {
         }
     }
 
+    /// Make the inline pictures agree with the body, once, when the message is queued. The editor
+    /// is the source of truth: an `<img>` the body does not show is gone, so is an inline picture
+    /// the body no longer refers to; an `<img>` whose source is not `cid:` (a `file:` path, a
+    /// relative name, `data:`) is removed, because it would either not load for the recipient or
+    /// leak a local path. Remote `http(s)` pictures are left for the recipient's client, as typed.
+    /// A text body keeps no pictures at all.
+    pub fn settle_inline(&mut self) {
+        if self.body.format == "html" {
+            // Every `cid:` stays here: a reply's quoted picture may still be fetched from the
+            // original when the message goes out. `prepare_bodies` drops the ones nothing supplies.
+            self.body.content = rewrite_images(&self.body.content, &|_| true);
+        }
+        let used = if self.body.format == "html" { referenced_cids(&self.body.content) } else { Vec::new() };
+        let mut seen = std::collections::HashSet::new();
+        self.attachments.retain(|a| {
+            if !a.is_inline() {
+                return true;
+            }
+            safe_cid(&a.inline_cid) && used.contains(&a.inline_cid) && seen.insert(a.inline_cid.clone())
+        });
+    }
+
+    /// Content-IDs of the inline pictures this message carries.
+    pub fn inline_cids(&self) -> Vec<String> {
+        self.attachments.iter().filter(|a| a.is_inline()).map(|a| a.inline_cid.clone()).collect()
+    }
+
     /// True for the kinds that continue an existing conversation and name the message they answer.
     pub fn is_reply(&self) -> bool {
         matches!(self.kind.as_str(), "reply" | "replyAll") && !self.in_reply_to.is_empty()
@@ -418,12 +462,89 @@ pub fn html_to_text(html: &str) -> String {
     blanks.replace_all(lines.join("\n").trim(), "\n\n").to_string()
 }
 
-/// `(html, text)` for sending: html is None when the message is plain text.
+/// `(html, text)` for sending: html is None when the message is plain text. The pictures the body
+/// may show are the message's own inline attachments (see `prepare_bodies_with`).
 pub fn prepare_bodies(msg: &OutgoingMessage) -> (Option<String>, String) {
+    prepare_bodies_with(msg, &msg.inline_cids())
+}
+
+/// Content-ID values that may be used in a `cid:` reference and a `Content-ID` header: no
+/// characters that could end a header or a URL.
+pub fn safe_cid(c: &str) -> bool {
+    !c.is_empty() && c.len() <= 254 && c.chars().all(|ch| ch.is_ascii_alphanumeric() || "-_.@+".contains(ch))
+}
+
+fn img_tag_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"(?is)<img\b[^>]*>").unwrap())
+}
+
+fn img_src_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r#"(?is)\ssrc\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))"#).unwrap())
+}
+
+/// The `src` of one `<img>` tag, unquoted.
+fn img_src(tag: &str) -> Option<String> {
+    let m = img_src_re().captures(tag)?;
+    m.get(1).or(m.get(2)).or(m.get(3)).map(|x| x.as_str().trim().to_string())
+}
+
+/// The Content-ID a `cid:` image source names (percent-decoded, brackets removed), or None for
+/// any other source.
+fn cid_of_src(src: &str) -> Option<String> {
+    let s = src.trim();
+    if !s.get(..4).map(|p| p.eq_ignore_ascii_case("cid:")).unwrap_or(false) {
+        return None;
+    }
+    let raw = s[4..].trim().trim_start_matches('<').trim_end_matches('>');
+    Some(urlencoding::decode(raw).map(|c| c.into_owned()).unwrap_or_else(|_| raw.to_string()))
+}
+
+/// The Content-IDs the HTML's `<img src="cid:…">` refer to, in order, without repeats.
+pub fn referenced_cids(html: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for tag in img_tag_re().find_iter(html) {
+        if let Some(cid) = img_src(tag.as_str()).and_then(|s| cid_of_src(&s)) {
+            if !out.contains(&cid) {
+                out.push(cid);
+            }
+        }
+    }
+    out
+}
+
+/// Keep the `<img>` tags the body may show and remove the rest. A `cid:` picture is kept when
+/// `keep` says so; an `http(s)` picture is left for the recipient's client; any other source
+/// (`file:`, `data:`, a relative name, no source at all) is removed, because it would not load
+/// for the recipient and a local path must never leave the machine.
+pub fn rewrite_images(html: &str, keep: &dyn Fn(&str) -> bool) -> String {
+    img_tag_re()
+        .replace_all(html, |c: &Captures| {
+            let tag = &c[0];
+            let ok = match img_src(tag) {
+                None => false,
+                Some(src) => match cid_of_src(&src) {
+                    Some(cid) => keep(&cid),
+                    None => {
+                        let l = src.to_ascii_lowercase();
+                        l.starts_with("https://") || l.starts_with("http://")
+                    }
+                },
+            };
+            if ok { tag.to_string() } else { String::new() }
+        })
+        .into_owned()
+}
+
+/// Like `prepare_bodies`, with the `cid:` pictures limited to the Content-IDs in `present`: a
+/// picture nothing supplies is removed from the body rather than sent broken.
+pub fn prepare_bodies_with(msg: &OutgoingMessage, present: &[String]) -> (Option<String>, String) {
     if msg.body.format == "text" {
         return (None, msg.body.content.clone());
     }
     let html = clean_html(&msg.body.content, msg.system_mode());
+    let html = rewrite_images(&html, &|cid| present.iter().any(|p| p == cid));
     let text = html_to_text(&html);
     (Some(html), text)
 }
@@ -446,7 +567,13 @@ fn graph_recipients(list: &[Address]) -> serde_json::Value {
 
 /// The Graph `message` resource for this message (also the PATCH body for a reply draft).
 pub fn graph_message_json(msg: &OutgoingMessage) -> serde_json::Value {
-    let (html, text) = prepare_bodies(msg);
+    graph_message_json_with(msg, &msg.inline_cids())
+}
+
+/// `graph_message_json` with the pictures the draft will hold given explicitly (a reply draft
+/// also holds the original's pictures that the body refers to).
+pub fn graph_message_json_with(msg: &OutgoingMessage, present: &[String]) -> serde_json::Value {
+    let (html, text) = prepare_bodies_with(msg, present);
     let body = match html {
         Some(h) => serde_json::json!({ "contentType": "HTML", "content": h }),
         None => serde_json::json!({ "contentType": "Text", "content": text }),
@@ -503,24 +630,45 @@ pub fn guess_content_type(name: &str) -> String {
 
 /// Body of `POST /me/messages/{id}/attachments` (a file under 3 MB, sent inline as base64).
 pub fn graph_file_attachment_json(a: &OutgoingAttachment, bytes: &[u8]) -> serde_json::Value {
-    serde_json::json!({
+    let mut j = serde_json::json!({
         "@odata.type": "#microsoft.graph.fileAttachment",
         "name": a.display_name(),
         "contentType": a.mime_type(),
         "contentBytes": b64(bytes),
+    });
+    if a.is_inline() {
+        j["isInline"] = serde_json::json!(true);
+        j["contentId"] = serde_json::json!(a.inline_cid);
+    }
+    j
+}
+
+/// Body of `POST /me/messages/{id}/attachments` for a picture copied from another message: the
+/// bytes are already base64 (as Graph returned them).
+pub fn graph_inline_copy_json(name: &str, content_type: &str, cid: &str, content_bytes_b64: &str) -> serde_json::Value {
+    serde_json::json!({
+        "@odata.type": "#microsoft.graph.fileAttachment",
+        "name": name,
+        "contentType": content_type,
+        "contentBytes": content_bytes_b64,
+        "isInline": true,
+        "contentId": cid,
     })
 }
 
 /// Body of `POST /me/messages/{id}/attachments/createUploadSession` (a file of 3 MB or more).
 pub fn graph_upload_session_json(a: &OutgoingAttachment, size: u64) -> serde_json::Value {
-    serde_json::json!({
-        "AttachmentItem": {
-            "attachmentType": "file",
-            "name": a.display_name(),
-            "size": size,
-            "contentType": a.mime_type(),
-        }
-    })
+    let mut item = serde_json::json!({
+        "attachmentType": "file",
+        "name": a.display_name(),
+        "size": size,
+        "contentType": a.mime_type(),
+    });
+    if a.is_inline() {
+        item["isInline"] = serde_json::json!(true);
+        item["contentId"] = serde_json::json!(a.inline_cid);
+    }
+    serde_json::json!({ "AttachmentItem": item })
 }
 
 /// Inclusive `(first, last)` byte ranges covering `total` bytes in pieces of `chunk`.
@@ -639,8 +787,8 @@ fn mime_headers(msg: &OutgoingMessage, from: &str, reply: Option<&ReplyHeaders>,
 
 /// The text of the message as one MIME entity: its own headers, a blank line, and the content
 /// (plain text, or multipart/alternative with the plain text first).
-fn body_entity(msg: &OutgoingMessage, boundary: &str) -> String {
-    let (html, text) = prepare_bodies(msg);
+fn body_entity(msg: &OutgoingMessage, present: &[String], boundary: &str) -> String {
+    let (html, text) = prepare_bodies_with(msg, present);
     let mut h = String::new();
     match html {
         None => {
@@ -663,7 +811,7 @@ fn body_entity(msg: &OutgoingMessage, boundary: &str) -> String {
 /// parameters so tests are deterministic. With files use `write_mime`, which streams them.
 pub fn build_mime(msg: &OutgoingMessage, from: &str, reply: Option<&ReplyHeaders>, boundary: &str, date: &str) -> String {
     let mut h = mime_headers(msg, from, reply, date);
-    h.push_str(&body_entity(msg, boundary));
+    h.push_str(&body_entity(msg, &msg.inline_cids(), boundary));
     h
 }
 
@@ -696,6 +844,11 @@ fn safe_content_type(t: &str) -> String {
 /// RFC 2231 `*` form first**: measured against Gmail, whichever of the two comes first wins, so
 /// the ASCII fallback only serves clients that do not understand `*`.
 fn attachment_headers(a: &OutgoingAttachment) -> String {
+    part_headers(a, false)
+}
+
+/// Headers of one part: `inline` makes it a picture the HTML body shows by `Content-ID`.
+fn part_headers(a: &OutgoingAttachment, inline: bool) -> String {
     let name = a.display_name();
     let plain = ascii_filename(&name);
     let star = if plain != name { Some(rfc5987(&name)) } else { None };
@@ -703,10 +856,19 @@ fn attachment_headers(a: &OutgoingAttachment) -> String {
         Some(star) => format!(";\r\n\t{}*=UTF-8''{};\r\n\t{}=\"{}\"", key, star, key, plain),
         None => format!(";\r\n\t{}=\"{}\"", key, plain),
     };
+    let (disposition, cid) = if inline {
+        // Only the characters `safe_cid` allows reach the header, whatever the caller passed.
+        let id: String = a.inline_cid.chars().filter(|c| c.is_ascii_alphanumeric() || "-_.@+".contains(*c)).collect();
+        ("inline", format!("Content-ID: <{}>\r\n", id))
+    } else {
+        ("attachment", String::new())
+    };
     format!(
-        "Content-Type: {}{}\r\nContent-Disposition: attachment{}\r\nContent-Transfer-Encoding: base64\r\n\r\n",
+        "Content-Type: {}{}\r\n{}Content-Disposition: {}{}\r\nContent-Transfer-Encoding: base64\r\n\r\n",
         safe_content_type(&a.mime_type()),
         params("name"),
+        cid,
+        disposition,
         params("filename")
     )
 }
@@ -757,11 +919,38 @@ pub fn write_mime<W: std::io::Write>(
     if attachments.is_empty() {
         return w.write_all(build_mime(msg, from, reply, boundary, date).as_bytes());
     }
+    // Pictures of an HTML body go in a multipart/related next to the text; everything else (and
+    // any picture of a plain-text body) is an ordinary file part of the mixed message.
+    // Only the pictures the body still refers to (and that something supplies) are related parts; an
+    // inline picture the body does not show goes as an ordinary file rather than being dropped here.
+    let shown: Vec<String> = if msg.body.format != "text" {
+        let supplied: Vec<String> = attachments.iter().filter(|a| a.is_inline()).map(|a| a.inline_cid.clone()).collect();
+        referenced_cids(&prepare_bodies_with(msg, &supplied).0.unwrap_or_default())
+    } else {
+        Vec::new()
+    };
+    let is_related = |a: &OutgoingAttachment| a.is_inline() && shown.contains(&a.inline_cid);
+    let inline: Vec<&OutgoingAttachment> = attachments.iter().filter(|a| is_related(a)).collect();
+    let files: Vec<&OutgoingAttachment> = attachments.iter().filter(|a| !is_related(a)).collect();
+    let present: Vec<String> = inline.iter().map(|a| a.inline_cid.clone()).collect();
     let outer = format!("{}-mixed", boundary);
+    let related = format!("{}-related", boundary);
     w.write_all(mime_headers(msg, from, reply, date).as_bytes())?;
     w.write_all(format!("Content-Type: multipart/mixed; boundary=\"{}\"\r\n\r\n--{}\r\n", outer, outer).as_bytes())?;
-    w.write_all(body_entity(msg, boundary).as_bytes())?;
-    for a in attachments {
+    if inline.is_empty() {
+        w.write_all(body_entity(msg, &present, boundary).as_bytes())?;
+    } else {
+        w.write_all(format!("Content-Type: multipart/related; boundary=\"{}\"\r\n\r\n--{}\r\n", related, related).as_bytes())?;
+        w.write_all(body_entity(msg, &present, boundary).as_bytes())?;
+        for a in &inline {
+            w.write_all(format!("--{}\r\n", related).as_bytes())?;
+            w.write_all(part_headers(a, true).as_bytes())?;
+            let mut f = std::fs::File::open(&a.path).map_err(|e| std::io::Error::new(e.kind(), format!("{}: {}", a.display_name(), e)))?;
+            write_b64_stream(&mut f, w)?;
+        }
+        w.write_all(format!("--{}--\r\n", related).as_bytes())?;
+    }
+    for a in files {
         w.write_all(format!("--{}\r\n", outer).as_bytes())?;
         w.write_all(attachment_headers(a).as_bytes())?;
         let mut f = std::fs::File::open(&a.path).map_err(|e| std::io::Error::new(e.kind(), format!("{}: {}", a.display_name(), e)))?;
@@ -1308,5 +1497,183 @@ mod tests {
         let mut out = Vec::new();
         write_mime(&mut out, &m, &[], "me@example.com", None, "BND", DATE).unwrap();
         assert_eq!(String::from_utf8(out).unwrap(), build_mime(&m, "me@example.com", None, "BND", DATE));
+    }
+}
+
+#[cfg(test)]
+mod inline_tests {
+    use super::*;
+
+    fn html_msg(content: &str) -> OutgoingMessage {
+        OutgoingMessage {
+            kind: "new".into(),
+            account_id: "exchange-aaaaaa".into(),
+            to: vec![Address { email: "pat@example.com".into(), ..Default::default() }],
+            subject: "Pictures".into(),
+            mode: "html".into(),
+            body: Body { format: "html".into(), content: content.into() },
+            ..Default::default()
+        }
+    }
+
+    fn pic(dir: &std::path::Path, name: &str, cid: &str, bytes: &[u8]) -> OutgoingAttachment {
+        let p = dir.join(name);
+        std::fs::write(&p, bytes).unwrap();
+        OutgoingAttachment {
+            path: p.to_string_lossy().into(),
+            name: name.into(),
+            size: bytes.len() as u64,
+            content_type: "image/png".into(),
+            inline_cid: cid.into(),
+            ..Default::default()
+        }
+    }
+
+    fn tmp(tag: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("olook-inline-{}-{}", tag, std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn cid_references_are_found_decoded_and_unique() {
+        let html = r#"<p>a <img src="cid:img-1%40omalook" width="40"> b <IMG SRC='cid:img-2@omalook'><img src="cid:img-1@omalook"></p>"#;
+        assert_eq!(referenced_cids(html), vec!["img-1@omalook".to_string(), "img-2@omalook".to_string()]);
+        assert!(referenced_cids("<p>no pictures</p>").is_empty());
+    }
+
+    #[test]
+    fn rewrite_removes_local_and_relative_sources_and_keeps_cid_and_http() {
+        let html = concat!(
+            r#"<img src="file:///home/adam/secret.png"> "#,
+            r#"<img src="cid:keep-me@omalook"> "#,
+            r#"<img src="cid:gone@omalook"> "#,
+            r#"<img src="https://example.com/logo.png"> "#,
+            r#"<img src="data:image/png;base64,AAAA"> "#,
+            r#"<img src="relative.png"> "#,
+            r#"<img alt="no source">"#,
+        );
+        let out = rewrite_images(html, &|c| c == "keep-me@omalook");
+        assert!(!out.contains("file:"), "{}", out);
+        assert!(!out.contains("data:"), "{}", out);
+        assert!(!out.contains("relative.png"), "{}", out);
+        assert!(!out.contains("no source"), "{}", out);
+        assert!(!out.contains("cid:gone"), "{}", out);
+        assert!(out.contains("src=\"cid:keep-me@omalook\""), "{}", out);
+        assert!(out.contains("https://example.com/logo.png"), "{}", out);
+        assert_eq!(out.matches("<img").count(), 2, "{}", out);
+    }
+
+    #[test]
+    fn prepare_bodies_drops_pictures_nothing_supplies() {
+        let m = html_msg(r#"<p>hi <img src="cid:a@omalook"> <img src="cid:b@omalook"></p>"#);
+        let (html, text) = prepare_bodies_with(&m, &["a@omalook".to_string()]);
+        let html = html.unwrap();
+        assert!(html.contains("cid:a@omalook") && !html.contains("cid:b@omalook"), "{}", html);
+        assert!(!text.contains("img"));
+    }
+
+    #[test]
+    fn settle_keeps_referenced_pictures_and_drops_the_rest() {
+        let d = tmp("settle");
+        let mut m = html_msg(r#"<p><img src="cid:a@omalook"><img src="file:///etc/x.png"></p>"#);
+        m.attachments = vec![
+            pic(&d, "a.png", "a@omalook", b"aaa"),
+            pic(&d, "gone.png", "gone@omalook", b"ggg"),
+            pic(&d, "dup.png", "a@omalook", b"aaa"),
+            pic(&d, "bad.png", "bad cid\r\n", b"bbb"),
+            OutgoingAttachment { path: "/nope/report.pdf".into(), name: "report.pdf".into(), size: 1, ..Default::default() },
+        ];
+        m.settle_inline();
+        assert!(!m.body.content.contains("file:"), "{}", m.body.content);
+        assert!(m.body.content.contains("cid:a@omalook"));
+        let names: Vec<&str> = m.attachments.iter().map(|a| a.name.as_str()).collect();
+        assert_eq!(names, vec!["a.png", "report.pdf"], "unreferenced, duplicate and unsafe pictures go; files stay");
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn settle_drops_every_picture_from_a_text_body() {
+        let d = tmp("settle-text");
+        let mut m = html_msg("plain");
+        m.body.format = "text".into();
+        m.attachments = vec![pic(&d, "a.png", "a@omalook", b"aaa")];
+        m.settle_inline();
+        assert!(m.attachments.is_empty());
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn inline_picture_is_a_related_part_with_content_id_and_the_files_stay_mixed() {
+        let d = tmp("mime");
+        let p = pic(&d, "photo.png", "img-1@omalook", b"\x89PNG-bytes");
+        let mut f = pic(&d, "notes.txt", "", b"notes");
+        f.content_type = "text/plain".into();
+        f.path = d.join("notes.txt").to_string_lossy().into();
+        let m = html_msg(r#"<p>look <img src="cid:img-1@omalook"></p>"#);
+        let mut out = Vec::new();
+        write_mime(&mut out, &m, &[p, f], "me@example.com", None, "BND", "Thu, 08 Oct 2026 12:00:00 +0000").unwrap();
+        let raw = String::from_utf8(out).unwrap();
+        assert!(raw.contains("Content-Type: multipart/related; boundary=\"BND-related\""), "{}", raw);
+        assert!(raw.contains("Content-ID: <img-1@omalook>\r\nContent-Disposition: inline;"), "{}", raw);
+        // The related block closes before the ordinary file part starts.
+        let rel_close = raw.find("--BND-related--\r\n").expect("related closed");
+        let file_part = raw.find("Content-Disposition: attachment;").expect("file part");
+        assert!(rel_close < file_part);
+        assert!(raw.contains("--BND-mixed\r\n"));
+        // The picture's bytes are base64 of the file, not the bare file.
+        use base64::Engine;
+        let enc = base64::engine::general_purpose::STANDARD.encode(b"\x89PNG-bytes");
+        assert!(raw.contains(&enc));
+        // Text part is the alternative inside related, so the picture can be referenced from it.
+        assert!(raw.contains("--BND-related\r\nContent-Type: multipart/alternative; boundary=\"BND\""));
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn a_picture_the_body_does_not_show_is_not_sent_as_a_related_part() {
+        let d = tmp("mime-unref");
+        let p = pic(&d, "photo.png", "img-9@omalook", b"png");
+        let m = html_msg("<p>no picture here</p>");
+        let mut out = Vec::new();
+        write_mime(&mut out, &m, &[p], "me@example.com", None, "BND", "Thu, 08 Oct 2026 12:00:00 +0000").unwrap();
+        let raw = String::from_utf8(out).unwrap();
+        assert!(!raw.contains("multipart/related"), "no cid reference, no related block");
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn graph_inline_fields_are_set_only_for_pictures() {
+        let d = tmp("graph");
+        let p = pic(&d, "photo.png", "img-1@omalook", b"png");
+        let j = graph_file_attachment_json(&p, b"png");
+        assert_eq!(j["isInline"], serde_json::json!(true));
+        assert_eq!(j["contentId"], serde_json::json!("img-1@omalook"));
+        let mut plain = p.clone();
+        plain.inline_cid.clear();
+        let j2 = graph_file_attachment_json(&plain, b"png");
+        assert!(j2.get("isInline").is_none() && j2.get("contentId").is_none());
+        let u = graph_upload_session_json(&p, 4);
+        assert_eq!(u["AttachmentItem"]["isInline"], serde_json::json!(true));
+        assert_eq!(u["AttachmentItem"]["contentId"], serde_json::json!("img-1@omalook"));
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn graph_message_body_keeps_only_the_pictures_it_is_given() {
+        let m = html_msg(r#"<p><img src="cid:a@omalook"><img src="cid:b@omalook"></p>"#);
+        let j = graph_message_json_with(&m, &["b@omalook".to_string()]);
+        let content = j["body"]["content"].as_str().unwrap();
+        assert!(!content.contains("cid:a@") && content.contains("cid:b@omalook"), "{}", content);
+    }
+
+    #[test]
+    fn safe_cid_rejects_header_breakers() {
+        assert!(safe_cid("img-1a@omalook"));
+        assert!(!safe_cid(""));
+        assert!(!safe_cid("a b"));
+        assert!(!safe_cid("a\r\nX: y"));
+        assert!(!safe_cid("a>b"));
     }
 }

@@ -194,34 +194,54 @@ pub(crate) struct PartInfo {
     pub data: Option<String>,
     /// A picture that belongs to the HTML body (a signature logo), not a file the sender attached.
     pub inline: bool,
+    /// The part's Content-ID without brackets (an inline picture is referred to by it).
+    pub content_id: Option<String>,
+}
+
+fn header_of<'a>(p: &'a serde_json::Value, name: &str) -> Option<&'a str> {
+    p["headers"].as_array().into_iter().flatten()
+        .find(|h| h["name"].as_str().map(|n| n.eq_ignore_ascii_case(name)).unwrap_or(false))
+        .and_then(|h| h["value"].as_str())
 }
 
 /// `Content-Disposition: inline`, or no disposition but a Content-ID on a picture: the way mail
 /// clients embed images in the text. (Gmail itself puts a Content-ID on every attachment, so an
 /// ID alone proves nothing.)
 fn part_is_inline(p: &serde_json::Value) -> bool {
-    let hdr = |name: &str| p["headers"].as_array().into_iter().flatten()
-        .find(|h| h["name"].as_str().map(|n| n.eq_ignore_ascii_case(name)).unwrap_or(false))
-        .and_then(|h| h["value"].as_str());
-    match hdr("Content-Disposition") {
+    match header_of(p, "Content-Disposition") {
         Some(d) => d.trim_start().to_ascii_lowercase().starts_with("inline"),
-        None => hdr("Content-ID").is_some() && p["mimeType"].as_str().unwrap_or("").starts_with("image/"),
+        None => header_of(p, "Content-ID").is_some() && p["mimeType"].as_str().unwrap_or("").starts_with("image/"),
     }
 }
 
+/// The Content-ID of a part, brackets removed.
+fn part_content_id(p: &serde_json::Value) -> Option<String> {
+    let v = header_of(p, "Content-ID")?.trim().trim_start_matches('<').trim_end_matches('>').trim();
+    (!v.is_empty()).then(|| v.to_string())
+}
+
 /// Every part with a file name (so signature logos without one are not attachments), in order.
+/// An inline picture without a file name is included too (named after its type), so a reply can
+/// take the picture its quoted HTML refers to by Content-ID.
 pub(crate) fn attachment_parts(payload: &serde_json::Value) -> Vec<PartInfo> {
     fn walk(p: &serde_json::Value, out: &mut Vec<PartInfo>) {
-        let filename = p["filename"].as_str().unwrap_or("");
+        let content_id = part_content_id(p);
+        let inline = part_is_inline(p);
+        let mut filename = p["filename"].as_str().unwrap_or("").to_string();
+        if filename.is_empty() && inline && content_id.is_some() {
+            let sub = p["mimeType"].as_str().unwrap_or("").strip_prefix("image/").unwrap_or("bin");
+            filename = format!("picture.{}", if sub == "jpeg" { "jpg" } else { sub });
+        }
         if !filename.is_empty() {
             out.push(PartInfo {
                 part_id: p["partId"].as_str().unwrap_or("").to_string(),
-                filename: filename.to_string(),
+                filename,
                 mime_type: p["mimeType"].as_str().unwrap_or("application/octet-stream").to_string(),
                 size: p["body"]["size"].as_u64().unwrap_or(0),
                 attachment_id: p["body"]["attachmentId"].as_str().map(String::from),
                 data: p["body"]["data"].as_str().map(String::from),
-                inline: part_is_inline(p),
+                inline,
+                content_id,
             });
         }
         for c in p["parts"].as_array().into_iter().flatten() {
@@ -363,6 +383,27 @@ impl GmailProvider {
         Ok(attachment_parts(&msg["payload"]).into_iter().filter(|p| !p.inline).map(|p| (p.part_id, p.filename, p.size)).collect())
     }
 
+    /// Threading for a reply: the original's Message-ID / References and its threadId. A forward
+    /// starts a new conversation. An original that is gone gives no threading (nothing is lost).
+    async fn reply_context(&self, msg: &crate::compose::OutgoingMessage) -> (Option<crate::compose::ReplyHeaders>, Option<String>) {
+        let (mut reply, mut thread_id) = (None, None);
+        if msg.is_reply() {
+            let raw = unscoped(&self.account_id, &msg.in_reply_to);
+            let url = format!("{}/messages/{}?format=metadata&metadataHeaders=Message-ID&metadataHeaders=References", BASE, urlencoding::encode(raw));
+            match self.api.get(&url).await {
+                Ok(m) => {
+                    reply = Some(crate::compose::ReplyHeaders {
+                        message_id: header(&m, "Message-ID").unwrap_or_default().trim().to_string(),
+                        references: header(&m, "References").unwrap_or_default().trim().to_string(),
+                    });
+                    thread_id = m["threadId"].as_str().map(str::to_string);
+                }
+                Err(e) => warn!("Gmail: cannot thread reply to {}: {}", msg.in_reply_to, e),
+            }
+        }
+        (reply, thread_id)
+    }
+
     /// Download the kept attachments of a message being forwarded (`keep` = MIME part ids) into
     /// `dir` and return them as attachments to send. Parts that no longer exist are an error:
     /// silently forwarding less than the user ticked would be worse than refusing.
@@ -377,28 +418,56 @@ impl GmailProvider {
         for id in keep {
             let part = parts.iter().find(|p| &p.part_id == id)
                 .ok_or_else(|| OmarchyError::HttpError(format!("the original's attachment {} is no longer there", id)))?;
-            let b64 = match (&part.data, &part.attachment_id) {
-                (Some(d), _) => d.clone(),
-                (None, Some(aid)) => {
-                    let a = self.api.get(&format!("{}/messages/{}/attachments/{}", BASE, urlencoding::encode(raw_id), urlencoding::encode(aid))).await?;
-                    a["data"].as_str().unwrap_or("").to_string()
-                }
-                (None, None) => String::new(),
-            };
-            let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(b64.trim_end_matches('=')).map_err(|e| OmarchyError::HttpError(format!("bad attachment data from Google: {}", e)))?;
-            let slot = dir.join(format!("orig-{}", id.replace('.', "_")));
-            std::fs::create_dir_all(&slot)?;
-            let path = slot.join("file");
-            std::fs::write(&path, &bytes)?;
-            out.push(crate::compose::OutgoingAttachment {
-                path: path.to_string_lossy().into_owned(),
-                name: part.filename.clone(),
-                size: bytes.len() as u64,
-                content_type: part.mime_type.clone(),
-                source_path: String::new(),
-            });
+            out.push(self.download_part(raw_id, part, dir).await?);
         }
         Ok(out)
+    }
+
+    /// The pictures of the original that the quoted HTML refers to by `cid:` (a reply or forward
+    /// keeps them). A picture the original no longer has is logged and left out; the body then
+    /// drops that reference rather than sending it broken.
+    async fn fetch_inline_originals(&self, raw_id: &str, cids: &[String], dir: &std::path::Path) -> Result<Vec<crate::compose::OutgoingAttachment>> {
+        let msg = self.api.get(&format!("{}/messages/{}?format=full", BASE, urlencoding::encode(raw_id))).await?;
+        let parts = attachment_parts(&msg["payload"]);
+        let mut out = Vec::new();
+        for cid in cids {
+            let Some(part) = parts.iter().find(|p| p.content_id.as_deref() == Some(cid.as_str())) else {
+                warn!("Gmail: the original has no picture {}; the reference is dropped", cid);
+                continue;
+            };
+            let mut a = self.download_part(raw_id, part, dir).await?;
+            a.inline_cid = cid.clone();
+            out.push(a);
+        }
+        Ok(out)
+    }
+
+    /// One part of a received message, written under `dir` (the bytes, fetched when Google did
+    /// not inline them).
+    async fn download_part(&self, raw_id: &str, part: &PartInfo, dir: &std::path::Path) -> Result<crate::compose::OutgoingAttachment> {
+        use crate::errors::OmarchyError;
+        let b64 = match (&part.data, &part.attachment_id) {
+            (Some(d), _) => d.clone(),
+            (None, Some(aid)) => {
+                let a = self.api.get(&format!("{}/messages/{}/attachments/{}", BASE, urlencoding::encode(raw_id), urlencoding::encode(aid))).await?;
+                a["data"].as_str().unwrap_or("").to_string()
+            }
+            (None, None) => String::new(),
+        };
+        let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(b64.trim_end_matches('=')).map_err(|e| OmarchyError::HttpError(format!("bad attachment data from Google: {}", e)))?;
+        let slot = dir.join(format!("orig-{}", part.part_id.replace('.', "_")));
+        std::fs::create_dir_all(&slot)?;
+        let path = slot.join("file");
+        std::fs::write(&path, &bytes)?;
+        Ok(crate::compose::OutgoingAttachment {
+            path: path.to_string_lossy().into_owned(),
+            name: part.filename.clone(),
+            size: bytes.len() as u64,
+            content_type: part.mime_type.clone(),
+            source_path: String::new(),
+            inline_cid: String::new(),
+            mtime: 0,
+        })
     }
 
     /// Full body of one message: (content type "html"|"text", content).
@@ -546,6 +615,79 @@ impl super::EmailProvider for GmailProvider {
         }
     }
 
+    async fn save_draft(&self, msg: &crate::compose::OutgoingMessage, remote_id: Option<&str>, from: &str, _attachments_changed: bool) -> Result<crate::providers::RemoteDraft> {
+        use crate::compose::{check_attachments, write_mime};
+        // A draft is one MIME message: the whole of it is rewritten on each save (drafts.update),
+        // so the attachment flag is not needed. Encoded to a file first, as a send is.
+        let (reply, thread_id) = self.reply_context(msg).await;
+        let boundary = format!("=_omalook_{:x}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0));
+        let date = chrono::Utc::now().to_rfc2822();
+        let scratch = Scratch::new()?;
+        let mut files = msg.attachments.clone();
+        if let (true, Some(keep)) = (msg.is_forward(), &msg.forwarded_keep) {
+            let orig = unscoped(&self.account_id, &msg.in_reply_to);
+            files.extend(self.fetch_originals(orig, keep, &scratch.0).await?);
+        }
+        // A reply's or forward's quoted pictures (cid:) come from the original, as a send does.
+        if (msg.is_reply() || msg.is_forward()) && msg.body.format == "html" {
+            let have = msg.inline_cids();
+            let wanted: Vec<String> = crate::compose::referenced_cids(&msg.body.content).into_iter().filter(|c| !have.contains(c)).collect();
+            if !wanted.is_empty() {
+                let orig = unscoped(&self.account_id, &msg.in_reply_to);
+                files.extend(self.fetch_inline_originals(orig, &wanted, &scratch.0).await?);
+            }
+        }
+        let sizes: Vec<(String, u64)> = files.iter().map(|a| (a.display_name(), std::fs::metadata(&a.path).map(|m| m.len()).unwrap_or(0))).collect();
+        if let Some(e) = check_attachments("gmail", msg.body.content.len(), &sizes).error() {
+            return Err(crate::errors::OmarchyError::HttpError(e));
+        }
+        let eml = scratch.0.join("draft.eml");
+        {
+            let mut w = std::io::BufWriter::new(std::fs::File::create(&eml)?);
+            write_mime(&mut w, msg, &files, from, reply.as_ref(), &boundary, &date)?;
+            std::io::Write::flush(&mut w)?;
+        }
+        // JSON `raw` (drafts.create / drafts.update take no resumable upload here): fine up to the
+        // sizes the draft worker pushes; larger drafts are only pushed on close or send.
+        let raw = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(std::fs::read(&eml)?);
+        let mut message = serde_json::json!({ "raw": raw });
+        if let Some(t) = &thread_id {
+            message["threadId"] = serde_json::json!(t);
+        }
+        let resp = match remote_id {
+            Some(id) => {
+                let body = serde_json::json!({ "id": id, "message": message });
+                self.api.put(&format!("{}/drafts/{}", BASE, urlencoding::encode(id)), &body).await?
+            }
+            None => self.api.post(&format!("{}/drafts", BASE), &serde_json::json!({ "message": message })).await?,
+        };
+        let id = resp["id"].as_str().ok_or_else(|| crate::errors::OmarchyError::HttpError("Gmail did not return a draft id".into()))?;
+        Ok(crate::providers::RemoteDraft { id: id.to_string(), version: resp["message"]["id"].as_str().map(str::to_string) })
+    }
+
+    async fn draft_version(&self, remote_id: &str) -> Result<Option<String>> {
+        let url = format!("{}/drafts/{}?format=minimal", BASE, urlencoding::encode(remote_id));
+        match self.api.get(&url).await {
+            Ok(d) => Ok(d["message"]["id"].as_str().map(str::to_string)),
+            Err(crate::errors::OmarchyError::HttpError(m)) if m.contains("Google API error: 404") => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    async fn delete_draft(&self, remote_id: &str) -> Result<()> {
+        match self.api.delete(&format!("{}/drafts/{}", BASE, urlencoding::encode(remote_id))).await {
+            Ok(_) => Ok(()),
+            Err(crate::errors::OmarchyError::HttpError(m)) if m.contains("Google API error: 404") => Ok(()),
+            Err(e) => Err(e),
+        }
+    }
+
+    async fn send_draft(&self, msg: &crate::compose::OutgoingMessage, remote_id: &str, from: &str) -> Result<()> {
+        // Update the draft to what was sent, then drafts.send (which moves it to Sent: no copy is left).
+        self.save_draft(msg, Some(remote_id), from, true).await?;
+        self.api.post(&format!("{}/drafts/send", BASE), &serde_json::json!({ "id": remote_id })).await.map(|_| ())
+    }
+
     async fn send_message(&self, msg: &crate::compose::OutgoingMessage, from: &str) -> Result<()> {
         use crate::compose::{build_mime, ReplyHeaders};
         // A reply joins the original's thread: it needs the original's Message-ID / References
@@ -572,8 +714,17 @@ impl super::EmailProvider for GmailProvider {
         let boundary = format!("=_omalook_{:x}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0));
         let date = chrono::Utc::now().to_rfc2822();
 
+        // Pictures the body refers to that are not attached: a reply or forward quotes the
+        // original's, so they come from the original.
+        let wanted: Vec<String> = if (msg.is_reply() || msg.is_forward()) && msg.body.format == "html" {
+            let have = msg.inline_cids();
+            crate::compose::referenced_cids(&msg.body.content).into_iter().filter(|c| !have.contains(c)).collect()
+        } else {
+            Vec::new()
+        };
         // The user's files, plus (forward only) the originals they chose to keep.
-        let scratch = if msg.attachments.is_empty() && !(msg.is_forward() && msg.forwarded_keep.as_ref().map(|k| !k.is_empty()).unwrap_or(false)) {
+        let keeps_originals = msg.is_forward() && msg.forwarded_keep.as_ref().map(|k| !k.is_empty()).unwrap_or(false);
+        let scratch = if msg.attachments.is_empty() && !keeps_originals && wanted.is_empty() {
             None
         } else {
             Some(Scratch::new()?)
@@ -582,6 +733,10 @@ impl super::EmailProvider for GmailProvider {
         if let (Some(dir), true, Some(keep)) = (&scratch, msg.is_forward(), &msg.forwarded_keep) {
             let orig = unscoped(&self.account_id, &msg.in_reply_to);
             files.extend(self.fetch_originals(orig, keep, &dir.0).await?);
+        }
+        if let (Some(dir), false) = (&scratch, wanted.is_empty()) {
+            let orig = unscoped(&self.account_id, &msg.in_reply_to);
+            files.extend(self.fetch_inline_originals(orig, &wanted, &dir.0).await?);
         }
 
         let Some(scratch) = scratch else {
@@ -877,6 +1032,7 @@ mod tests {
         // Gmail gives every attachment a Content-ID: only `inline` (or an ID with no disposition, on a picture) marks an embedded image
         assert!(!parts[0].inline, "an attachment with a Content-ID is still an attachment");
         assert!(parts[1].inline && parts[2].inline, "embedded pictures are inline");
+        assert_eq!(parts[1].content_id.as_deref(), Some("logo@x"), "Content-ID without the brackets");
         assert_eq!((parts[3].part_id.as_str(), parts[3].data.as_deref(), parts[3].inline), ("2", Some("aGk"), false));
     }
 }

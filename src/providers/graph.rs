@@ -73,6 +73,105 @@ impl GraphEmailProvider {
         Ok(())
     }
 
+    /// Make the draft's attachments the files of `msg`: the draft's own (non-inline) attachments
+    /// are removed, except the originals a forward keeps, then each of `msg.attachments` is added.
+    /// Reply / forward drafts: make sure the draft holds the original's pictures that the quoted
+    /// body refers to by `cid:`. Graph may already have copied them into the draft; any it did not
+    /// are copied here. Returns the Content-IDs the draft holds out of `wanted` (the body keeps
+    /// only those). A picture the original no longer has is logged and left out.
+    async fn copy_original_pictures(client: &reqwest::Client, token: &str, did: &str, orig: &str, wanted: &[String]) -> Result<Vec<String>> {
+        if wanted.is_empty() {
+            return Ok(Vec::new());
+        }
+        let enc = |s: &str| urlencoding::encode(s).into_owned();
+        let sel = "$select=id,name,contentType,contentId,isInline&$top=200";
+        let list = |t: String| -> serde_json::Value { serde_json::from_str(&t).unwrap_or_default() };
+        let cid_of = |a: &serde_json::Value| {
+            a["contentId"].as_str().map(|c| c.trim_matches(|ch| ch == '<' || ch == '>').to_string()).filter(|c| !c.is_empty())
+        };
+        let draft = list(graph_call(client, token, reqwest::Method::GET, &format!("/me/messages/{}/attachments?{}", enc(did), sel), None).await?);
+        let mut have: Vec<String> = draft["value"].as_array().into_iter().flatten().filter_map(cid_of).collect();
+        let missing: Vec<String> = wanted.iter().filter(|c| !have.contains(c)).cloned().collect();
+        if !missing.is_empty() {
+            // The original may be gone (deleted since): then nothing can be copied, and the body
+            // drops the references rather than failing the send.
+            let original = match graph_call(client, token, reqwest::Method::GET, &format!("/me/messages/{}/attachments?{}", enc(orig), sel), None).await {
+                Ok(t) => list(t),
+                Err(e) => {
+                    warn!("Graph: cannot read the original's pictures ({}); the references are dropped", e);
+                    return Ok(wanted.iter().filter(|c| have.contains(c)).cloned().collect());
+                }
+            };
+            for cid in &missing {
+                let Some(item) = original["value"].as_array().into_iter().flatten().find(|a| cid_of(a).as_deref() == Some(cid.as_str())) else {
+                    warn!("Graph: the original has no picture {}; the reference is dropped", cid);
+                    continue;
+                };
+                let Some(aid) = item["id"].as_str() else { continue };
+                let full = list(graph_call(client, token, reqwest::Method::GET, &format!("/me/messages/{}/attachments/{}", enc(orig), enc(aid)), None).await?);
+                let bytes = full["contentBytes"].as_str().unwrap_or("");
+                if bytes.is_empty() {
+                    warn!("Graph: could not read picture {} of the original; the reference is dropped", cid);
+                    continue;
+                }
+                let name = full["name"].as_str().unwrap_or("picture.png");
+                let ctype = full["contentType"].as_str().unwrap_or("application/octet-stream");
+                graph_call(client, token, reqwest::Method::POST, &format!("/me/messages/{}/attachments", enc(did)),
+                    Some(crate::compose::graph_inline_copy_json(name, ctype, cid, bytes))).await?;
+                have.push(cid.clone());
+            }
+        }
+        Ok(wanted.iter().filter(|c| have.contains(c)).cloned().collect())
+    }
+
+    /// The `cid:` pictures a reply / forward body refers to that are the original's (not the
+    /// user's own pictures, which are attached by the send itself).
+    fn original_picture_refs(msg: &crate::compose::OutgoingMessage) -> Vec<String> {
+        if !(msg.is_reply() || msg.is_forward()) || msg.body.format != "html" {
+            return Vec::new();
+        }
+        let own = msg.inline_cids();
+        crate::compose::referenced_cids(&msg.body.content).into_iter().filter(|c| !own.contains(c)).collect()
+    }
+
+    async fn sync_draft_attachments(client: &reqwest::Client, token: &str, did: &str, msg: &crate::compose::OutgoingMessage) -> Result<()> {
+        let enc = |s: &str| urlencoding::encode(s).into_owned();
+        let sel = "$select=id,name,size,isInline,contentId&$top=200";
+        let list = |t: String| -> serde_json::Value { serde_json::from_str(&t).unwrap_or_default() };
+        let remote = list(graph_call(client, token, reqwest::Method::GET, &format!("/me/messages/{}/attachments?{}", enc(did), sel), None).await?);
+        let own_pictures = msg.inline_cids();
+        let mut kept_names: Vec<String> = Vec::new();
+        if msg.is_forward() {
+            if let Some(keep) = &msg.forwarded_keep {
+                let original = list(graph_call(client, token, reqwest::Method::GET, &format!("/me/messages/{}/attachments?{}", enc(&msg.in_reply_to), sel), None).await?);
+                for a in original["value"].as_array().into_iter().flatten() {
+                    if a["id"].as_str().map(|id| keep.iter().any(|k| k == id)).unwrap_or(false) {
+                        kept_names.push(a["name"].as_str().unwrap_or("").to_string());
+                    }
+                }
+            }
+        }
+        for a in remote["value"].as_array().into_iter().flatten() {
+            // A picture the original brought (kept on the draft) stays; the user's own pictures are
+            // re-added below, so their old copies go.
+            let own = a["contentId"].as_str().map(|c| own_pictures.iter().any(|o| o == c.trim_matches(|ch| ch == '<' || ch == '>'))).unwrap_or(false);
+            if a["isInline"].as_bool().unwrap_or(false) && !own {
+                continue;
+            }
+            let name = a["name"].as_str().unwrap_or("");
+            if kept_names.iter().any(|k| k == name) {
+                continue;
+            }
+            if let Some(id) = a["id"].as_str() {
+                graph_call(client, token, reqwest::Method::DELETE, &format!("/me/messages/{}/attachments/{}", enc(did), enc(id)), None).await?;
+            }
+        }
+        for a in &msg.attachments {
+            Self::add_attachment(client, token, did, a).await?;
+        }
+        Ok(())
+    }
+
     /// Internal: handle non-2xx responses with full body logging
     /// Id of a master category by name (ignoring case), or None when the master list lacks it.
     async fn master_category_id(&self, name: &str) -> Result<Option<String>> {
@@ -886,8 +985,15 @@ impl super::EmailProvider for GraphEmailProvider {
                     }
                 }
             }
+            // The pictures the body keeps: the user's own, and the original's that the draft holds.
+            let mut present = msg.inline_cids();
+            for c in Self::copy_original_pictures(&client, &token, &did, &msg.in_reply_to, &Self::original_picture_refs(msg)).await? {
+                if !present.contains(&c) {
+                    present.push(c);
+                }
+            }
             if !fresh {
-                call(reqwest::Method::PATCH, format!("/me/messages/{}", did), Some(graph_message_json(msg))).await?;
+                call(reqwest::Method::PATCH, format!("/me/messages/{}", did), Some(crate::compose::graph_message_json_with(msg, &present))).await?;
             }
             for a in &msg.attachments {
                 Self::add_attachment(&client, &token, &did, a).await?;
@@ -904,6 +1010,99 @@ impl super::EmailProvider for GraphEmailProvider {
                 Err(e)
             }
         }
+    }
+
+    async fn save_draft(&self, msg: &crate::compose::OutgoingMessage, remote_id: Option<&str>, _from: &str, attachments_changed: bool) -> Result<crate::providers::RemoteDraft> {
+        use crate::compose::{graph_message_json, graph_message_json_with};
+        let token = self.get_token().await?;
+        let client = super::http_client();
+        let enc = |s: &str| urlencoding::encode(s).into_owned();
+        let (did, fresh) = match remote_id {
+            Some(rid) => (rid.to_string(), false),
+            None => {
+                // A reply / forward is created by Graph so the conversation stays threaded (as the
+                // send path does); a new message is created as itself.
+                let action = match msg.kind.as_str() {
+                    "replyAll" if msg.is_reply() => Some("createReplyAll"),
+                    "forward" if msg.is_forward() => Some("createForward"),
+                    _ if msg.is_reply() => Some("createReply"),
+                    _ => None,
+                };
+                let mut created = None;
+                if let Some(action) = action {
+                    match graph_call(&client, &token, reqwest::Method::POST, &format!("/me/messages/{}/{}", enc(&msg.in_reply_to), action), Some(serde_json::json!({}))).await {
+                        Ok(t) => created = Some(draft_id_field(&t)?),
+                        // The original is gone: the draft is made as a new message, nothing is lost.
+                        Err(crate::errors::OmarchyError::HttpError(m)) if m.contains("Graph API error: 404") => {
+                            warn!("Graph: message {} no longer exists; the draft is not threaded", msg.in_reply_to);
+                        }
+                        Err(e) => return Err(e),
+                    }
+                }
+                let did = match created {
+                    Some(id) => id,
+                    None => draft_id_field(&graph_call(&client, &token, reqwest::Method::POST, "/me/messages", Some(graph_message_json(msg))).await?)?,
+                };
+                (did, true)
+            }
+        };
+        // A draft made just now that fails before it is complete is deleted again, so the retry
+        // creates one draft, not two.
+        let finish = async {
+            // The pictures the body keeps: the user's own, and the original's that the draft holds.
+            let mut present = msg.inline_cids();
+            for c in Self::copy_original_pictures(&client, &token, &did, &msg.in_reply_to, &Self::original_picture_refs(msg)).await? {
+                if !present.contains(&c) {
+                    present.push(c);
+                }
+            }
+            let body = graph_message_json_with(msg, &present);
+            graph_call(&client, &token, reqwest::Method::PATCH, &format!("/me/messages/{}", enc(&did)), Some(body)).await?;
+            if fresh || attachments_changed {
+                Self::sync_draft_attachments(&client, &token, &did, msg).await?;
+            }
+            graph_change_key(&client, &token, &did).await
+        };
+        match finish.await {
+            Ok(version) => Ok(crate::providers::RemoteDraft { id: did, version }),
+            Err(e) => {
+                if fresh {
+                    if let Err(d) = graph_call(&client, &token, reqwest::Method::DELETE, &format!("/me/messages/{}", enc(&did)), None).await {
+                        warn!("Graph: could not remove half-made draft {}: {}", did, d);
+                    }
+                }
+                Err(e)
+            }
+        }
+    }
+
+    async fn draft_version(&self, remote_id: &str) -> Result<Option<String>> {
+        let token = self.get_token().await?;
+        let client = super::http_client();
+        match graph_change_key(&client, &token, remote_id).await {
+            Ok(v) => Ok(v),
+            Err(crate::errors::OmarchyError::HttpError(m)) if m.contains("Graph API error: 404") => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    async fn delete_draft(&self, remote_id: &str) -> Result<()> {
+        let token = self.get_token().await?;
+        let client = super::http_client();
+        match graph_call(&client, &token, reqwest::Method::DELETE, &format!("/me/messages/{}", urlencoding::encode(remote_id)), None).await {
+            Ok(_) => Ok(()),
+            Err(crate::errors::OmarchyError::HttpError(m)) if m.contains("Graph API error: 404") => Ok(()),
+            Err(e) => Err(e),
+        }
+    }
+
+    async fn send_draft(&self, msg: &crate::compose::OutgoingMessage, remote_id: &str, from: &str) -> Result<()> {
+        // Bring the draft up to what was sent (body, recipients, attachments), then send it. A 404
+        // here means the draft was deleted or already sent: reported, never sent a second time.
+        self.save_draft(msg, Some(remote_id), from, true).await?;
+        let token = self.get_token().await?;
+        let client = super::http_client();
+        graph_call(&client, &token, reqwest::Method::POST, &format!("/me/messages/{}/send", urlencoding::encode(remote_id)), None).await.map(|_| ())
     }
 
     /// Fetch all mail folders from Graph API
@@ -966,6 +1165,34 @@ impl super::EmailProvider for GraphEmailProvider {
 /// We infer sort order from the English display name; for non-English mailboxes the
 /// sort_order fallback of 999 keeps custom folders at the bottom, which is acceptable.
 /// See: https://learn.microsoft.com/en-us/graph/api/resources/mailfolder?view=graph-rest-1.0
+/// Graph's `changeKey` for a message (the version the draft worker compares). Ok(None) if absent.
+async fn graph_change_key(client: &reqwest::Client, token: &str, id: &str) -> Result<Option<String>> {
+    let text = graph_call(client, token, reqwest::Method::GET, &format!("/me/messages/{}?$select=changeKey", urlencoding::encode(id)), None).await?;
+    Ok(serde_json::from_str::<serde_json::Value>(&text).ok().and_then(|j| j["changeKey"].as_str().map(str::to_string)))
+}
+
+/// The `id` of a Graph message / draft response.
+fn draft_id_field(text: &str) -> Result<String> {
+    serde_json::from_str::<serde_json::Value>(text)
+        .ok()
+        .and_then(|j| j["id"].as_str().map(str::to_string))
+        .ok_or_else(|| crate::errors::OmarchyError::HttpError("Graph did not return a draft id".into()))
+}
+
+/// One Graph call returning the response text. A bodyless POST carries `Content-Length: 0`
+/// (Graph answers 411 otherwise). Non-2xx answers become `Graph API error: <status> — <body>`.
+async fn graph_call(client: &reqwest::Client, token: &str, method: reqwest::Method, path: &str, body: Option<serde_json::Value>) -> Result<String> {
+    let is_post = method == reqwest::Method::POST;
+    let mut req = client.request(method, format!("https://graph.microsoft.com/v1.0{}", path)).header("Authorization", format!("Bearer {}", token));
+    match body {
+        Some(b) => req = req.json(&b),
+        None if is_post => req = req.header("Content-Length", "0").body(""),
+        None => {}
+    }
+    let resp = req.send().await.map_err(|e| crate::errors::OmarchyError::HttpError(e.to_string()))?;
+    GraphEmailProvider::check_response(resp).await
+}
+
 fn infer_well_known_name(display_name: &str) -> Option<String> {
     match display_name.to_lowercase().as_str() {
         "inbox"                 => Some("inbox".to_string()),

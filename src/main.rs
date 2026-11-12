@@ -1003,6 +1003,9 @@ fn compose_send_response(config_dir: &PathBuf, stream: &mut std::net::TcpStream,
         Ok(r) => r,
         Err(e) => return err(&e),
     };
+    // Pictures the body does not show go, and so does any `<img>` that would not load for the
+    // recipient (a local path); see `settle_inline`.
+    msg.settle_inline();
     if let Err(e) = msg.validate() {
         return err(&e);
     }
