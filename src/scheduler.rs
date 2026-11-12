@@ -16,6 +16,7 @@ use crate::email_daemon::{DaemonConfig, EmailDaemon};
 use crate::tasks_daemon::{TasksDaemon, TasksDaemonConfig};
 use crate::outbox::OutboxWorker;
 use crate::calendar_outbox::CalendarOutboxWorker;
+use crate::contacts_outbox::ContactsOutboxWorker;
 use crate::providers::{
     CalendarProvider, ContactsProvider, EmailProvider, GmailProvider, GoogleCalendarProvider, GoogleContactsProvider,
     GraphCalendarProvider, GraphContactsProvider, GraphEmailProvider, GraphTasksProvider,
@@ -191,7 +192,19 @@ impl SyncScheduler {
             CalendarOutboxWorker::new(&id, db, provider, Some(settings_path)).run().await;
         });
 
-        running.insert(account_id.to_string(), vec![mail_stop, cal_stop, contacts_stop, tasks_stop, outbox_stop, cal_outbox_stop]);
+        // Contact writes (edits, new contacts, deletes) go out at once from here.
+        let contacts_outbox_stop = Arc::new(Notify::new());
+        let (id, path, kind) = (account_id.to_string(), self.db_str(), provider.clone());
+        spawn_sync_thread(format!("contactsoutbox-{}", account_id), contacts_outbox_stop.clone(), move || async move {
+            let provider = contacts_provider(&kind, &id);
+            let db = match Database::open_for_account(&path, &id) {
+                Ok(db) => Arc::new(db),
+                Err(e) => return error!("Contacts outbox {}: cannot open database: {}", id, e),
+            };
+            ContactsOutboxWorker::new(&id, db, provider).run().await;
+        });
+
+        running.insert(account_id.to_string(), vec![mail_stop, cal_stop, contacts_stop, tasks_stop, outbox_stop, cal_outbox_stop, contacts_outbox_stop]);
         info!("Scheduler: started sync for account {}", account_id);
         true
     }

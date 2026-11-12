@@ -1023,9 +1023,94 @@ fn compose_outbox_response(config_dir: &PathBuf, first_line: &str) -> String {
     }
 }
 
+/// A write to the People view's address book: opens the account's database, runs `f` on it, wakes the
+/// outbox worker. `account` is the account the write belongs to.
+fn contacts_write_call(config_dir: &PathBuf, account: &str, f: impl FnOnce(&Database) -> serde_json::Value) -> String {
+    let err = |m: &str| serde_json::json!({ "ok": false, "error": m }).to_string();
+    if account.is_empty() {
+        return err("no contact account selected");
+    }
+    if !SCHEDULER.get().map(|s| s.is_running(account)).unwrap_or(false) {
+        return err("that account is not signed in, so it cannot save contacts");
+    }
+    let path = config_dir.join("messages.db");
+    let db = match Database::open_for_account(path.to_str().unwrap_or("messages.db"), account) {
+        Ok(db) => db,
+        Err(e) => return err(&format!("database: {}", e)),
+    };
+    let out = f(&db);
+    omalook::sync_state::request_contact_outbox_run();
+    out.to_string()
+}
+
+/// The account a contact belongs to (its row says so).
+fn account_of_contact(config_dir: &PathBuf, id: &str) -> String {
+    let path = config_dir.join("messages.db");
+    Database::open(path.to_str().unwrap_or("messages.db"))
+        .ok()
+        .and_then(|db| db.get_contact_record(id).ok().flatten())
+        .map(|r| r.account_id)
+        .unwrap_or_default()
+}
+
 /// The `/contacts/*` routes except `POST /contacts/favorite` (kept where it was). None = not one of ours.
-/// GET /contacts/get?id=, GET /contacts/folders?account=. The write routes join them in phase 2.
-fn contacts_route(config_dir: &PathBuf, _stream: &mut std::net::TcpStream, _initial: &[u8], first_line: &str) -> Option<String> {
+/// GET /contacts/get?id=, GET /contacts/folders?account=; POST /contacts/save, /delete, /undo, /retry, /discard.
+fn contacts_route(config_dir: &PathBuf, stream: &mut std::net::TcpStream, initial: &[u8], first_line: &str) -> Option<String> {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static SEQ: AtomicU32 = AtomicU32::new(0);
+    let seq = || SEQ.fetch_add(1, Ordering::Relaxed) & 0xfff;
+    let post = first_line.starts_with("POST ");
+    if post && first_line.contains("/contacts/save") {
+        let body = match read_post_body(stream, initial, 1024 * 1024) { Ok(b) => b, Err(e) => return Some(serde_json::json!({ "ok": false, "error": e }).to_string()) };
+        let req: serde_json::Value = match serde_json::from_str(&body) { Ok(v) => v, Err(e) => return Some(serde_json::json!({ "ok": false, "error": format!("unreadable contact: {}", e) }).to_string()) };
+        let id = req["id"].as_str().unwrap_or("");
+        let account = if id.is_empty() { req["account_id"].as_str().unwrap_or("").to_string() } else { account_of_contact(config_dir, id) };
+        return Some(contacts_write_call(config_dir, &account, |db| omalook::contacts_write::save(db, &req, seq())));
+    }
+    if post && first_line.contains("/contacts/delete") {
+        let body = match read_post_body(stream, initial, 1024 * 1024) { Ok(b) => b, Err(e) => return Some(serde_json::json!({ "ok": false, "error": e }).to_string()) };
+        let req: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+        let ids: Vec<String> = req["ids"].as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default();
+        // one account at a time: group by the account each contact belongs to
+        let mut by: std::collections::BTreeMap<String, Vec<String>> = Default::default();
+        for i in ids { by.entry(account_of_contact(config_dir, &i)).or_default().push(i); }
+        let mut deleted = 0;
+        let mut last_err = String::new();
+        for (acct, list) in by {
+            let r: serde_json::Value = serde_json::from_str(&contacts_write_call(config_dir, &acct, |db| omalook::contacts_write::delete(db, &list, seq()))).unwrap_or_default();
+            if r["ok"] == true { deleted += r["deleted"].as_i64().unwrap_or(0); } else { last_err = r["error"].as_str().unwrap_or("").to_string(); }
+        }
+        return Some(if deleted == 0 && !last_err.is_empty() { serde_json::json!({ "ok": false, "error": last_err }).to_string() } else { serde_json::json!({ "ok": true, "deleted": deleted }).to_string() });
+    }
+    if post && first_line.contains("/contacts/undo") {
+        // the account whose newest write is the most recent
+        let path = config_dir.join("messages.db");
+        let mut best: Option<(i64, String)> = None;
+        if let Ok(db) = Database::open(path.to_str().unwrap_or("messages.db")) {
+            for (t, a) in db.contact_outbox_newest_per_account().unwrap_or_default() {
+                if best.as_ref().map(|b| t > b.0).unwrap_or(true) { best = Some((t, a)); }
+            }
+        }
+        return Some(match best {
+            Some((_, a)) => contacts_write_call(config_dir, &a, |db| omalook::contacts_write::undo(db, seq())),
+            None => serde_json::json!({ "ok": false, "error": "nothing to undo" }).to_string(),
+        });
+    }
+    if post && (first_line.contains("/contacts/retry") || first_line.contains("/contacts/discard")) {
+        let contact = query_param(first_line, "id").unwrap_or_default();
+        let account = account_of_contact(config_dir, &contact);
+        let retry = first_line.contains("/contacts/retry");
+        return Some(contacts_write_call(config_dir, &account, |db| {
+            match db.contact_last_error(&contact) {
+                Ok(Some((op, _, _))) => {
+                    if retry { let _ = db.contact_outbox_retry(&op); } else { let _ = db.contact_outbox_discard(&op); }
+                    serde_json::json!({ "ok": true })
+                }
+                _ => serde_json::json!({ "ok": false, "error": "nothing to retry" }),
+            }
+        }));
+    }
+    let _ = (&stream, &initial);
     let db_path = config_dir.join("messages.db");
     let open = || Database::open(db_path.to_str().unwrap_or("messages.db"));
     let err = |m: String| serde_json::json!({ "ok": false, "error": m }).to_string();

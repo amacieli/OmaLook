@@ -45,6 +45,7 @@ pub struct ContactOp {
     pub base_etag: String,
     pub created_at: i64,
     pub updated_at: i64,
+    pub result_id: Option<String>,
 }
 
 impl Database {
@@ -327,14 +328,14 @@ impl Database {
 
     pub fn contact_outbox_prune(&self, max_age_ms: i64) -> Result<usize> {
         Ok(self.conn.execute(
-            "DELETE FROM contact_outbox WHERE state IN ('sent','cancelled') AND updated_at < ?1",
+            "DELETE FROM contact_outbox WHERE state IN ('sent','cancelled','undone') AND updated_at < ?1",
             params![Self::now_ms() - max_age_ms],
         )?)
     }
 
     pub fn contact_outbox_get(&self, id: &str) -> Result<Option<ContactOp>> {
         let r = self.conn.query_row(
-            "SELECT id, op, contact_id, state, attempts, last_error, payload_json, base_etag, created_at, updated_at FROM contact_outbox WHERE id = ?1",
+            "SELECT id, op, contact_id, state, attempts, last_error, payload_json, base_etag, created_at, updated_at, result_id FROM contact_outbox WHERE id = ?1",
             params![id],
             map_op,
         );
@@ -348,7 +349,7 @@ impl Database {
     /// Everything not yet done, oldest first, plus what finished in the last minute (for the status bar).
     pub fn contact_outbox_list(&self) -> Result<Vec<ContactOp>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, op, contact_id, state, attempts, last_error, payload_json, base_etag, created_at, updated_at FROM contact_outbox
+            "SELECT id, op, contact_id, state, attempts, last_error, payload_json, base_etag, created_at, updated_at, result_id FROM contact_outbox
              WHERE account_id = ?1 AND (state IN ('pending','sending','failed','conflict') OR (state = 'sent' AND updated_at > ?2))
              ORDER BY created_at, rowid",
         )?;
@@ -386,6 +387,89 @@ impl Database {
 }
 
 impl Database {
+    /// This account's own (top level) contact folder: where a new contact goes unless told otherwise.
+    pub fn default_contact_folder(&self) -> Result<Option<String>> {
+        match self.conn.query_row(
+            "SELECT id FROM contact_folders WHERE account_id = ?1 AND parent_folder_id IS NULL ORDER BY (display_name = 'Contacts') DESC, display_name LIMIT 1",
+            params![self.account_id],
+            |r| r.get::<_, String>(0),
+        ) {
+            Ok(v) => Ok(Some(v)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// The create of a contact that has not been claimed by the worker yet: `(operation id, payload)`.
+    pub fn contact_outbox_pending_create(&self, contact_id: &str) -> Result<Option<(String, String)>> {
+        match self.conn.query_row(
+            "SELECT id, payload_json FROM contact_outbox WHERE account_id = ?1 AND contact_id = ?2 AND op = 'create' AND state = 'pending'",
+            params![self.account_id, contact_id],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+        ) {
+            Ok(v) => Ok(Some(v)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    pub fn contact_outbox_set_payload(&self, id: &str, payload: &str) -> Result<()> {
+        self.conn.execute("UPDATE contact_outbox SET payload_json = ?2, updated_at = ?3 WHERE id = ?1 AND state = 'pending'", params![id, payload, Self::now_ms()])?;
+        Ok(())
+    }
+
+    /// After a write went through, later waiting writes of the same contact guard against the new version.
+    pub fn contact_outbox_rebase(&self, contact_id: &str, etag: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE contact_outbox SET base_etag = ?3 WHERE account_id = ?1 AND contact_id = ?2 AND state = 'pending' AND op = 'update'",
+            params![self.account_id, contact_id, etag],
+        )?;
+        Ok(())
+    }
+
+    /// Later writes aimed at a placeholder id follow the contact to its real id.
+    pub fn contact_outbox_retarget(&self, from: &str, to: &str) -> Result<()> {
+        self.conn.execute("UPDATE contact_outbox SET contact_id = ?3 WHERE account_id = ?1 AND contact_id = ?2", params![self.account_id, from, to])?;
+        Ok(())
+    }
+
+    /// Put a failed write back in the queue (retry).
+    pub fn contact_outbox_retry(&self, id: &str) -> Result<Option<ContactOp>> {
+        let op = self.contact_outbox_get(id)?;
+        if let Some(o) = &op {
+            if o.state == "failed" {
+                self.contact_outbox_mark_retry(id, "", Self::now_ms())?;
+                if !o.contact_id.is_empty() { self.set_contact_state(&o.contact_id, if o.op == "delete" { "deleted" } else { "pending" })?; }
+            }
+        }
+        Ok(op)
+    }
+
+    /// The newest write of the account that Ctrl-Z may take back (not itself undone, recent enough).
+    pub fn contact_outbox_newest_undoable(&self, since_ms: i64) -> Result<Option<ContactOp>> {
+        match self.conn.query_row(
+            "SELECT id, op, contact_id, state, attempts, last_error, payload_json, base_etag, created_at, updated_at, result_id FROM contact_outbox
+             WHERE account_id = ?1 AND state IN ('pending','sent','failed','conflict') AND created_at >= ?2
+               AND payload_json NOT LIKE '%\"undo_of\"%' ORDER BY created_at DESC, rowid DESC LIMIT 1",
+            params![self.account_id, since_ms],
+            map_op,
+        ) {
+            Ok(o) => Ok(Some(o)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// For each account: when its newest write that Ctrl-Z may take back was queued: `(created_at, account_id)`.
+    pub fn contact_outbox_newest_per_account(&self) -> Result<Vec<(i64, String)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT MAX(created_at), account_id FROM contact_outbox
+             WHERE state IN ('pending','sent','failed','conflict') AND created_at >= ?1 AND payload_json NOT LIKE '%\"undo_of\"%' GROUP BY account_id",
+        )?;
+        let rows = stmt.query_map(params![Self::now_ms() - 15 * 60_000], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?.collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
     /// Every contact folder (optionally one account's) with its account and how many contacts it holds.
     pub fn list_contact_folders_ext(&self, account: Option<&str>) -> Result<Vec<Value>> {
         let mut stmt = self.conn.prepare(
@@ -447,6 +531,7 @@ fn map_op(r: &rusqlite::Row<'_>) -> rusqlite::Result<ContactOp> {
         base_etag: r.get(7)?,
         created_at: r.get(8)?,
         updated_at: r.get(9)?,
+        result_id: r.get(10)?,
     })
 }
 

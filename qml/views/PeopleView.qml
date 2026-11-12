@@ -53,7 +53,13 @@ Item {
 
     readonly property var selected: contacts.length > 0 ? contacts[Math.max(0, Math.min(cur, contacts.length - 1))] : null
     readonly property string selectedId: selected ? selected.id : ""
-    readonly property bool editing: searching   // AppShell hands every key to the search field meanwhile
+    property bool editorOpen: false            // the editor is over the list
+    property var  editorRaw: null              // the contact it edits (null = a new one)
+    property var  editorTargets: []            // where a new contact may be saved
+    property string editorStatus: ""
+    readonly property bool editing: searching || editorOpen   // AppShell hands every key to the field / editor meanwhile
+
+    signal notice(string text)
 
     readonly property int rowHeight: 64
     readonly property int lineHeight: 16
@@ -143,6 +149,93 @@ Item {
         }
         xhr.open("POST", backendUrl + path)
         xhr.send()
+    }
+
+    function _postJson(path, body, cb) {
+        var xhr = new XMLHttpRequest()
+        xhr.onreadystatechange = function() {
+            if (xhr.readyState !== XMLHttpRequest.DONE) return
+            var r = null
+            try { r = JSON.parse(xhr.responseText) } catch (e) {}
+            cb(r || { ok: false, error: "the backend did not answer" })
+        }
+        xhr.open("POST", backendUrl + path)
+        xhr.send(JSON.stringify(body))
+    }
+
+    // ── create / edit / delete / undo (instant saves; docs/PLAN-contacts.md decision 4) ──
+    function _writableAccount(id) {
+        for (var i = 0; i < appAccounts.length; i++) {
+            var a = appAccounts[i]
+            if (a.id === id) return a.signed_in && a.provider !== "gmail"
+        }
+        return false
+    }
+    function newContact() {
+        var xhr = new XMLHttpRequest()
+        xhr.onreadystatechange = function() {
+            if (xhr.readyState !== XMLHttpRequest.DONE) return
+            var list = []
+            try { list = JSON.parse(xhr.responseText).folders || [] } catch (e) {}
+            var t = list.filter(function(f) { return root._writableAccount(f.account_id) })
+                        .map(function(f) { return { accountId: f.account_id, accountEmail: f.account_email, folderId: f.id, folderName: f.name } })
+            // the account being looked at goes first
+            var want = root.accountFilter !== "" ? root.accountFilter : (root.selected ? root.selected.account_email : "")
+            t.sort(function(a, b) { return (b.accountEmail === want ? 1 : 0) - (a.accountEmail === want ? 1 : 0) })
+            root.editorTargets = t
+            root.editorRaw = null
+            root.editorStatus = ""
+            root.editorOpen = true
+        }
+        xhr.open("GET", backendUrl + "/contacts/folders")
+        xhr.send()
+        return ""
+    }
+    function editContact() {
+        if (!selected) return "No contact selected"
+        ensureDetail(function(ok) {
+            if (!ok) { root.notice("Could not read that contact"); return }
+            if (detail.sync_state === "deleted") { root.notice("That contact is being deleted"); return }
+            root.editorRaw = detail.contact
+            root.editorStatus = ""
+            root.editorOpen = true
+        })
+        return ""
+    }
+    function saveFromEditor(body) {
+        editorStatus = "saving\u2026"
+        _postJson("/contacts/save", body, function(r) {
+            if (r.ok !== true) { root.editorStatus = r.error || "not saved"; return }
+            root.editorOpen = false
+            root.editorStatus = ""
+            if (r.unchanged === true) { root.notice("No changes"); return }
+            root._wantId = r.id
+            root.load()
+            root.notice(r.kind === "create" ? "Contact saved \u2014 Ctrl-Z takes it back" : "Saved \u2014 Ctrl-Z takes it back")
+        })
+    }
+    function keyDelete() {
+        var ids = targetIds()
+        if (ids.length === 0) return
+        var n = ids.length
+        _postJson("/contacts/delete", { ids: ids }, function(r) {
+            if (r.ok !== true) { root.notice(r.error || "not deleted"); return }
+            root.clearMarks()
+            root.load()
+            root.notice((n === 1 ? "Contact deleted" : n + " contacts deleted") + " \u2014 Ctrl-Z brings it back")
+        })
+    }
+    function undoLast() {
+        _postJson("/contacts/undo", {}, function(r) {
+            root.notice(r.ok === true ? "Undone" : (r.error || "Nothing to undo"))
+            root.load()
+        })
+    }
+    // a write that failed goes round again (R); Ctrl-Z drops it instead
+    function retryFailed() {
+        if (!selected || selected.sync_state === "ok") return "Nothing to retry on this contact"
+        _post("/contacts/retry?id=" + encodeURIComponent(selected.id), function() { root.load() })
+        return "Trying again"
     }
 
     function setFavorite(id, value) {
@@ -519,6 +612,20 @@ Item {
                 detail: root.detail
                 loading: root.detailLoading
             }
+        }
+    }
+
+    Loader {
+        anchors.fill: parent
+        active: root.editorOpen
+        z: 100
+        sourceComponent: ContactEditor {
+            raw: root.editorRaw
+            targets: root.editorTargets
+            accounts: root.appAccounts
+            status: root.editorStatus
+            onSaveRequested: function(body) { root.saveFromEditor(body) }
+            onCancelRequested: { root.editorOpen = false; root.editorStatus = "" }
         }
     }
 

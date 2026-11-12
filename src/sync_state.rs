@@ -142,6 +142,18 @@ pub fn cal_outbox_requested() -> tokio::sync::futures::Notified<'static> {
     CAL_OUTBOX.notified()
 }
 
+static CONTACT_OUTBOX: tokio::sync::Notify = tokio::sync::Notify::const_new();
+
+/// A contact write was queued: wake the contact outbox workers.
+pub fn request_contact_outbox_run() {
+    CONTACT_OUTBOX.notify_waiters();
+}
+
+/// Resolves on the next `request_contact_outbox_run()`.
+pub fn contact_outbox_requested() -> tokio::sync::futures::Notified<'static> {
+    CONTACT_OUTBOX.notified()
+}
+
 #[cfg(test)]
 mod read_push_tests {
     use super::*;

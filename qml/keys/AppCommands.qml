@@ -636,7 +636,10 @@ Item {
       run: function() { content.ensureDetail(function(ok) { if (ok) say(content.copyText(content.cardText(), "contact")) }) } },
     { id: "people.scrolldown", title: "Scroll the detail pane down", scope: "contacts/list", keys: ["C-e"], when: function() { return !!content && content.detailOpen === true }, run: function() { content.scrollDetail(60) } },
     { id: "people.scrollup",   title: "Scroll the detail pane up", scope: "contacts/list", keys: ["C-y"], when: function() { return !!content && content.detailOpen === true }, run: function() { content.scrollDetail(-60) } },
-    { id: "people.new",     title: "New contact", scope: "contacts/list", keys: ["c"], run: soon("new contact") },
+    { id: "people.new",     title: "New contact", scope: "contacts/list", keys: ["c", "n"], run: function() { content.newContact() } },
+    { id: "people.edit",    title: "Edit this contact", scope: "contacts/list", keys: ["e"], run: function() { var m = content.editContact(); if (m) say(m) } },
+    { id: "people.undo",    title: "Undo the last contact change", scope: "contacts/list", keys: ["C-z"], run: function() { content.undoLast() } },
+    { id: "people.retry",   title: "Try a failed save again", scope: "contacts/list", keys: ["R"], when: function() { return !!content && content.selected !== undefined && !!content.selected && content.selected.sync_state === "failed" }, run: function() { var m = content.retryFailed(); if (m) say(m) } },
 
     // tasks
     { id: "tasks.filter",  title: "Cycle filter (all / active / done)", scope: "tasks/list", keys: ["f"], run: function() {
