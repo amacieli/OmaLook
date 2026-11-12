@@ -127,10 +127,11 @@ function segmentOn(e, day) {
 }
 
 function timedOnDay(norm, day) {
-    return onDay(norm, day).filter(function(e) { return !e.allDay }).map(function(e) { return segmentOn(e, day) })
+    // an event that lasts several days lives in the all-day row, not in the hour columns
+    return onDay(norm, day).filter(function(e) { return !e.allDay && !e.multiDay }).map(function(e) { return segmentOn(e, day) })
 }
 function allDayOnDay(norm, day) {
-    return onDay(norm, day).filter(function(e) { return e.allDay })
+    return onDay(norm, day).filter(function(e) { return e.allDay || e.multiDay })
 }
 
 // Greedy column layout so overlapping timed events sit side by side.
@@ -207,7 +208,7 @@ function eventsAtCursor(norm, date, min, mode) {
     var day = onDay(norm, date)
     if (mode === "month") return day
     return day.filter(function(e) {
-        if (e.allDay) return true
+        if (e.allDay || e.multiDay) return true
         var g = segmentOn(e, date)
         return g.startMin < min + SLOT && g.endMin > min
     })
@@ -325,4 +326,11 @@ function spanText(e) {
     var d = function(x) { return DAYS_SHORT[isoIndex(x)] + " " + x.getDate() + " " + MONTHS[x.getMonth()].substring(0, 3) }
     return e.allDay ? d(e.startDate) + " \u2013 " + d(e.endDate)
                     : d(e.startDate) + " " + timeLabel(e.startMin) + " \u2013 " + d(e.endDate) + " " + timeLabel(e.endMin)
+}
+
+// The same lane layout for the all-day row of the week views: only all-day events, one array per day in `days`.
+function allDayLanes(norm, days) {
+    if (!days || days.length === 0) return []
+    var only = norm.filter(function(e) { return e.allDay || e.multiDay })
+    return monthLanes(only, days[0], days.length)
 }

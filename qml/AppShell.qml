@@ -50,7 +50,7 @@ FocusScope {
     z: 950
     commands: commands.effective
     scopes: keyCatcher.scopes
-    onClosed: root.focusKeys()
+    onClosed: { var ci = contentLoader.item; if (appState.composing && ci && ci.focusCompose) ci.focusCompose(); else root.focusKeys() }
   }
 
   HelpOverlay {

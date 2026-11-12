@@ -13,6 +13,7 @@ RowLayout {
   required property var app
 
   readonly property int pageRows: messages.pageRows
+  function focusCompose() { if (composeLoader.item && composeLoader.item.focusAfterPalette) composeLoader.item.focusAfterPalette() }
   readonly property bool editing: preview.editing || root.app.composing
 
   spacing: Style.spacing.sm
@@ -107,6 +108,7 @@ RowLayout {
       ignoreUnknownSignals: true
       function onSendRequested(message) { root.app.submitCompose(message) }
       function onDiscardRequested() { root.app.closeCompose() }
+      function onPaletteRequested() { root.app.focusPaletteRequested("") }
       function onBrowsed(dir) { root.app.attachBrowseDir = dir; root.app.rememberAttachDir(dir) }
     }
     onStatusChanged: if (status === Loader.Error) {

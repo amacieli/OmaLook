@@ -124,11 +124,13 @@ Item {
                             property bool bar: !!cev && (cev.allDay || cev.multiDay)
                             property bool sel: !!cev && root.selectedId !== "" && cev.raw.id === root.selectedId && cell.isSel
                             property color hue: cev && root.accounts.length > 1 ? Hues.accountColor(root.accounts, cev.raw.account_email) : root.accentColor
-                            visible: !!cev
+                            // always "visible" (an invisible item takes no room in the Column and the bars below would
+                            // climb up); only the chip inside hides for an empty lane
                             opacity: cev && cev.raw.pending ? 0.55 : 1      // queued, not yet on the server
                             // Bars of a multi-day event run edge to edge, so cell after cell reads as one bar.
                             Rectangle {
                                 id: chip
+                                visible: !!slot.cev
                                 x: slot.contBefore ? -3 : 0
                                 width: parent.width + (slot.contBefore ? 3 : 0) + (slot.contAfter ? 3 : 0)
                                 height: parent.height

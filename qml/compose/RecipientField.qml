@@ -212,7 +212,7 @@ FocusScope {
           }
           onActiveFocusChanged: if (!activeFocus) { root.commit(); root._matches = [] }
           Keys.onPressed: function(e) {
-            if (e.key === Qt.Key_Backspace && text === "" && root.recipients.length > 0) {
+            if (e.key === Qt.Key_Backspace && !(e.modifiers & Qt.ControlModifier) && text === "" && root.recipients.length > 0) {   // Ctrl+Shift+Backspace belongs to the attachments
               var last = root.recipients[root.recipients.length - 1]
               root.removeAt(root.recipients.length - 1)
               text = last.list ? last.name : (last.name !== "" ? last.name + " <" + last.email + ">" : last.email)

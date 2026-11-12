@@ -56,10 +56,11 @@ Item {
     property bool allDayExpanded: false
     readonly property int allDayCollapsedHeight: 24
     readonly property int maxAllDayHeight: 200
+    // one array per day: all-day events and nulls (empty lanes), so a multi-day bar keeps its height across the columns
+    readonly property var adLanes: CU.allDayLanes(events, days)
     property int allDayMax: {
         var m = 0
-        for (var i = 0; i < days.length; i++)
-            m = Math.max(m, CU.allDayOnDay(events, days[i]).length)
+        for (var i = 0; i < adLanes.length; i++) m = Math.max(m, adLanes[i].length)
         return m
     }
     readonly property int allDayExpandedHeight: Math.min(Math.max(allDayMax, 1) * 20 + 6, maxAllDayHeight)
@@ -174,7 +175,8 @@ Item {
                     delegate: Item {
                         id: adCell
                         property int colIndex: index
-                        property var list: CU.allDayOnDay(root.events, modelData)
+                        property var lane: root.adLanes[index] || []          // with empty lanes, for the expanded list
+                        property var list: lane.filter(function(e) { return !!e })     // without, for the collapsed one
                         // a multi-day event is one bar across the columns: it runs to the cell edges where it continues,
                         // and its title shows on its first day and on the first column of the view
                         function contBefore(e) { return !!e && e.startDate.getTime() < modelData.getTime() }
@@ -237,24 +239,25 @@ Item {
                                 width: parent.width
                                 spacing: 2
                                 Repeater {
-                                    model: adCell.list
+                                    model: adCell.lane
                                     delegate: Item {
                                         id: exRow
                                         width: parent.width; height: 18
                                         readonly property bool cb: adCell.contBefore(modelData)
                                         readonly property bool ca: adCell.contAfter(modelData)
                                         Rectangle {
+                                            visible: !!modelData
                                             x: exRow.cb ? -3 : 0
                                             width: parent.width + (exRow.cb ? 3 : 0) + (exRow.ca ? 3 : 0)
                                             height: 18
-                                            color: Qt.rgba(root.accentColor.r, root.accentColor.g, root.accentColor.b, root.isSel(modelData) ? 0.4 : 0.22)
-                                            border.width: root.isSel(modelData) ? 1 : 0
+                                            color: Qt.rgba(root.accentColor.r, root.accentColor.g, root.accentColor.b, modelData && root.isSel(modelData) ? 0.4 : 0.22)
+                                            border.width: modelData && root.isSel(modelData) ? 1 : 0
                                             border.color: root.accentColor
                                             Text {
                                                 visible: !exRow.cb || adCell.colIndex === 0
                                                 anchors.fill: parent; anchors.leftMargin: 5; anchors.rightMargin: 3
                                                 verticalAlignment: Text.AlignVCenter
-                                                text: (exRow.cb ? "\u25c2 " : "") + modelData.title
+                                                text: modelData ? (exRow.cb ? "\u25c2 " : "") + modelData.title : ""
                                                 elide: Text.ElideRight
                                                 font.family: root.monoFont; font.pixelSize: Style.font.caption
                                                 color: root.textColor

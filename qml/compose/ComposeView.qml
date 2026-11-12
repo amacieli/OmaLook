@@ -169,6 +169,12 @@ FocusScope {
   }
 
   // The palette twins of the keys (`:attach`, `:attachments`, `:detach`, `:detach-all`).
+  signal paletteRequested()
+  // Back from the command palette: the editor gets the keys again, unless the command that was run opened a panel.
+  function focusAfterPalette() {
+    if (browser.opened || attachList.opened || root.confirming !== "") return
+    editor.forceActiveFocus()
+  }
   function runCommand(name) {
     if (name === "attach") openAttach()
     else if (name === "attachments") openList()
@@ -273,7 +279,8 @@ FocusScope {
     else if (ctrl && e.key === Qt.Key_B) { handler.toggleBold(); e.accepted = true }
     else if (ctrl && e.key === Qt.Key_I) { handler.toggleItalic(); e.accepted = true }
     else if (ctrl && e.key === Qt.Key_U) { handler.toggleUnderline(); e.accepted = true }
-    else if (ctrl && shift && e.key === Qt.Key_A) { root.openAttach(); e.accepted = true }
+else if (ctrl && !shift && e.key === Qt.Key_P) { root.paletteRequested(); e.accepted = true }   // the shell's keys are off while composing, so the palette (and its :attach twins) needs its own way in
+        else if (ctrl && shift && e.key === Qt.Key_A) { root.openAttach(); e.accepted = true }
     else if (ctrl && shift && e.key === Qt.Key_L) { root.openList(); e.accepted = true }
     else if (ctrl && shift && e.key === Qt.Key_Backspace && root.rows.length > 0) { root.removeRow(root.rows.length - 1); e.accepted = true }
     else if (ctrl && e.key === Qt.Key_K) { root.linkOpen = true; linkUrl.forceActiveFocus(); e.accepted = true }
