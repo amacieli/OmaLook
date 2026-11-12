@@ -44,6 +44,7 @@ FocusScope {
   // Attachments: [{ path, name, size }]. `listDir(path, hidden, cb)` and `browseDir` come from the
   // owner (the daemon lists folders for the file browser; the last folder used is remembered).
   property var attachments: []
+  property var missingNames: []              // draft attachments whose spool copy is gone (AttachStrip "!")
   property var listDir: null
   property string browseDir: ""
   property var recentDirs: []
@@ -471,6 +472,7 @@ FocusScope {
     header.subject.text = initial.subject || ""
     if (initial.mode) root.mode = initial.mode
     if (initial.attachments) root.attachments = initial.attachments
+    root.missingNames = initial.missing || []
     _loadLimits()
     _loadOriginals()
     if (initial.quote) handler.setHtml(_quoteHtml(initial.quote))
@@ -735,6 +737,7 @@ else if (ctrl && !shift && e.key === Qt.Key_V) { root.startPaste(); e.accepted =
       Layout.fillWidth: true
       items: root.rows
       limits: root.limits
+      missing: root.missingNames
       onRemoveRequested: function(row) { root.removeRow(row) }
       onListRequested: root.openList()
     }

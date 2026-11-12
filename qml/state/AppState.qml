@@ -1463,6 +1463,8 @@ Item {
       }
       var p = r.draft.payload
       p.draft_id = localId
+      // Attachments whose spool copy is gone: shown with a "!" chip, kept in the draft (OL-048 d).
+      p.missing = r.draft.missing || []
       reopenCompose(p)
     })
   }
@@ -1715,7 +1717,7 @@ Item {
       to: _addrText(m.to), cc: _addrText(m.cc), bcc: _addrText(m.bcc),
       toEntries: m.to, ccEntries: m.cc, bccEntries: m.bcc,
       subject: m.subject, quote: null, restore: m.body, mode: m.mode, attachments: m.attachments || [],
-      draftId: m.draft_id || "", from: m.from || "",
+      draftId: m.draft_id || "", from: m.from || "", missing: m.missing || [],
       forwardedKeep: m.forwarded_keep
     }
     composing = true

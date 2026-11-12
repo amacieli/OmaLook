@@ -31,6 +31,7 @@ Item {
   readonly property var meter: Att.meter(limits, items)
   readonly property var verdict: Att.states(limits, items)
   readonly property var names: Att.displayNames(items)
+  property var missing: []     // file names of draft attachments whose spool copy is gone
 
   readonly property color levelColor: meter.level === "over" ? Commons.Color.urgent
     : meter.level === "warn" ? Hues.yellow : Commons.Color.foreground
@@ -81,6 +82,8 @@ Item {
           required property int index
           readonly property var item: root.items[index]
           readonly property bool big: root.verdict.state[index] === "big"
+          // A draft attachment whose spool copy is gone: kept, flagged, never dropped silently.
+          readonly property bool gone: !!item && root.missing.indexOf(item.name || "") >= 0
           readonly property bool original: !!item && item.origin === "original"
           // Chips share what the row has left, so the last of three is never pushed out of sight.
           readonly property real share: Math.max(Style.space(90),
@@ -88,7 +91,7 @@ Item {
           width: Math.min(chipRow.implicitWidth + Style.spacing.md * 2, Style.space(220), share)
           height: Style.spacing.popupRowHeight
           radius: Style.cornerRadius
-          color: big ? Qt.rgba(Commons.Color.urgent.r, Commons.Color.urgent.g, Commons.Color.urgent.b, 0.25) : Style.selectedFill
+          color: big || gone ? Qt.rgba(Commons.Color.urgent.r, Commons.Color.urgent.g, Commons.Color.urgent.b, 0.25) : Style.selectedFill
 
           RowLayout {
             id: chipRow
@@ -98,15 +101,15 @@ Item {
             spacing: Style.spacing.sm
             // state glyph: ! too big for this account, forwarded original, else a plain file
             UiText {
-              text: chip.big ? "!" : chip.original ? "\uf064" : "\uf0c6"
-              foreground: chip.big ? Commons.Color.urgent : Commons.Color.foreground
-              dim: !chip.big
-              font.bold: chip.big
+              text: chip.big || chip.gone ? "!" : chip.original ? "\uf064" : "\uf0c6"
+              foreground: chip.big || chip.gone ? Commons.Color.urgent : Commons.Color.foreground
+              dim: !(chip.big || chip.gone)
+              font.bold: chip.big || chip.gone
             }
             UiText {
               Layout.fillWidth: true
               Layout.minimumWidth: 0
-              text: root.names[chip.index] || ""
+              text: (root.names[chip.index] || "") + (chip.gone ? "  (file missing)" : "")
               elide: Text.ElideMiddle
               font.pixelSize: Style.font.caption
             }
