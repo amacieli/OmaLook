@@ -3352,7 +3352,6 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                     let body = calendar_event_response(config_dir, &mut stream, &buf[..n], first_line);
                     let response = format!(
                         "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
-                        "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                         body.len(), body
                     );
                     let _ = stream.write_all(response.as_bytes());
@@ -3363,6 +3362,7 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                 if first_line.contains("GET /calendar/meeting-options") || first_line.contains("GET /settings/meetings") || first_line.contains("POST /settings/meetings") {
                     let body = meetings_response(config_dir, &mut stream, &buf[..n], first_line);
                     let response = format!(
+                        "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                         body.len(), body
                     );
                     let _ = stream.write_all(response.as_bytes());
