@@ -25,7 +25,7 @@ var FEATURES = {
   highlight:   { modes: ["html"] },
   align:       { modes: ["html"] },
   clear:       { modes: ["html"] },
-  image:       { modes: ["html"], soon: "inline images are part of the HTML-mode phase" },
+  image:       { modes: ["html"] },
   table:       { modes: ["html"], soon: "tables are part of the HTML-mode phase" }
 }
 

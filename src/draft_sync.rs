@@ -621,7 +621,7 @@ mod tests {
     async fn send_from_unsaved_draft_is_a_plain_send() {
         let db = db();
         let fake = Fake::default();
-        let root = std::env::temp_dir().join("omalook-drafts-send-plain");
+        let root = std::env::temp_dir().join(format!("omalook-drafts-send-plain-{}", std::process::id()));
         let mut m = msg("never pushed");
         m.draft_id = "d9".into();
         save(&db, "d9", &m, "saved");
@@ -634,7 +634,7 @@ mod tests {
     async fn send_of_a_deleted_draft_is_reported_not_resent() {
         let db = db();
         let fake = Fake::default();
-        let root = std::env::temp_dir().join("omalook-drafts-send-gone");
+        let root = std::env::temp_dir().join(format!("omalook-drafts-send-gone-{}", std::process::id()));
         let m = msg("gone");
         save(&db, "d1", &m, "saved");
         let r = db.draft_get("d1").unwrap().unwrap();
@@ -652,7 +652,7 @@ mod tests {
     async fn discard_removes_remote_then_local() {
         let db = db();
         let fake = Fake::default();
-        let root = std::env::temp_dir().join("omalook-drafts-discard");
+        let root = std::env::temp_dir().join(format!("omalook-drafts-discard-{}", std::process::id()));
         let m = msg("bin");
         save(&db, "d1", &m, "saved");
         let r = db.draft_get("d1").unwrap().unwrap();
@@ -711,7 +711,7 @@ mod tests {
     #[test]
     fn save_local_refuses_a_sent_or_unknown_state() {
         let db = db();
-        let root = std::env::temp_dir().join("omalook-save-local-refuse");
+        let root = std::env::temp_dir().join(format!("omalook-save-local-refuse-{}", std::process::id()));
         let mut m = msg("x");
         m.draft_id = "d-sent".into();
         save(&db, "d-sent", &m, "saved");

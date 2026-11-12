@@ -1,6 +1,6 @@
 const fs=require('fs');
 const src=fs.readFileSync('qml/compose/attach.js','utf8').replace('.pragma library','');
-const A=new Function(src+';return {layout,counted,capacity,meter,states,displayNames,combine,defaultLimits,encodedPart,clipboardFileType,clipboardHasPng,isPicture,pathsFromClipboard,baseName,dirName}')();
+const A=new Function(src+';return {layout,counted,capacity,meter,states,displayNames,combine,defaultLimits,encodedPart,clipboardFileType,clipboardHasPng,isPicture,pathsFromClipboard,baseName,dirName,pictureFiles}')();
 const eq=(a,b,m)=>{ const x=JSON.stringify(a), y=JSON.stringify(b); if(x!==y){console.error('FAIL',m,x,y);process.exit(1)} };
 const MB=1048576;
 
@@ -67,3 +67,20 @@ eq([A.baseName('/a/b/c.txt'),A.dirName('/a/b/c.txt'),A.dirName('/c.txt')],['c.tx
 eq([A.isPicture('a.PNG'),A.isPicture('p.jpeg'),A.isPicture('x.webp'),A.isPicture('d.svg'),A.isPicture('n.txt')],[true,true,true,false,false],'picture names');
 eq([A.clipboardHasPng('text/plain\nimage/png\n'),A.clipboardHasPng('text/plain'),A.clipboardHasPng('image/jpeg')],[true,false,false],'clipboard png');
 console.log('ok attach');
+
+// OL-054 system-font switch: pictures still in the text become files; a picture already deleted from the
+// text is not turned into a file (it used to reappear in the strip as a duplicate), and a path listed twice is kept once.
+{
+  const pic=(p,c)=>({path:p,name:p.split('/').pop(),size:5,inline_cid:c});
+  const file={path:'/d/notes.txt',name:'notes.txt',size:2};
+  let r=A.pictureFiles([pic('/p/shot-1.png','c1'),file],['c1']);
+  eq(r.converted,1,'one live picture converted');
+  eq(r.files,[{path:'/p/shot-1.png',name:'shot-1.png',size:5},file],'picture becomes a plain file, normal file kept');
+  r=A.pictureFiles([pic('/p/shot-1.png','gone'),pic('/p/clip.png','c2')],['c2']);
+  eq(r.converted,1,'deleted-from-text entry not counted');
+  eq(r.files.map(a=>a.name),['clip.png'],'deleted-from-text entry dropped, not turned into a file');
+  r=A.pictureFiles([pic('/p/shot-1.png','c1'),pic('/p/shot-1.png','c3')],['c1','c3']);
+  eq(r.files.length,1,'same file twice in the text: one attachment');
+  eq(r.converted,2,'both pictures still counted as converted');
+  eq(A.pictureFiles([],[]),{files:[],converted:0},'nothing attached');
+}

@@ -139,5 +139,23 @@ function pathsFromClipboard(text) {
   return out
 }
 
+// System-font switch (OL-054): the pictures still in the text become ordinary files. An entry whose
+// picture was already deleted from the text (its cid is not in `liveCids`) is dropped, and a path listed
+// twice is kept once. Returns { files, converted } (converted = pictures turned into files).
+function pictureFiles(attachments, liveCids) {
+  var live = liveCids || [], seen = {}, files = [], converted = 0
+  for (var i = 0; i < attachments.length; i++) {
+    var a = attachments[i]
+    if (a.inline_cid) {
+      if (live.indexOf(a.inline_cid) < 0) continue
+      converted += 1
+      a = { path: a.path, name: a.name, size: a.size }
+    }
+    if (seen[a.path]) continue
+    seen[a.path] = true
+    files.push(a)
+  }
+  return { files: files, converted: converted }
+}
 function baseName(p) { var i = String(p).lastIndexOf("/"); return i < 0 ? String(p) : String(p).slice(i + 1) }
 function dirName(p) { var i = String(p).lastIndexOf("/"); return i <= 0 ? "/" : String(p).slice(0, i) }

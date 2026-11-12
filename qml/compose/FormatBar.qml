@@ -20,6 +20,7 @@ ColumnLayout {
   signal redoRequested()
   signal linkRequested()
   signal attachRequested()
+  signal pictureRequested()
 
   spacing: Style.spacing.sm
 
@@ -109,7 +110,7 @@ ColumnLayout {
       Tool { feature: "align"; label: "Align centre"; iconText: "\uf037"; selected: !!root.fmt && root.fmt.alignment === Qt.AlignHCenter; onClicked: root.fmt.setAlignment(Qt.AlignHCenter) }
       Tool { feature: "align"; label: "Align right";  iconText: "\uf038"; selected: !!root.fmt && root.fmt.alignment === Qt.AlignRight;   onClicked: root.fmt.setAlignment(Qt.AlignRight) }
       Sep {}
-      Tool { feature: "image"; label: "Insert image"; iconText: "\uf03e" }
+      Tool { feature: "image"; label: "Insert picture (Ctrl+Shift+I)"; iconText: "\uf03e"; onClicked: root.pictureRequested() }
       Tool { feature: "table"; label: "Insert table"; iconText: "\uf0ce" }
       Tool { feature: "clear"; label: "Clear formatting"; iconText: "\uf12d"; onClicked: root.fmt.clearFormatting() }
     }
