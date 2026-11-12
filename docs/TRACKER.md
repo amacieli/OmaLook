@@ -5,7 +5,20 @@ IDs are stable (never reused). Status: `open` | `investigating` | `planned` | `i
 
 ## Issues
 
-### OL-044 — Copy To / Cc / Bcc addresses from the reading pane (built 2026-11-11, needs `./build.sh --live`; not seen on screen)
+### OL-047 — Manual tag-rule runs block each other and the rest of the app (fixed in tree 2026-11-12, needs `./build.sh --live`; not run live)
+- **Wanted (user, 2026-11-12):** running one tag rule must not block the others; fully threaded and async.
+- **Cause:** (1) the HTTP backend handles requests one at a time on one thread and `POST /rules/run` (and `/local-rules/apply`) did the whole scan and tag inline, so every other request waited; (2) the Rules page kept one run state per account and disabled every run button while any run was going.
+- **Fixed:** `/rules/run`, `/rules/run-preview` and `/local-rules/apply` each run on their own thread; one run per (account, rule) at a time (`RunGuard`, a second identical request answers "that run is already going"), different rules run side by side. `change_message_categories` is now a compare-and-swap (`UPDATE ... WHERE categories IS <what was read>`, retried), because two runs tagging the same message with different tags would otherwise lose one. The Rules page keeps run state per account and rule (`runStates["<account>|<rule>"]`); a single rule's button is disabled only while it or "Run all" is running; progress shows under each rule.
+- **Checked:** new test `two_runs_tagging_the_same_messages_at_once_lose_no_tag` (two connections, 150 messages), 22 existing local-rule/category tests, `cargo check`, qmllint. **Not checked:** two rules running at once in the live UI; that the new test fails without the compare-and-swap.
+
+### OL-046 — Calendar entries that run across several days show as spanning (built 2026-11-12, needs `./build.sh --live`; not seen on screen)
+- **Wanted (user, 2026-11-12):** multi-day calendar entries show across the days they cover.
+- **Before:** all-day events already covered each day with a separate chip; timed events that cross midnight were cut to their first day (`normalise` clipped `endDate`).
+- **Built:** `normalise` keeps the real end of a timed event (`multiDay`); `segmentOn` / `timedOnDay` give each day its own piece (first day from the start time to midnight, middle days 0:00-24:00, last day 0:00 to the end time, with `contBefore` / `contAfter`); month view lays events out in lanes (`monthLanes`) so a multi-day event is one bar at the same height in every cell, running edge to edge, title on its first day and at the start of each week row; week/day all-day row does the same across columns; time grid shows `◂` / `▸` and "from ... until ..." on the pieces; the detail pane shows "Mon 3 Nov 22:00 – Wed 5 Nov 10:00"; the invitee-conflict check uses the real end date. 
+- **Checked:** node tests (calendar test extended: segments, lanes with a kept empty lane, slot pick; draft test), qmllint on the changed files (no errors). **Not checked:** on screen.
+
+### OL-044 — Copy To / Cc / Bcc addresses from the reading pane (built 2026-11-11; From added 2026-11-12, needs `./build.sh --live`; not seen on screen)
+- **Follow-up (user, 2026-11-12):** the From address still could not be selected. Fixed in tree: the sender name chip and the `<address>` are now `SelectableText` (mouse selection, `Ctrl+C`), and `Y f` / `:copyfrom` copies the bare From address. Not seen on screen.
 - **Wanted (user, 2026-11-11):** allow copy/paste of To, Cc and Bcc addresses from the message preview pane.
 - **Built:** the three header lines are selectable with the mouse (drag, double/triple click; `Ctrl+C` copies the selection; middle-click pastes the primary selection) and cut to four lines when long; `Y t`, `Y c`, `Y b`, `Y a` (also `:copyto`, `:copycc`, `:copybcc`, `:copyall`) copy the bare addresses, comma separated and without duplicates, so they paste straight into a compose To/Cc/Bcc field (`Fmt.addresses`, `tests/recipients.test.js`).
 - **Checked:** node test (7 cases), command registry test, qmllint (no new warnings). **Not checked:** on screen.
@@ -246,24 +259,6 @@ IDs are stable (never reused). Status: `open` | `investigating` | `planned` | `i
 - **Prime suspect (unconfirmed, from reading the code):** `AuthBridge::copy_to_clipboard` (`src/qt_bridge/auth_bridge.rs`) calls `child.wait()` on `xclip` while still holding the child's `stdin` pipe, so xclip never sees EOF and never exits. Likely a real bug in the app's copy-to-clipboard too, not only the test. Same pattern may exist in the `wl-copy` branch.
 - **To do:** confirm (run it under `strace -f` or run `xclip`/`wl-copy` by hand); `drop(stdin)` before `wait()`; check what `xclip` does under Wayland/XWayland; then remove the stopgap or keep it as a guard, and re-test the copy button in the UI.
 
-### OL-001 — UI hangs at ~100% CPU on one thread (open)
-- **Seen:** 2026-10-07, `quickshell -p /opt/omalook/qml`, PID 3868852. Window stopped responding; one thread pinned at ~97% CPU
-  from startup onward (4:09 CPU in 4:15 elapsed); had to be killed by hand.
-- **Likely trigger (user report):** rapid scrolling from one message across many others in very quick succession
-  (each selection starts a body fetch + rich-text layout in the preview pane).
-- **Evidence so far:** log (`/run/user/1000/quickshell/by-pid/<pid>/log.log`) shows
-  `MessagePreview.qml:338 Connection refused` (the `Text.RichText` body), a `QIODevice::read (QSslSocket): device not open`
-  warning, and 55x `QFont::setPixelSize: Pixel size <= 0 (0)`. No stack trace: `ptrace_scope=1` blocks `eu-stack`/`gdb` attach.
-  The Rust daemon was alive when the user ran `ps` (0:01 CPU); it died from the user's `pkill`, so it is **not** the cause.
-- **Hypotheses (unconfirmed):**
-  1. Body requests not cancelled/debounced on fast selection change, so stale responses pile up and re-lay-out the HTML.
-  2. `Text.RichText` layout loop on a particular message (large/nested table, image with 0 size, remote `<img>` fetch retries).
-  3. Binding loop from the zero-pixel-size font warnings.
-- **To do:** reproduce on a debug run (`QT_LOGGING_RULES`, perf timeline in `perf.rs`); capture the offending message id;
-  debounce body fetch (~120 ms) and ignore stale responses by message id; run with `sudo sysctl kernel.yama.ptrace_scope=0`
-  once to get a stack if it recurs. Find the source of the `Pixel size <= 0` warnings.
-- **Note:** to kill it, use the PID of `quickshell -p /opt/omalook/qml`, never `pkill quickshell` (that is also the Omarchy desktop shell).
-
 ### OL-004 — quickshell SIGSEGV opening HTML mail with remote images (fixed 2026-10-10)
 - **Seen:** crash report `~/.cache/quickshell/crashes/6v922t8npmt` (pid 3468927): SIGSEGV in `QUrl::resolved` <- `QTextDocument::resource` <- `QQuickText::resourceRequestFinished`, right after `Connection refused` / `QSslSocket: device not open` from the HTML `Text` in `MessagePreview.qml`.
 - **Cause:** Qt's `Text.RichText` fetches remote `<img>` (and `background=`) itself; the completion callback crashes when the request fails or the text has changed meanwhile. Marketing mail with tracking pixels triggers it.
@@ -318,6 +313,7 @@ WebKit helper, undo-send, rebindable keys with which-key and a palette. Mutt's e
 12. [ ] Inline images (cid) in HTML compose.
 
 ## Done
+- OL-001, UI hang at ~100% CPU (closed by the user 2026-11-12): seen once on 2026-10-07, never reproduced; the remote-image crash (OL-004), the reading-pane re-render loops (OL-027, OL-029) and the preview debounce work since then touched the likely causes. No root cause was confirmed; reopen with a new ID if it recurs (capture a stack with `kernel.yama.ptrace_scope=0`).
 - OL-039, meeting cancellations (2026-11-03): `19b5b6f`; `y` removes the cancelled meeting (one occurrence or a whole series, with confirmation) and marks the mail read.
 - OL-038, Gmail sign-in without a JSON file (2026-11-03): `1ff61e7`; the client is a build default. Google verification stays optional.
 - OL-020, one toggle for message view (2026-10-29): 6af96ac, d2a67a7, d475539, e0be4ce plus the `I` images cycle and leftover cleanup (see the issue entry).

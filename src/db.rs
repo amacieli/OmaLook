@@ -1530,20 +1530,24 @@ impl Database {
     pub fn change_message_categories(&self, ids: &[String], add: bool, name: &str) -> Result<usize> {
         let mut changed = 0;
         for id in ids {
-            let cur: Option<Option<String>> = self.conn
-                .query_row("SELECT categories FROM messages WHERE id = ?1", params![id], |r| r.get::<_, Option<String>>(0))
-                .optional()?;
-            let Some(cur) = cur else { continue };
-            let mut list = categories_from_json(cur.as_deref());
-            let had = list.iter().any(|c| c.eq_ignore_ascii_case(name));
-            if add && !had { list.push(name.to_string()); }
-            else if !add && had { list.retain(|c| !c.eq_ignore_ascii_case(name)); }
-            else { continue }
-            self.conn.execute(
-                "UPDATE messages SET categories = ?1, cat_pending = 1 WHERE id = ?2",
-                params![serde_json::to_string(&list).unwrap_or_else(|_| "[]".into()), id],
-            )?;
-            changed += 1;
+            // Compare-and-swap: two runs (other rules, other connections) may tag the same message at the same
+            // time, so the write only lands if the categories are still what we read; otherwise read again.
+            for _ in 0..8 {
+                let cur: Option<Option<String>> = self.conn
+                    .query_row("SELECT categories FROM messages WHERE id = ?1", params![id], |r| r.get::<_, Option<String>>(0))
+                    .optional()?;
+                let Some(cur) = cur else { break };
+                let mut list = categories_from_json(cur.as_deref());
+                let had = list.iter().any(|c| c.eq_ignore_ascii_case(name));
+                if add && !had { list.push(name.to_string()); }
+                else if !add && had { list.retain(|c| !c.eq_ignore_ascii_case(name)); }
+                else { break }
+                let n = self.conn.execute(
+                    "UPDATE messages SET categories = ?1, cat_pending = 1 WHERE id = ?2 AND categories IS ?3",
+                    params![serde_json::to_string(&list).unwrap_or_else(|_| "[]".into()), id, cur],
+                )?;
+                if n > 0 { changed += 1; break }
+            }
         }
         Ok(changed)
     }

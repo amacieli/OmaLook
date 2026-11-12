@@ -56,3 +56,30 @@ eq(CU.joinLabel({join_provider:'teams'}),'Teams','label');
 eq(CU.joinLabel({join_provider:'weird'}),'Link','unknown label');
 eq(CU.responseLabel('tentativelyAccepted'),'Tentative','response');
 console.log('calendar tests ok');
+
+// multi-day events (timed ones are no longer clipped to their first day)
+{
+  const src2 = fs.readFileSync('qml/views/CalendarUtil.js','utf8').replace('.pragma library','');
+  const C2 = new Function(src2+';return {normalise,onDay,timedOnDay,monthLanes,segmentOn,eventsAtCursor,spanText}')();
+  const n = C2.normalise([
+    {id:'t',subject:'Trip',start:'2026-10-26T22:00:00',end:'2026-10-28T10:00:00'},
+    {id:'a',subject:'Away',start:'2026-10-27T00:00:00',end:'2026-10-30T00:00:00',is_all_day:true},
+    {id:'s',subject:'Solo',start:'2026-10-27T09:00:00',end:'2026-10-27T10:00:00'}]);
+  eq(n[0].multiDay, true, 'timed multi-day flag');
+  eq(n[0].endDate.getDate(), 28, 'timed multi-day end date kept');
+  eq(n[1].endDate.getDate(), 29, 'all-day end inclusive');
+  eq(C2.onDay(n,D(2026,10,27)).map(e=>e.raw.id).sort(), ['a','s','t'], 'middle day has all three');
+  const seg = (d)=>C2.timedOnDay(n,D(2026,10,d)).filter(e=>e.raw.id==='t').map(e=>[e.startMin,e.endMin,e.contBefore,e.contAfter]);
+  eq(seg(26), [[1320,1440,false,true]], 'first day segment');
+  eq(seg(27), [[0,1440,true,true]], 'middle day segment');
+  eq(seg(28), [[0,600,true,false]], 'last day segment');
+  eq(seg(29), [], 'after');
+  const L = C2.monthLanes(n, D(2026,10,26), 7);
+  const lane = (d)=>L[d].map(e=>e?e.raw.id:null);
+  eq(lane(0), ['t'], 'mon lanes');
+  eq(lane(1), ['t','a','s'], 'tue lanes');
+  eq(lane(2), ['t','a'], 'wed lanes');
+  eq(lane(3), [null,'a'], 'thu keeps the empty lane so the bar stays level');
+  eq(lane(4), [], 'fri');
+  eq(C2.eventsAtCursor(n,D(2026,10,27),720,'day').map(e=>e.raw.id).sort(), ['a','t'], 'grid slot picks the segment');
+}

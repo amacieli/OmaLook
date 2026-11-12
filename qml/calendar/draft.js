@@ -46,7 +46,8 @@ function conflicts(events, start, end, allDay) {
         var e = events[i]
         if (e.allDay) continue
         var s = new Date(e.startDate.getFullYear(), e.startDate.getMonth(), e.startDate.getDate(), 0, e.startMin)
-        var en = new Date(e.startDate.getFullYear(), e.startDate.getMonth(), e.startDate.getDate(), 0, e.endMin)
+        var ed = e.endDate || e.startDate   // a timed event can end on a later day
+        var en = new Date(ed.getFullYear(), ed.getMonth(), ed.getDate(), 0, e.endMin)
         if (s < end && en > start) out.push(e.title)
     }
     return out

@@ -206,6 +206,13 @@ Item {
   // Copy the addresses of one header field: "to" | "cc" | "bcc" | "all" (to + cc + bcc, no duplicates).
   function copyRecipients(which) {
     if (!root.message) return
+    if (which === "from") {
+      var f = String(root.message.from_email || "").trim()
+      if (f === "") { root.notice("no from address"); return }
+      Quickshell.execDetached(["wl-copy", f])
+      root.notice("copied " + f)
+      return
+    }
     var keys = which === "to" ? ["to_text"] : which === "cc" ? ["cc_text"] : which === "bcc" ? ["bcc_text"]
              : ["to_text", "cc_text", "bcc_text"]
     var seen = {}, out = []
@@ -503,21 +510,31 @@ Item {
           color: Style.selectedFillFor(hue, hue)
           borderSpec: Border.flat(hue, Style.normalBorderWidth)
 
-          UiText {
+          // selectable with the mouse like the To/Cc/Bcc lines (Ctrl+C copies)
+          SelectableText {
             id: chip
             anchors.centerIn: parent
             text: Fmt.senderName(root.message)
             foreground: parent.hue
+            wrapMode: TextEdit.NoWrap
             font.pixelSize: Style.font.caption
+            Component.onCompleted: root._recipFields.push(chip)
           }
         }
 
-        UiText {
-          text: root.message && root.message.from_email ? "<" + root.message.from_email + ">" : ""
+        Item {
           Layout.fillWidth: true
-          elide: Text.ElideRight
-          foreground: Hues.cyan
-          font.pixelSize: Style.font.caption
+          implicitHeight: fromAddr.contentHeight
+          clip: true
+          SelectableText {
+            id: fromAddr
+            width: parent.width
+            text: root.message && root.message.from_email ? "<" + root.message.from_email + ">" : ""
+            foreground: Hues.cyan
+            wrapMode: TextEdit.NoWrap
+            font.pixelSize: Style.font.caption
+            Component.onCompleted: root._recipFields.push(fromAddr)
+          }
         }
 
         UiText {

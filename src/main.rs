@@ -1591,6 +1591,24 @@ fn local_rules_response(config_dir: &PathBuf, first_line: &str) -> String {
 }
 
 /// JSON body for `GET /rules`: every account's cached mailbox rules, summarised and grouped.
+/// Marks one manual rule run as going (key = account|rule id); dropped when the run ends, even on a panic.
+struct RunGuard(String);
+static RUNNING_RULES: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+impl RunGuard {
+    fn take(key: &str) -> Option<RunGuard> {
+        let mut g = RUNNING_RULES.lock().unwrap_or_else(|e| e.into_inner());
+        if g.iter().any(|k| k == key) { return None }
+        g.push(key.to_string());
+        Some(RunGuard(key.to_string()))
+    }
+}
+impl Drop for RunGuard {
+    fn drop(&mut self) {
+        let mut g = RUNNING_RULES.lock().unwrap_or_else(|e| e.into_inner());
+        g.retain(|k| k != &self.0);
+    }
+}
+
 fn rules_response(config_dir: &PathBuf, first_line: &str) -> String {
     use omalook::db::rules::RuleChange;
     use omalook::rules::{Match, NewRule};
@@ -1674,6 +1692,8 @@ fn rules_response(config_dir: &PathBuf, first_line: &str) -> String {
                 }
             } else {
                 let confirmed = query_param(first_line, "confirm").as_deref() == Some("yes");
+                // one run per (account, rule) at a time; different rules run side by side
+                let _running = match RunGuard::take(&format!("{}|{}", account, id)) { Some(g) => g, None => return err("that run is already going") };
                 match db.apply_local_rules(&rules, limit, confirmed) {
                     Ok(out) => {
                         if matches!(out, omalook::db::local_rules::ApplyOutcome::Applied { messages, .. } if messages > 0) { omalook::sync_state::request_read_push(); }
@@ -2835,6 +2855,20 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                 //   POST /local-rules/apply?id=R[&confirm=yes]   this rule over existing Inbox mail; over `limit` messages
                 //                                                it writes nothing ({outcome:{result:"refused",would_change,limit}}) until confirm=yes
                 if first_line.starts_with("GET /local-rules") || first_line.starts_with("POST /local-rules/") {
+                    // A retroactive apply scans and tags thousands of messages: its own thread, so it never holds up
+                    // the other requests (or another rule's run).
+                    if first_line.starts_with("POST /local-rules/apply") {
+                        let (dir, line) = (config_dir.clone(), first_line.to_string());
+                        std::thread::spawn(move || {
+                            let body = local_rules_response(&dir, &line);
+                            let response = format!(
+                                "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                                body.len(), body
+                            );
+                            let _ = stream.write_all(response.as_bytes());
+                        });
+                        continue;
+                    }
                     let body = local_rules_response(config_dir, first_line);
                     let response = format!(
                         "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
@@ -2861,6 +2895,20 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                 //   The write routes only queue ({ok, op}); the mail daemon does the checked write and the result shows in GET /rules `ops`
                 //   ({id,kind,state:pending|done|failed|conflict|exists,message}). Plain tag rules only.
                 if first_line.starts_with("GET /rules") || first_line.starts_with("POST /rules/") {
+                    // Manual runs (count and run) work through the whole cached Inbox: each on its own thread, so
+                    // several rules can run at once and nothing else waits for them.
+                    if first_line.starts_with("GET /rules/run-preview") || first_line.starts_with("POST /rules/run") {
+                        let (dir, line) = (config_dir.clone(), first_line.to_string());
+                        std::thread::spawn(move || {
+                            let body = rules_response(&dir, &line);
+                            let response = format!(
+                                "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                                body.len(), body
+                            );
+                            let _ = stream.write_all(response.as_bytes());
+                        });
+                        continue;
+                    }
                     let body = rules_response(config_dir, first_line);
                     let response = format!(
                         "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",

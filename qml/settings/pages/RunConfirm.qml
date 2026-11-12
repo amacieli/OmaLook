@@ -15,8 +15,7 @@ Column {
   property string target: ""     // "*" or a rule id
 
   readonly property string account: owner ? owner.modelData.account_id : ""
-  readonly property var rs: page ? page.runState(account) : ({ running: false, id: "" })
-  readonly property string progress: (rs.id === target || (rs.running && rs.id === target)) ? page.runText(account) : ""
+  readonly property string progress: page ? page.runText(account, target) : ""
   readonly property var pv: owner ? owner.runPreview : null
 
   spacing: Style.space(4)

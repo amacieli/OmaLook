@@ -30,41 +30,45 @@ SettingsPage {
   property string armedId: ""
   Timer { id: disarm; interval: 4000; onTriggered: page.armedId = "" }
 
-  // Manual runs, per account: kept here (not in the rows) because the list is rebuilt whenever the data changes.
-  //   { running, id ("*" = all tag rules, else a rule id), phase: "tagging" | "sending", tagged, started, notice }
+  // Manual runs, per account AND per target (a rule id, or "*" for all tag rules): runs are independent, so one
+  // rule running never blocks another (the backend runs each on its own thread).
+  //   key "<account>|<target>" -> { account, running, id, phase: "tagging" | "sending", tagged, started, notice }
   // A run is "running" from the click until every tag it made has gone to the server (the account's
   // tag_pushes_pending is back to 0), or two minutes, after which it carries on in the background.
   property var runStates: ({})
-  function runState(acct) { return runStates[acct] || { running: false, id: "", phase: "", tagged: 0, started: 0, notice: "" } }
-  function setRun(acct, patch) {
+  function _key(acct, target) { return acct + "|" + target }
+  function runState(acct, target) { return runStates[_key(acct, target)] || { account: acct, running: false, id: target, phase: "", tagged: 0, started: 0, notice: "" } }
+  function setRun(acct, target, patch) {
     var m = {}
     for (var k in runStates) m[k] = runStates[k]
-    var cur = runState(acct), n = {}
+    var cur = runState(acct, target), n = {}
     for (var c in cur) n[c] = cur[c]
     for (var q in patch) n[q] = patch[q]
-    m[acct] = n
+    m[_key(acct, target)] = n
     runStates = m
   }
+  // is this target busy: itself, or (for a single rule) the all-rules run that includes it
+  function busy(acct, target) { return runState(acct, target).running || (target !== "*" && runState(acct, "*").running) }
   function pendingFor(acct) {
     for (var i = 0; i < accounts.length; i++) if (accounts[i].account_id === acct) return accounts[i].tag_pushes_pending || 0
     return 0
   }
-  function runText(acct) {
-    var r = runState(acct)
+  function runText(acct, target) {
+    var r = runState(acct, target)
     if (r.running && r.phase === "tagging") return "Running\u2026"
     if (r.running) return "Tagged " + r.tagged + " message" + (r.tagged === 1 ? "" : "s") + ". Sending the tags to the server, " + pendingFor(acct) + " left\u2026"
     return r.notice
   }
   function checkRuns() {
     var now = Date.now()
-    for (var acct in runStates) {
-      var r = runStates[acct]
+    for (var k in runStates) {
+      var r = runStates[k]
       if (!r.running || r.phase !== "sending") continue
-      if (pendingFor(acct) === 0) setRun(acct, { running: false, notice: "Finished: " + r.tagged + " message" + (r.tagged === 1 ? "" : "s") + " tagged and sent to the server." })
-      else if (now - r.started > 120000) setRun(acct, { running: false, notice: "Tagged " + r.tagged + ". " + pendingFor(acct) + " are still going to the server in the background." })
+      if (pendingFor(r.account) === 0) setRun(r.account, r.id, { running: false, notice: "Finished: " + r.tagged + " message" + (r.tagged === 1 ? "" : "s") + " tagged and sent to the server." })
+      else if (now - r.started > 120000) setRun(r.account, r.id, { running: false, notice: "Tagged " + r.tagged + ". " + pendingFor(r.account) + " are still going to the server in the background." })
     }
   }
-  function anyRunning() { for (var a in runStates) if (runStates[a].running) return true; return false }
+  function anyRunning() { for (var k in runStates) if (runStates[k].running) return true; return false }
   Timer { interval: 1500; repeat: true; running: !!page.app && page.anyRunning(); onTriggered: page.app.loadRules(function() { page.checkRuns() }) }
 
   function position(a, id) {
@@ -190,7 +194,7 @@ SettingsPage {
       property string runTarget: ""        // "" none, "*" every enabled tag rule, else one rule id
       property var runPreview: null
       function startRun(target) {
-        if (!page.runState(modelData.account_id).running) page.setRun(modelData.account_id, { notice: "" })
+        if (!page.runState(modelData.account_id, target).running) page.setRun(modelData.account_id, target, { notice: "" })
         runTarget = target; runPreview = null
         page.app.ruleRunPreview(modelData.account_id, target === "*" ? "" : target, function(r) { acct.runPreview = r })
       }
@@ -199,13 +203,13 @@ SettingsPage {
         var over = p && p.preview.messages > p.limit
         var target = runTarget, account = modelData.account_id
         runTarget = ""; runPreview = null
-        page.setRun(account, { running: true, id: target, phase: "tagging", tagged: 0, started: Date.now(), notice: "" })
+        page.setRun(account, target, { running: true, id: target, phase: "tagging", tagged: 0, started: Date.now(), notice: "" })
         page.app.ruleRun(account, target === "*" ? "" : target, over, function(r) {
           var o = r.outcome
-          if (!r.ok) page.setRun(account, { running: false, notice: "Could not run: " + (r.error || "no answer") })
-          else if (o && o.result === "refused") page.setRun(account, { running: false, notice: "Not run: it would tag " + o.would_change + " messages, over the limit of " + o.limit + "." })
-          else if (!o || o.messages === 0) page.setRun(account, { running: false, notice: "Nothing to tag: every matching message already has its tag." })
-          else { page.setRun(account, { phase: "sending", tagged: o.messages, started: Date.now() }); page.app.loadRules(function() { page.checkRuns() }) }
+          if (!r.ok) page.setRun(account, target, { running: false, notice: "Could not run: " + (r.error || "no answer") })
+          else if (o && o.result === "refused") page.setRun(account, target, { running: false, notice: "Not run: it would tag " + o.would_change + " messages, over the limit of " + o.limit + "." })
+          else if (!o || o.messages === 0) page.setRun(account, target, { running: false, notice: "Nothing to tag: every matching message already has its tag." })
+          else { page.setRun(account, target, { phase: "sending", tagged: o.messages, started: Date.now() }); page.app.loadRules(function() { page.checkRuns() }) }
         })
       }
       RowLayout {
@@ -214,9 +218,9 @@ SettingsPage {
         UiText { Layout.fillWidth: true; dim: true; font.pixelSize: Style.font.caption; text: "Tag mail that is already in the Inbox and missed a rule (the server only runs rules on arriving mail)." }
         Button {
           Layout.preferredWidth: Style.space(220); bordered: true
-          enabled: !page.runState(acct.modelData.account_id).running
-          iconText: page.runState(acct.modelData.account_id).running && page.runState(acct.modelData.account_id).id === "*" ? "\uf04c" : "\uf04b"
-          text: page.runState(acct.modelData.account_id).running && page.runState(acct.modelData.account_id).id === "*" ? "Running\u2026" : "Run all tag rules"
+          enabled: !page.runState(acct.modelData.account_id, "*").running
+          iconText: page.runState(acct.modelData.account_id, "*").running ? "\uf04c" : "\uf04b"
+          text: page.runState(acct.modelData.account_id, "*").running ? "Running\u2026" : "Run all tag rules"
           onClicked: acct.startRun("*")
         }
       }
@@ -356,8 +360,8 @@ SettingsPage {
                 visible: acct.modelData.can_write && rrow.modelData.enabled
                 Layout.preferredWidth: Style.space(32)
                 bordered: true
-                enabled: !page.runState(acct.modelData.account_id).running
-                iconText: page.runState(acct.modelData.account_id).running && page.runState(acct.modelData.account_id).id === rrow.modelData.id ? "\uf04c" : "\uf04b"
+                enabled: !page.busy(acct.modelData.account_id, rrow.modelData.id)
+                iconText: page.runState(acct.modelData.account_id, rrow.modelData.id).running ? "\uf04c" : "\uf04b"
                 onClicked: acct.startRun(rrow.modelData.id)
               }
               Button {

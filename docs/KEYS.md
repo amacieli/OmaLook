@@ -59,7 +59,7 @@ calendar one character at a time. Kept across launches as `[ui] calendar_pane_of
 
 ## Copying recipients (reading pane, OL-044)
 
-Select a To / Cc / Bcc line with the mouse and press `Ctrl+C`, or use the keys (mail view, list or reading pane): `Y t` copy the To addresses, `Y c` Cc, `Y b` Bcc, `Y a` all three. Only bare addresses are copied, comma separated, no duplicates, ready to paste into a compose recipient field.
+Select the From name or address, or a To / Cc / Bcc line, with the mouse and press `Ctrl+C`, or use the keys (mail view, list or reading pane): `Y f` copy the From address, `Y t` copy the To addresses, `Y c` Cc, `Y b` Bcc, `Y a` all three. Only bare addresses are copied, comma separated, no duplicates, ready to paste into a compose recipient field.
 
 ## Links in a message (reading pane)
 

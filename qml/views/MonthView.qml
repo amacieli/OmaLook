@@ -27,6 +27,8 @@ Item {
     signal dayActivated(date day)
 
     readonly property date gridStart: CU.monthGridStart(anchorDate)
+    // one array per grid day: events and nulls (empty lanes), multi-day events at the same height in every cell
+    readonly property var  lanes: CU.monthLanes(events, gridStart, 42)
     readonly property int  headerH: Style.font.caption + 12
     readonly property int  chipH: Style.font.caption + 6
     readonly property real cellW: width / 7
@@ -58,11 +60,13 @@ Item {
             model: 42
             delegate: Rectangle {
                 id: cell
+                property int  cellIndex: index
                 property date day: CU.addDays(root.gridStart, index)
                 property bool inMonth: day.getMonth() === root.anchorDate.getMonth()
                 property bool isToday: CU.sameDay(day, root.today)
                 property bool isSel:   CU.sameDay(day, root.anchorDate)
-                property var  evs:     CU.onDay(root.events, day)
+                property var  evs:     root.lanes[index] || []
+                property int  evCount: { var n = 0; for (var i = 0; i < evs.length; i++) if (evs[i]) n++; return n }
                 property int  maxChips: Math.max(0, Math.floor((height - Style.font.body - 12) / (root.chipH + 2)))
 
                 width: root.cellW; height: root.cellH
@@ -111,34 +115,54 @@ Item {
 
                     Repeater {
                         model: Math.min(cell.evs.length, cell.maxChips >= cell.evs.length ? cell.evs.length : Math.max(0, cell.maxChips - 1))
-                        delegate: Rectangle {
-                            id: chip
+                        delegate: Item {
+                            id: slot
                             width: parent.width; height: root.chipH
-                            property var cev: cell.evs[index]
-                            opacity: cev.raw.pending ? 0.55 : 1      // queued, not yet on the server
-                            property bool sel: root.selectedId !== "" && cev.raw.id === root.selectedId && cell.isSel
-                            property color hue: root.accounts.length > 1 ? Hues.accountColor(root.accounts, cev.raw.account_email) : root.accentColor
-                            // all-day events are filled bars; timed ones are a dot and a title (Clockenstein)
-                            color: cev.allDay ? Qt.rgba(hue.r, hue.g, hue.b, sel ? 0.45 : 0.25)
-                                 : sel ? Qt.rgba(hue.r, hue.g, hue.b, 0.25) : "transparent"
-                            border.width: sel ? 1 : 0
-                            border.color: hue
-                            Rectangle { visible: chip.cev.allDay; width: 2; height: parent.height; color: chip.hue }
-                            Rectangle { visible: !chip.cev.allDay; x: 4; anchors.verticalCenter: parent.verticalCenter
-                                width: 6; height: 6; radius: 3; color: chip.hue }
-                            Text {
-                                anchors.fill: parent; anchors.leftMargin: chip.cev.allDay ? 6 : 14; anchors.rightMargin: 2
-                                verticalAlignment: Text.AlignVCenter
-                                text: (chip.cev.allDay ? "" : CU.timeLabel(chip.cev.startMin) + " ") + chip.cev.title
-                                elide: Text.ElideRight
-                                font.family: root.monoFont; font.pixelSize: Style.font.caption
-                                color: root.textColor
+                            property var cev: cell.evs[index]       // null = an empty lane that keeps the bars below level
+                            property bool contBefore: !!cev && cev.startDate.getTime() < cell.day.getTime()
+                            property bool contAfter:  !!cev && cev.endDate.getTime() > cell.day.getTime()
+                            property bool bar: !!cev && (cev.allDay || cev.multiDay)
+                            property bool sel: !!cev && root.selectedId !== "" && cev.raw.id === root.selectedId && cell.isSel
+                            property color hue: cev && root.accounts.length > 1 ? Hues.accountColor(root.accounts, cev.raw.account_email) : root.accentColor
+                            visible: !!cev
+                            opacity: cev && cev.raw.pending ? 0.55 : 1      // queued, not yet on the server
+                            // Bars of a multi-day event run edge to edge, so cell after cell reads as one bar.
+                            Rectangle {
+                                id: chip
+                                x: slot.contBefore ? -3 : 0
+                                width: parent.width + (slot.contBefore ? 3 : 0) + (slot.contAfter ? 3 : 0)
+                                height: parent.height
+                                // all-day events are filled bars; timed ones are a dot and a title (Clockenstein)
+                                color: slot.bar ? Qt.rgba(slot.hue.r, slot.hue.g, slot.hue.b, slot.sel ? 0.45 : 0.25)
+                                     : slot.sel ? Qt.rgba(slot.hue.r, slot.hue.g, slot.hue.b, 0.25) : "transparent"
+                                border.width: slot.sel ? 1 : 0
+                                border.color: slot.hue
+                                Rectangle { visible: slot.bar && !slot.contBefore; width: 2; height: parent.height; color: slot.hue }
+                                Rectangle { visible: !!slot.cev && !slot.bar; x: 4; anchors.verticalCenter: parent.verticalCenter
+                                    width: 6; height: 6; radius: 3; color: slot.hue }
+                                Text {
+                                    // the title shows on the first day of the bar and again at the start of each week row
+                                    visible: !slot.contBefore || (cell.cellIndex % 7) === 0
+                                    anchors.fill: parent
+                                    anchors.leftMargin: (slot.contBefore ? 3 : 0) + (slot.bar ? 6 : 14); anchors.rightMargin: 2
+                                    verticalAlignment: Text.AlignVCenter
+                                    text: !slot.cev ? "" : (slot.contBefore ? "\u25c2 " : "")
+                                          + ((slot.cev.allDay || slot.contBefore) ? "" : CU.timeLabel(slot.cev.startMin) + " ") + slot.cev.title
+                                    elide: Text.ElideRight
+                                    font.family: root.monoFont; font.pixelSize: Style.font.caption
+                                    color: root.textColor
+                                }
                             }
                         }
                     }
                     Text {
                         visible: cell.evs.length > 0 && cell.maxChips < cell.evs.length
-                        text: "+" + (cell.evs.length - Math.max(0, cell.maxChips - 1)) + " more"
+                        text: "+" + hiddenCount() + " more"
+                        function hiddenCount() {
+                            var shown = Math.max(0, cell.maxChips - 1), n = 0
+                            for (var i = shown; i < cell.evs.length; i++) if (cell.evs[i]) n++
+                            return n
+                        }
                         font.family: root.monoFont; font.pixelSize: Style.font.caption
                         color: root.dimColor
                     }

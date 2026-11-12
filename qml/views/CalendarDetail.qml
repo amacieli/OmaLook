@@ -29,6 +29,7 @@ Rectangle {
         if (!event) return ""
         var d = event.startDate
         var day = CU.DAYS_SHORT[CU.isoIndex(d)] + " " + d.getDate() + " " + CU.MONTHS[d.getMonth()].substring(0, 3) + " " + d.getFullYear()
+        if (event.multiDay) return CU.spanText(event) + (event.allDay ? "  all day" : "")
         if (event.allDay) return day + "  all day"
         return day + "  " + CU.timeLabel(event.startMin) + " – " + CU.timeLabel(event.endMin)
     }

@@ -485,6 +485,35 @@ mod tests {
         let after: i64 = d.conn.query_row("SELECT COUNT(*) FROM messages WHERE cat_pending = 1", [], |r| r.get(0)).unwrap();
         assert_eq!(before, after, "dry run must not mark anything pending");
     }
+
+    #[test]
+    fn two_runs_tagging_the_same_messages_at_once_lose_no_tag() {
+        // Two rule runs on two connections (as two request threads have) add different tags to the same
+        // messages; a plain read-modify-write would drop some. The compare-and-swap keeps every tag.
+        let dir = std::env::temp_dir().join(format!("omalook-par-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("m.db").to_str().unwrap().to_string();
+        let first = Database::open_for_account(&path, "ex").unwrap();
+        first.conn.execute("INSERT INTO accounts (id, provider, email) VALUES ('ex','x','me@x.org')", []).unwrap();
+        first.conn.execute("INSERT INTO folders (id, display_name, well_known_name, account_id) VALUES ('inb','Inbox','inbox','ex')", []).unwrap();
+        let ids: Vec<String> = (0..150).map(|i| format!("m{i}")).collect();
+        for id in &ids { put_at(&first, id, "a@b.org", &iso_ago(1), true); }
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let hs: Vec<_> = ["red", "blue"].iter().map(|tag| {
+            let (p, ids, b, tag) = (path.clone(), ids.clone(), barrier.clone(), tag.to_string());
+            std::thread::spawn(move || {
+                let d = Database::open_for_account(&p, "ex").unwrap();
+                b.wait();
+                for id in &ids { d.change_message_categories(std::slice::from_ref(id), true, &tag).unwrap(); }
+            })
+        }).collect();
+        for h in hs { h.join().unwrap(); }
+        for id in &ids {
+            let mut c = cats(&first, id); c.sort();
+            assert_eq!(c, vec!["blue".to_string(), "red".to_string()], "message {id}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
 
 #[cfg(test)]

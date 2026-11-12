@@ -76,16 +76,19 @@ function normalise(events) {
                      || (s.minutes === 0 && en && en.minutes === 0 && en.date > s.date)
         var endDate = en ? en.date : s.date
         var endMin = en ? en.minutes : s.minutes + 60
-        if (en && en.minutes === 0 && endDate > s.date) endDate = addDays(endDate, -1)  // exclusive midnight end
+        if (en && en.minutes === 0 && endDate > s.date) {          // exclusive midnight end: the last day is the one before
+            endDate = addDays(endDate, -1)
+            if (!allDay) endMin = 24 * 60
+        }
         if (endDate < s.date) endDate = s.date
-        if (!allDay && endDate > s.date) { endDate = s.date; endMin = 24 * 60 }          // clip to start day
-        if (!allDay && endMin <= s.minutes) endMin = Math.min(s.minutes + 30, 24 * 60)
+        // A timed event that runs past midnight keeps its real end: it spans the days (see segmentOn / monthLanes).
+        if (!allDay && endDate.getTime() === s.date.getTime() && endMin <= s.minutes) endMin = Math.min(s.minutes + 30, 24 * 60)
         out.push({
             title: e.subject || e.summary || "Untitled",
             location: e.location || "",
             startDate: s.date, endDate: endDate,
             startMin: s.minutes, endMin: endMin,
-            allDay: allDay, raw: e
+            allDay: allDay, multiDay: endDate.getTime() > s.date.getTime(), raw: e
         })
     }
     return out
@@ -105,8 +108,26 @@ function onDay(norm, day) {
     return out
 }
 
+// Whole days between two dates (DST-safe).
+function dayDiff(a, b) { return Math.round((startOfDay(a).getTime() - startOfDay(b).getTime()) / 86400000) }
+
+// The part of a timed event that falls on `day`: startMin / endMin cut to that day, plus contBefore / contAfter
+// when it carries on from the day before / into the next one. Same object shape as a normalised event.
+function segmentOn(e, day) {
+    var first = sameDay(day, e.startDate), last = sameDay(day, e.endDate)
+    var seg = {}
+    for (var k in e) seg[k] = e[k]
+    seg.startMin = first ? e.startMin : 0
+    seg.endMin = last ? e.endMin : 24 * 60
+    seg.contBefore = !first
+    seg.contAfter = !last
+    seg.realStartMin = e.startMin
+    seg.realEndMin = e.endMin
+    return seg
+}
+
 function timedOnDay(norm, day) {
-    return onDay(norm, day).filter(function(e) { return !e.allDay })
+    return onDay(norm, day).filter(function(e) { return !e.allDay }).map(function(e) { return segmentOn(e, day) })
 }
 function allDayOnDay(norm, day) {
     return onDay(norm, day).filter(function(e) { return e.allDay })
@@ -185,7 +206,11 @@ function defaultMin(date, now) {
 function eventsAtCursor(norm, date, min, mode) {
     var day = onDay(norm, date)
     if (mode === "month") return day
-    return day.filter(function(e) { return e.allDay || (e.startMin < min + SLOT && e.endMin > min) })
+    return day.filter(function(e) {
+        if (e.allDay) return true
+        var g = segmentOn(e, date)
+        return g.startMin < min + SLOT && g.endMin > min
+    })
 }
 
 // Distinct accounts in raw backend events, in first-seen order: [{ id, email }].
@@ -260,4 +285,44 @@ function sideMonths(anchor, now) {
     var out = a.slice()
     n.forEach(function(m) { if (out.indexOf(m) < 0) out.push(m) })
     return out
+}
+
+
+// Month grid layout, so an event that lasts several days is one continuous bar at the same height in every
+// cell it covers. Returns one array per day (n days from gridStart); each entry is an event or null (an empty
+// lane kept so the bars below line up). Multi-day events (all-day or timed) take the top lanes; the rest follow.
+function monthLanes(norm, gridStart, n) {
+    n = n || 42
+    var lastDay = addDays(gridStart, n - 1)
+    var out = []
+    for (var i = 0; i < n; i++) out.push([])
+    var multi = norm.filter(function(e) { return e.multiDay && e.endDate >= gridStart && e.startDate <= lastDay })
+    multi.sort(function(a, b) {
+        if (a.startDate.getTime() !== b.startDate.getTime()) return a.startDate - b.startDate
+        if (a.endDate.getTime() !== b.endDate.getTime()) return b.endDate - a.endDate
+        return a.title < b.title ? -1 : (a.title > b.title ? 1 : 0)
+    })
+    var laneEnd = []
+    multi.forEach(function(e) {
+        var s = Math.max(0, dayDiff(e.startDate, gridStart)), en = Math.min(n - 1, dayDiff(e.endDate, gridStart))
+        var lane = 0
+        while (laneEnd[lane] !== undefined && laneEnd[lane] >= s) lane++
+        laneEnd[lane] = en
+        for (var d = s; d <= en; d++) out[d][lane] = e
+    })
+    for (var d = 0; d < n; d++) {
+        var row = out[d]
+        for (var l = 0; l < row.length; l++) if (row[l] === undefined) row[l] = null
+        onDay(norm, addDays(gridStart, d)).forEach(function(e) { if (!e.multiDay) row.push(e) })
+        while (row.length && row[row.length - 1] === null) row.pop()
+    }
+    return out
+}
+
+// "22:00 -> Wed 10:00" style end text for a multi-day event; "" when it does not span days.
+function spanText(e) {
+    if (!e || !e.multiDay) return ""
+    var d = function(x) { return DAYS_SHORT[isoIndex(x)] + " " + x.getDate() + " " + MONTHS[x.getMonth()].substring(0, 3) }
+    return e.allDay ? d(e.startDate) + " \u2013 " + d(e.endDate)
+                    : d(e.startDate) + " " + timeLabel(e.startMin) + " \u2013 " + d(e.endDate) + " " + timeLabel(e.endMin)
 }

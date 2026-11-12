@@ -173,7 +173,12 @@ Item {
                     model: root.days
                     delegate: Item {
                         id: adCell
+                        property int colIndex: index
                         property var list: CU.allDayOnDay(root.events, modelData)
+                        // a multi-day event is one bar across the columns: it runs to the cell edges where it continues,
+                        // and its title shows on its first day and on the first column of the view
+                        function contBefore(e) { return !!e && e.startDate.getTime() < modelData.getTime() }
+                        function contAfter(e)  { return !!e && e.endDate.getTime() > modelData.getTime() }
                         width: root.colWidth
                         height: parent.height
                         clip: true
@@ -181,22 +186,26 @@ Item {
                         Rectangle { anchors.left: parent.left; width: 1; height: parent.height; color: root.lineColor }
 
                         // collapsed: first event + "+N more"
-                        Row {
+                        Item {
+                            id: collapsedRow
                             visible: !root.allDayExpanded && adCell.list.length > 0
                             anchors.left: parent.left; anchors.right: parent.right
-                            anchors.leftMargin: 3; anchors.rightMargin: 3
-                            y: 3
-                            spacing: 3
+                            y: 3; height: 18
+                            readonly property var  first: adCell.list.length > 0 ? adCell.list[0] : null
+                            readonly property bool cb: adCell.contBefore(first)
+                            readonly property bool ca: adCell.contAfter(first)
                             Rectangle {
-                                width: parent.width - (more.visible ? more.width + parent.spacing : 0)
+                                x: collapsedRow.cb ? 0 : 3
+                                width: collapsedRow.width - x - (more.visible ? more.width + 6 : (collapsedRow.ca ? 0 : 3))
                                 height: 18
-                                color: Qt.rgba(root.accentColor.r, root.accentColor.g, root.accentColor.b, adCell.list.length > 0 && root.isSel(adCell.list[0]) ? 0.4 : 0.22)
-                                border.width: adCell.list.length > 0 && root.isSel(adCell.list[0]) ? 1 : 0
+                                color: Qt.rgba(root.accentColor.r, root.accentColor.g, root.accentColor.b, collapsedRow.first && root.isSel(collapsedRow.first) ? 0.4 : 0.22)
+                                border.width: collapsedRow.first && root.isSel(collapsedRow.first) ? 1 : 0
                                 border.color: root.accentColor
                                 Text {
+                                    visible: !collapsedRow.cb || adCell.colIndex === 0
                                     anchors.fill: parent; anchors.leftMargin: 5; anchors.rightMargin: 3
                                     verticalAlignment: Text.AlignVCenter
-                                    text: adCell.list.length > 0 ? adCell.list[0].title : ""
+                                    text: collapsedRow.first ? (collapsedRow.cb ? "\u25c2 " : "") + collapsedRow.first.title : ""
                                     elide: Text.ElideRight
                                     font.family: root.monoFont; font.pixelSize: Style.font.caption
                                     color: root.textColor
@@ -205,6 +214,7 @@ Item {
                             Text {
                                 id: more
                                 visible: adCell.list.length > 1
+                                anchors.right: parent.right; anchors.rightMargin: 3
                                 height: 18
                                 verticalAlignment: Text.AlignVCenter
                                 text: "+" + (adCell.list.length - 1)
@@ -228,18 +238,27 @@ Item {
                                 spacing: 2
                                 Repeater {
                                     model: adCell.list
-                                    delegate: Rectangle {
+                                    delegate: Item {
+                                        id: exRow
                                         width: parent.width; height: 18
-                                        color: Qt.rgba(root.accentColor.r, root.accentColor.g, root.accentColor.b, root.isSel(modelData) ? 0.4 : 0.22)
-                                        border.width: root.isSel(modelData) ? 1 : 0
-                                        border.color: root.accentColor
-                                        Text {
-                                            anchors.fill: parent; anchors.leftMargin: 5; anchors.rightMargin: 3
-                                            verticalAlignment: Text.AlignVCenter
-                                            text: modelData.title
-                                            elide: Text.ElideRight
-                                            font.family: root.monoFont; font.pixelSize: Style.font.caption
-                                            color: root.textColor
+                                        readonly property bool cb: adCell.contBefore(modelData)
+                                        readonly property bool ca: adCell.contAfter(modelData)
+                                        Rectangle {
+                                            x: exRow.cb ? -3 : 0
+                                            width: parent.width + (exRow.cb ? 3 : 0) + (exRow.ca ? 3 : 0)
+                                            height: 18
+                                            color: Qt.rgba(root.accentColor.r, root.accentColor.g, root.accentColor.b, root.isSel(modelData) ? 0.4 : 0.22)
+                                            border.width: root.isSel(modelData) ? 1 : 0
+                                            border.color: root.accentColor
+                                            Text {
+                                                visible: !exRow.cb || adCell.colIndex === 0
+                                                anchors.fill: parent; anchors.leftMargin: 5; anchors.rightMargin: 3
+                                                verticalAlignment: Text.AlignVCenter
+                                                text: (exRow.cb ? "\u25c2 " : "") + modelData.title
+                                                elide: Text.ElideRight
+                                                font.family: root.monoFont; font.pixelSize: Style.font.caption
+                                                color: root.textColor
+                                            }
                                         }
                                     }
                                 }
@@ -346,7 +365,7 @@ Item {
                                     anchors.leftMargin: 6; anchors.topMargin: 2; anchors.rightMargin: 3
                                     Text {
                                         width: parent.width
-                                        text: ev.title
+                                        text: (ev.contBefore ? "\u25c2 " : "") + ev.title + (ev.contAfter ? " \u25b8" : "")
                                         elide: Text.ElideRight
                                         font.family: root.monoFont; font.pixelSize: Style.font.caption; font.bold: true
                                         color: root.textColor
@@ -354,7 +373,10 @@ Item {
                                     Text {
                                         width: parent.width
                                         visible: parent.parent.height > 30
-                                        text: CU.timeLabel(ev.startMin) + "–" + CU.timeLabel(ev.endMin)
+                                        text: ev.contBefore && ev.contAfter ? "all day (" + CU.spanText(ev) + ")"
+                                            : ev.contBefore ? "until " + CU.timeLabel(ev.endMin)
+                                            : ev.contAfter ? "from " + CU.timeLabel(ev.startMin) + " until " + CU.DAYS_SHORT[CU.isoIndex(ev.endDate)] + " " + CU.timeLabel(ev.realEndMin)
+                                            : CU.timeLabel(ev.startMin) + "–" + CU.timeLabel(ev.endMin)
                                               + (ev.location ? "  " + ev.location : "")
                                         elide: Text.ElideRight
                                         font.family: root.monoFont; font.pixelSize: Style.font.caption
