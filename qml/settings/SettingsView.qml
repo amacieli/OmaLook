@@ -103,6 +103,7 @@ RowLayout {
   Component {
     id: accountPage
     AccountPage {
+      app: root.app
       accounts: root.app.accounts
       isAuthenticated: root.app.auth.isAuthenticated
       onLoginRequested: function(provider) { root.loginRequested(provider) }

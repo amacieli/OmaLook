@@ -18,6 +18,7 @@ SettingsPage {
   // [{ id, provider, email, signed_in }] from GET /accounts
   property var accounts: []
   property bool isAuthenticated: false
+  property var app: null
 
   property string newProvider: "exchange"
   property string notice: ""
@@ -27,7 +28,7 @@ SettingsPage {
   signal logoutRequested(string accountId)
   signal removeRequested(string accountId)
 
-  editing: providerDropdown.popupOpen
+  editing: providerDropdown.popupOpen || meetingSection.editing
 
   readonly property var providerOptions: [
     { value: "exchange", label: "Exchange" },
@@ -164,5 +165,7 @@ SettingsPage {
         }
       }
     }
+
+    MeetingAccountsSection { id: meetingSection; app: page.app }
   }
 }

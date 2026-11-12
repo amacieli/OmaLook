@@ -19,7 +19,7 @@ Item {
   }
   property bool backendOnline: false
   onBackendOnlineChanged: {
-    if (backendOnline) { perfMark("backend first answered"); loadCalendarSettings(); loadUiSettings(); loadSenders(); loadLists(); loadListTargets(); loadMailSettings(); loadRenderSettings(); loadSignatures(); loadBackgroundSettings(); loadMcp(); loadSearchHistory(); loadViewState() }
+    if (backendOnline) { perfMark("backend first answered"); loadCalendarSettings(); loadUiSettings(); loadSenders(); loadLists(); loadListTargets(); loadMailSettings(); loadRenderSettings(); loadMeetingSettings(); loadSignatures(); loadBackgroundSettings(); loadMcp(); loadSearchHistory(); loadViewState() }
   }
 
   // ---- launch timing (see src/perf.rs): marks are queued until the backend answers, then
@@ -1560,6 +1560,39 @@ Item {
   function setSendDelay(secs) {
     sendDelaySecs = secs
     mailSettingsSave.restart()
+  }
+
+  // ---- online meetings (Settings -> Accounts; `[meetings]`, docs/PLAN-calendar-events.md 7.5) ----
+  // { teams_enabled, meet_enabled, jitsi_enabled, personal_enabled, personal_label, personal_link, jitsi_server,
+  //   default_provider: { accountId: providerId }, providers: [{ id, label }] }
+  property var meetingSettings: ({ teams_enabled: true, meet_enabled: true, jitsi_enabled: true, personal_enabled: true,
+                                   personal_label: "", personal_link: "", jitsi_server: "meet.jit.si", default_provider: ({}), providers: [] })
+  property string meetingNotice: ""
+  function loadMeetingSettings() {
+    request("GET", "/settings/meetings", function(xhr) {
+      if (xhr.status !== 200) return
+      try { var d = JSON.parse(xhr.responseText); if (d.ok) meetingSettings = d } catch (e) { console.log("[MeetingSettings] parse error:", e) }
+    })
+  }
+  // patch: any of the keys above; the backend refuses a bad link or server and answers what it stored.
+  function saveMeetingSettings(patch) {
+    var m = {}
+    for (var k in meetingSettings) if (k !== "providers" && k !== "ok") m[k] = meetingSettings[k]
+    for (var j in patch) m[j] = patch[j]
+    request("POST", "/settings/meetings", function(xhr) {
+      if (xhr.status !== 200) { meetingNotice = "Could not save (backend offline)"; return }
+      try {
+        var d = JSON.parse(xhr.responseText)
+        if (d.ok) { meetingSettings = d; meetingNotice = "" } else { meetingNotice = d.error || "Not saved"; loadMeetingSettings() }
+      } catch (e) {}
+    }, JSON.stringify(m))
+  }
+  function setMeetingDefault(accountId, providerId) {
+    var d = {}
+    var cur = meetingSettings.default_provider || {}
+    for (var k in cur) d[k] = cur[k]
+    d[accountId] = providerId
+    saveMeetingSettings({ default_provider: d })
   }
 
   Timer {
