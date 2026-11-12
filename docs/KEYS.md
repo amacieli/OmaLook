@@ -172,6 +172,14 @@ The compose **From** dropdown lists every address you can send as: the account i
 - Reply-all never copies your own aliases.
 - Gmail puts the alias in the From header of the message; Exchange gets `from` on the message. Exchange accepts or refuses it per tenant (send-as / send-on-behalf permission); a refusal appears as the send error in the outbox, and *u* within the undo window takes the message back as usual.
 
+## Bounce (send a message on)
+
+| Key | Action |
+|-----|--------|
+| `B` | Bounce the open message (`mail.bounce`, `:bounce`): type the address(es), pick the row, answer the question |
+
+`:bounce alice@example.org, Bob <bob@example.org>` also works straight from the palette. **It is not a true bounce**: Gmail and Exchange cannot send as the original sender, so the recipients get a message *from you*, with the original's subject, text and attachments, and `Reply-To` set to the original sender (or its own Reply-To). The original recipients are not copied and the original's signatures are dropped. The question states this and names the recipients; it opens on Cancel. A bounce goes through the outbox like any send: `u` within the send delay takes it back (nothing is sent, the editor does not open). Exchange refuses messages above about 3 MB (forward those).
+
 ## Reply to a mailing list
 
 | Key | Action |

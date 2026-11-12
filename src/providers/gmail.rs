@@ -683,6 +683,9 @@ impl super::EmailProvider for GmailProvider {
 
     async fn send_message(&self, msg: &crate::compose::OutgoingMessage, from: &str) -> Result<()> {
         use crate::compose::{build_mime, ReplyHeaders};
+        if msg.is_bounce() {
+            return self.send_bounce(msg, from).await;
+        }
         // A reply joins the original's thread: it needs the original's Message-ID / References
         // (for the headers) and its threadId. A forward starts a new conversation, as Gmail's does.
         let (mut reply, mut thread_id) = (None::<ReplyHeaders>, None::<String>);

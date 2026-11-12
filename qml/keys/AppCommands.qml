@@ -464,6 +464,17 @@ Item {
   // ---- attachments -----------------------------------------------------------
   // Picker for the selected message's attachments: Enter saves the highlighted file (the list stays
   // up, saved ones get a check mark), the first row saves them all. Typing filters by name.
+  // `:bounce alice@example.org, bob@example.org`: one row that asks the question once the addresses are all valid.
+  function pickBounce(q) {
+    var none = function(id, t) { return [{ id: id, title: t, keys: [], run: function() {} }] }
+    if (!app.currentMessage || !app.currentMessage.id) return none("bounce.none", "open a message to bounce")
+    var p = app.bounceParse(q)
+    if (p.to.length === 0 && p.bad.length === 0) return none("bounce.type", "type the address(es) to send this message on to")
+    if (p.bad.length > 0) return none("bounce.bad", "\u26a0 not an address: " + p.bad[0])
+    var names = p.to.map(function(t) { return t.email }).join(", ")
+    return [{ id: "bounce.go", title: "Bounce to " + names + "\u2026 (asks first)", keys: [], run: function() { app.askBounce(q) } }]
+  }
+
   function pickAttachments(q) {
     var a = app.attachments
     var none = function(id, t) { return [{ id: id, title: t, keys: [], run: function() {} }] }
@@ -656,6 +667,7 @@ Item {
     { id: "mail.reply",    title: "Reply",         scope: "mail", keys: ["r"], run: function() { app.openCompose("reply") } },
     { id: "mail.replyall", title: "Reply all",     scope: "mail", keys: ["R"], run: function() { app.openCompose("replyAll") } },
     { id: "mail.forward",  title: "Forward",       scope: "mail", keys: ["f"], run: function() { app.openCompose("forward") } },
+    { id: "mail.bounce", title: "Bounce: send this message on to someone else (arrives from you, replies go to the author)", scope: "mail", keys: ["B"], ex: ["bounce"], pick: pickBounce, when: function() { return onMessages && !app.composing && app.currentMessageId !== "" }, run: function() { root.paletteRequested("bounce ") } },
     { id: "mail.replylist", title: "Reply to the mailing list (List-Post), not the sender", scope: "mail", keys: ["L"], ex: ["replylist", "rl"], when: function() { return onMessages && app.currentMessageId !== "" }, run: function() { app.replyToList() } },
     { id: "mail.read",     title: "Mark read / unread", scope: "mail", keys: ["z"], run: function() { app.toggleRead() } },
     { id: "copy.from", title: "Copy From address",  scope: "mail", keys: ["Y f"], ex: ["copyfrom"], when: function() { return onMessages && !!content && content.copyRecipients !== undefined }, run: function() { content.copyRecipients("from") } },

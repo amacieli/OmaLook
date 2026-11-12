@@ -905,8 +905,11 @@ impl super::EmailProvider for GraphEmailProvider {
         Self::check_response(response).await.map(|_| ())
     }
 
-    async fn send_message(&self, msg: &crate::compose::OutgoingMessage, _from: &str) -> Result<()> {
+    async fn send_message(&self, msg: &crate::compose::OutgoingMessage, from: &str) -> Result<()> {
         use crate::compose::{graph_message_json, graph_send_mail_json};
+        if msg.is_bounce() {
+            return self.send_bounce(msg, from).await;
+        }
         let token = self.get_token().await?;
         let client = reqwest::Client::new();
         let call = |method: reqwest::Method, path: String, body: Option<serde_json::Value>| {

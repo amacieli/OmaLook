@@ -26,6 +26,7 @@ pub mod email_daemon;
 pub mod compose;
 pub mod list_headers;
 pub mod identities;
+pub mod bounce;
 pub mod addresses;
 pub mod fs_browse;
 pub mod outbox;

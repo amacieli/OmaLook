@@ -37,3 +37,41 @@ impl GraphEmailProvider {
         Ok(crate::identities::parse_graph_proxies(&json, account_email))
     }
 }
+
+/// Exchange takes a MIME message of about 4 MB at most through `sendMail`; stay clear of it and say so.
+const MAX_BOUNCE_BYTES: usize = 3_000_000;
+
+impl GraphEmailProvider {
+    /// Bounce (OL-052): the original's MIME (`/me/messages/{id}/$value`), rewritten by `crate::bounce::rewrite`, sent as a
+    /// MIME `sendMail` (`Content-Type: text/plain`, base64 body; Exchange reads the recipients from the headers).
+    pub async fn send_bounce(&self, msg: &crate::compose::OutgoingMessage, from: &str) -> Result<()> {
+        use base64::Engine;
+        let http = |e: String| OmarchyError::HttpError(e);
+        let token = self.get_token().await?;
+        let client = super::super::http_client();
+        let resp = client
+            .get(format!("https://graph.microsoft.com/v1.0/me/messages/{}/$value", urlencoding::encode(&msg.in_reply_to)))
+            .header("Authorization", format!("Bearer {}", token))
+            .send()
+            .await
+            .map_err(|e| http(e.to_string()))?;
+        if !resp.status().is_success() {
+            return Self::check_response(resp).await.map(|_| ());
+        }
+        let bytes = resp.bytes().await.map_err(|e| http(e.to_string()))?;
+        if bytes.len() > MAX_BOUNCE_BYTES {
+            return Err(http(format!("the message is {} MB: too large to bounce through Exchange (limit about 3 MB); forward it instead", bytes.len() / 1_000_000)));
+        }
+        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+        let out = crate::bounce::rewrite(&bytes, from, &msg.to, &msg.cc, &chrono::Utc::now().to_rfc2822(), &crate::bounce::new_message_id(from, nanos)).map_err(http)?;
+        let resp = client
+            .post("https://graph.microsoft.com/v1.0/me/sendMail")
+            .header("Authorization", format!("Bearer {}", token))
+            .header("Content-Type", "text/plain")
+            .body(base64::engine::general_purpose::STANDARD.encode(&out))
+            .send()
+            .await
+            .map_err(|e| http(e.to_string()))?;
+        Self::check_response(resp).await.map(|_| ())
+    }
+}

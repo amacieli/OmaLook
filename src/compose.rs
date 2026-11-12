@@ -278,6 +278,9 @@ impl OutgoingMessage {
         if let Some(bad) = all.iter().find(|a| !is_valid_email(&a.email)) {
             return Err(format!("not a valid address: {}", bad.email));
         }
+        if self.kind == "bounce" && (self.in_reply_to.is_empty() || !self.attachments.is_empty() || !self.from.is_empty() || !self.bcc.is_empty()) {
+            return Err("a bounce names the message to send on and nothing else (no files, no Bcc, no other From)".into());
+        }
         if self.body.content.len() > MAX_BODY_BYTES {
             return Err("message is too large".into());
         }
@@ -338,6 +341,11 @@ impl OutgoingMessage {
     /// True for the kinds that continue an existing conversation and name the message they answer.
     pub fn is_reply(&self) -> bool {
         matches!(self.kind.as_str(), "reply" | "replyAll") && !self.in_reply_to.is_empty()
+    }
+
+    /// A received message sent on to new recipients (OL-052, `crate::bounce`); `in_reply_to` is the message sent on.
+    pub fn is_bounce(&self) -> bool {
+        self.kind == "bounce" && !self.in_reply_to.is_empty()
     }
 
     pub fn is_forward(&self) -> bool {
@@ -1114,6 +1122,22 @@ mod tests {
         let (h, t) = prepare_bodies(&msg("text", "a < b & c", "system"));
         assert!(h.is_none());
         assert_eq!(t, "a < b & c");
+    }
+
+    #[test]
+    fn a_bounce_is_a_message_to_send_on_and_nothing_else() {
+        let mut m = msg("text", "", "system");
+        m.kind = "bounce".into();
+        m.to = vec![addr("t@x.org", "")];
+        assert!(!m.is_bounce() && m.validate().is_err(), "it must name the message");
+        m.in_reply_to = "gmail-1:abc".into();
+        assert!(m.is_bounce() && !m.is_reply() && !m.is_forward());
+        assert!(m.validate().is_ok(), "{:?}", m.validate());
+        m.bcc = vec![addr("b@x.org", "")];
+        assert!(m.validate().is_err(), "no Bcc on a bounce");
+        m.bcc.clear();
+        m.from = "alias@x.org".into();
+        assert!(m.validate().is_err(), "no other From on a bounce");
     }
 
     #[test]

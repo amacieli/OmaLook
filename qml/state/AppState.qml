@@ -2,6 +2,7 @@ import QtQuick
 import Quickshell
 import "../mail/format.js" as Fmt
 import "../compose/identity.js" as Ident
+import "../mail/bounce.js" as Bn
 
 // All non-visual state: navigation + focus model, folder/message data, and the
 // backend (Rust daemon, local HTTP) calls. Components read properties and call
@@ -1238,6 +1239,44 @@ Item {
     })
   }
 
+  // Bounce the open message to other people (OL-052, `B` / `:bounce a@x.org, b@y.org`). Nothing is sent from here: the
+  // question first says what the recipients will see, then the message is queued like any other, so the undo
+  // window (u) applies. The daemon sends the original's own text and files (src/bounce.rs).
+  function _bounceInfo(m) {
+    return {
+      subject: String(m.subject || ""), sender: _addr(m), replyTo: "", account: String(m.account_email || ""),
+      delaySecs: sendDelaySecs, accountId: String(m.account_id || ""), messageId: String(m.id || "")
+    }
+  }
+  // The recipients typed so far, as {to, bad}; the palette shows what it understood.
+  function bounceParse(text) { return Bn.parse(text) }
+  function askBounce(text) {
+    var m = currentMessage
+    if (!m || !m.id) return
+    var p = Bn.parse(text)
+    if (p.to.length === 0) { notify("Bounce to whom? e.g. :bounce alice@example.org"); return }
+    if (p.bad.length > 0) { notify("Not an address: " + p.bad[0]); return }
+    var info = _bounceInfo(m)
+    if (!info.account) { var a = accounts.filter(function(x) { return x.id === info.accountId }); info.account = a.length ? a[0].email : "" }
+    if (!info.account) { notify("This message's account is not known yet"); return }
+    pendingConfirm = {
+      message: Bn.notice(info, p.to), confirmText: "Bounce",
+      run: function() { submitBounce(Bn.message(info, p.to)) }
+    }
+  }
+  function submitBounce(message) {
+    request("POST", "/compose/send", function(xhr) {
+      var r = null
+      try { r = JSON.parse(xhr.responseText) } catch (e) {}
+      if (xhr.status !== 200 || !r || !r.ok) { notify(r && r.error ? "Not bounced: " + String(r.error) : "Could not queue the bounce (is the backend running?)"); return }
+      sendNow = Date.now()
+      sends = sends.concat([{
+        id: r.id, message: message, sendAt: sendNow + r.delay_secs * 1000, delaySecs: r.delay_secs,
+        state: r.delay_secs > 0 ? "pending" : "sending", error: "", doneAt: 0, polling: false
+      }])
+    }, JSON.stringify(message))
+  }
+
   // A new message to these addresses (the People view's `w`).
   function composeTo(addresses) {
     gotoView("mail")
@@ -1592,7 +1631,8 @@ Item {
     request("POST", "/compose/cancel?id=" + encodeURIComponent(id), function(xhr) {
       var r = null
       try { r = JSON.parse(xhr.responseText) } catch (e) {}
-      if (r && r.cancelled) { dismissSend(id); reopenCompose(msg) }
+      if (r && r.cancelled && msg.kind === "bounce") { dismissSend(id); notify("Bounce taken back, nothing was sent") }
+      else if (r && r.cancelled) { dismissSend(id); reopenCompose(msg) }
       else _patchSend(id, { state: r && r.state === "sent" ? "sent" : "sending", doneAt: Date.now() })
     })
   }
@@ -1603,6 +1643,7 @@ Item {
     if (i < 0) return
     var msg = sends[i].message
     dismissSend(id)
+    if (msg.kind === "bounce") { notify("Bounce dismissed; press B to try again"); return }
     reopenCompose(msg)
   }
 
