@@ -221,7 +221,7 @@ FocusScope {
   // Files picked in the browser. Adding past the limit is allowed: the strip turns red and says
   // why, and Send refuses with the numbers (a From switch can push a fine set over the limit too).
   function addAttachments(files) {
-    var have = root.attachments.map(function(a) { return a.path })
+    var have = root.liveAttachments.map(function(a) { return a.path })
     var next = root.attachments.slice()
     for (var i = 0; i < files.length; i++) {
       if (have.indexOf(files[i].path) >= 0) continue
@@ -289,11 +289,14 @@ FocusScope {
     if (others.length > 0) msg += (msg ? " " : "") + others.length + (others.length === 1 ? " file" : " files") + " not a picture: attached."
     root.localStatus = msg
   }
-  // A picture taken out of the text (system-font switch) becomes an ordinary attachment.
+  // A picture still in the text (system-font switch) becomes an ordinary attachment. An entry whose picture
+  // was already deleted from the text is dropped, not turned into a file, and a file listed twice is kept once.
   function _picturesToFiles() {
-    root.attachments = root.attachments.map(function(a) {
-      return a.inline_cid ? { path: a.path, name: a.name, size: a.size } : a
-    })
+    var r = Att.pictureFiles(root.attachments, handler.pictureCids)
+    root.attachments = r.files
+    if (r.converted > 0) root.localStatus = r.converted === 1 ? "The picture is now an attached file: system-font mode cannot show it."
+      : r.converted + " pictures are now attached files: system-font mode cannot show them."
+    return r.converted
   }
 
   // The palette twins of the keys (`:attach`, `:attachments`, `:detach`, `:detach-all`).
@@ -694,6 +697,7 @@ else if (ctrl && !shift && e.key === Qt.Key_V) { root.startPaste(); e.accepted =
       onUndoRequested: editor.undo()
       onRedoRequested: editor.redo()
       onLinkRequested: { root.linkOpen = true; linkUrl.forceActiveFocus() }
+      onPictureRequested: root.openPicture()
     }
 
     // ---- link bar
@@ -845,7 +849,7 @@ else if (ctrl && !shift && e.key === Qt.Key_V) { root.startPaste(); e.accepted =
     recentDirs: root.recentDirs
     capacity: Att.capacity(root.limits)
     baseBytes: root.attachedBytes
-    attached: root.attachments.map(function(a) { return a.path })
+    attached: root.liveAttachments.map(function(a) { return a.path })
     onPicked: function(files) {
       if (root._pictureMode) { root._pictureMode = false; root.insertPictures(files) }
       else root.addAttachments(files)

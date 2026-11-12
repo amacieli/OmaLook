@@ -290,6 +290,15 @@ The calendar has a keyboard cursor (the highlighted day; in the day and week gri
 With more than one account, event bars take the account's colour and the header shows the filter. The join link is the provider's own link
 when there is one, else a known meeting host found in the location or body, else the first `https` URL in the location.
 
+## Find a free time (OL-021 track A)
+
+| Key | What |
+|---|---|
+| `C-f` on the calendar | Open the finder (`cal.find`) for the selected event's people (none if no event is under the cursor: your own calendar only). Needs a work/school (Exchange) account. |
+| `Ctrl-F` in the event editor | Open the finder with the editor's Required/Optional people and its length. The editor is kept under it. |
+
+In the finder: `j`/`k` (or arrows) move, `Enter` uses the slot (the editor's When is filled; from the calendar a new editor opens at the slot with the same people), `+`/`-` length in 15-minute steps, `[`/`]` shift the window a week, `a` also checks your other work accounts (off by default; it is not remembered between sessions yet), `Esc` back with no change. A `?` marks a slot where someone has no free/busy data: it is not treated as free. A slot where everyone is free reads "free for everyone". The window is 5 days from the start date. Working hours default to Mon-Fri 09:00-17:30 (per-person hours are used when the server reports them). Rendered on a scratch window with a mock backend; the `Enter` pick and the `C-f` path from the calendar were not exercised live (the scratch cursor did not select the mock event).
+
 ## People (contacts)
 
 Cursor `j k gg G`, `/` filter, `Enter` detail, `Space`/`v` mark. `c`/`n` new, `e` edit, `x` delete (`Ctrl-Z` reverts; saves are instant), `t` tags, `Ctrl-Shift-V` move to a folder, `A` cycle account, `M` merge marked duplicates (the first is kept), `E` export (vCard or CSV), `w` mail, `S` text, `O` open, `y` copy.

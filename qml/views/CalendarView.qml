@@ -79,7 +79,7 @@ Item {
     property string lastAccount: ""
     signal accountUsed(string id)
     property bool   editorOpen: false
-    readonly property bool editing: editorOpen || askMode !== ""     // AppShell hands every key to the editor's fields (or the question) meanwhile
+    readonly property bool editing: editorOpen || askMode !== "" || finderOpen    // AppShell hands every key to the editor's fields, the question or the finder meanwhile
     property var    editorRestore: null
     property string editorAccount: ""
     property string editorStatus: ""
@@ -146,6 +146,68 @@ Item {
         editorRestore = null
         editorOpen = true
         return ""
+    }
+
+    // ── free-time finder (track A; docs/PLAN-calendar-events.md 5.6). Opened from the editor (its attendees, start and length)
+    //    or from the calendar (the selected event's attendees, the cursor). A slot goes back to the editor, or opens a new one.
+    property bool   finderOpen: false
+    property string finderSource: ""              // editor | calendar: where a picked slot goes
+    property var    finderState: ({ accountId: "", accountLabel: "", required: [], optional: [], start: new Date(), minutes: 30 })
+    readonly property var finderOthers: appAccounts.filter(function(a) { return Draft.canCreate(a) && a.id !== finderState.accountId })
+        .map(function(a) { return { id: a.id, email: a.email || "" } })
+    onFinderOpenChanged: if (!finderOpen && editorOpen && editor) editor.focusFirst()
+
+    function _accountById(id) {
+        for (var i = 0; i < appAccounts.length; i++) if (appAccounts[i].id === id) return appAccounts[i]
+        return null
+    }
+    // Returns a status message ("" when the finder opened).
+    function openFinder(fromEditor) {
+        if (finderOpen || (!fromEditor && editorOpen)) return ""
+        var acc = "", req = [], opt = [], start = anchorDate, mins = eventDefaults.minutes
+        if (fromEditor && editor) {
+            acc = editorAccount
+            var list = editor.people.list || []
+            list.forEach(function(a) {
+                if (a.role === "resource") return
+                if (a.role === "optional") opt.push(a.email); else req.push(a.email)
+            })
+            var w = editor.whenResult
+            start = w.ok ? w.start : editorStart
+            if (w.ok && w.end) mins = Math.max(15, Math.round((w.end.getTime() - w.start.getTime()) / 60000))
+        } else {
+            var under = selectedEvent ? selectedEvent.raw.account_email : ""
+            acc = Draft.chooseAccount(appAccounts, { filterEmail: accountFilter, cursorEmail: under,
+                                                     defaultAccount: eventDefaults.account, lastUsed: lastAccount })
+            var raw = selectedEvent ? selectedEvent.raw : null
+            if (raw) (raw.attendees || []).forEach(function(a) {
+                if (a.role === "resource" || !a.email) return
+                if (a.role === "optional") opt.push(a.email); else req.push(a.email)
+            })
+            start = new Date(anchorDate.getFullYear(), anchorDate.getMonth(), anchorDate.getDate(), 0, mode === "month" ? 9 * 60 : cursorMin)
+        }
+        var a = _accountById(acc)
+        if (!a || !Draft.canCreate(a)) return "Free time needs a work or school (Exchange) account"
+        finderState = { accountId: a.id, accountLabel: a.email || a.id, required: req, optional: opt, start: start, minutes: mins }
+        finderSource = fromEditor ? "editor" : "calendar"
+        finderOpen = true
+        return ""
+    }
+    // The finder's pick: the editor takes it (open already), or a new editor opens at the slot with the same people.
+    function pickFreeSlot(s, e) {
+        var fs = finderState
+        finderOpen = false
+        if (finderSource === "editor" && editor) { editor.applySlot(s, e); return }
+        editorRestore = { subject: "", notes: "", location: "", reminder: String(eventDefaults.reminder), showAs: "busy", repeatText: "",
+                          base: { start: s, end: e, allDay: false },
+                          required: fs.required.map(function(m) { return { email: m, name: "" } }),
+                          optional: fs.optional.map(function(m) { return { email: m, name: "" } }) }
+        editorMode = "create"
+        editorOriginal = null
+        editorAccount = fs.accountId
+        editorStatus = ""
+        editorStart = s
+        editorOpen = true
     }
 
     function _post(method, path, body, cb) {
@@ -551,8 +613,32 @@ Item {
                         onAccountPicked: function(id) { root.editorAccount = id }
                         onSaveRequested: function(body) { root.saveEvent(body) }
                         onCancelRequested: { root.editorOpen = false; root.editorStatus = "" }
+                        onFindRequested: { var m = root.openFinder(true); if (m !== "") root.editorStatus = m }
                         Component.onCompleted: root.editor = ed
                         Component.onDestruction: if (root.editor === ed) root.editor = null
+                    }
+                }
+            }
+
+            // the free-time finder (Ctrl-F in the editor, `C-f` on the calendar): over the grid, above the editor
+            Loader {
+                id: finderLoader
+                anchors.fill: parent
+                anchors.margins: Style.spacing.sm; anchors.topMargin: Style.spacing.xl
+                z: 110
+                active: root.finderOpen
+                sourceComponent: Component {
+                    FreeTimeFinder {
+                        backendUrl: root.backendUrl
+                        accountId: root.finderState.accountId
+                        accountLabel: root.finderState.accountLabel
+                        requiredEmails: root.finderState.required
+                        optionalEmails: root.finderState.optional
+                        others: root.finderOthers
+                        initialStart: root.finderState.start
+                        initialMinutes: root.finderState.minutes
+                        onPickRequested: function(s, e) { root.pickFreeSlot(s, e) }
+                        onCloseRequested: root.finderOpen = false
                     }
                 }
             }

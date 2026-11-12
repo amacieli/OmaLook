@@ -44,6 +44,7 @@ FocusScope {
     signal cancelRequested()
     signal accountPicked(string id)
     signal directoryQuery(string text)      // what was typed in an attendee field (the owner searches, debounced)
+    signal findRequested()                  // Ctrl-F: the owner opens the free-time finder with this editor's people and length
 
     // ---- state
     property string whenText: ""
@@ -139,6 +140,15 @@ FocusScope {
         saveRequested(r.body)
     }
 
+    // The free-time finder's pick: the slot becomes the When (the typed text is cleared, the summary shows the slot)
+    function applySlot(s, e) {
+        baseWhen = { start: s, end: e, allDay: false }
+        whenField.text = ""
+        whenText = ""
+        localStatus = "Time filled from the free-time finder"
+    }
+    function focusFirst() { titleField.forceActiveFocus() }
+
     function nudgeWhen(kind, dir) {
         var cur = whenResult.ok ? whenResult : baseWhen
         baseWhen = When.nudge({ start: cur.start, end: cur.end, allDay: cur.allDay === true }, kind, dir)
@@ -191,6 +201,7 @@ FocusScope {
         var ctrl = (e.modifiers & Qt.ControlModifier) !== 0
         if (ctrl && (e.key === Qt.Key_Return || e.key === Qt.Key_Enter)) { save(); e.accepted = true }
         else if (e.key === Qt.Key_Escape) { tryCancel(); e.accepted = true }
+        else if ((e.modifiers & Qt.ControlModifier) && e.key === Qt.Key_F) { findRequested(); e.accepted = true }
         else if ((e.modifiers & Qt.AltModifier) && (e.key === Qt.Key_Down || e.key === Qt.Key_Up)) {
             if (e.key === Qt.Key_Down && reqField.input.activeFocus) { moveChip(reqField, optField); e.accepted = true }
             else if (e.key === Qt.Key_Up && optField.input.activeFocus) { moveChip(optField, reqField); e.accepted = true }
@@ -403,12 +414,12 @@ FocusScope {
             Layout.fillWidth: true; wrapMode: Text.WordWrap
             visible: root.shownStatus !== ""
             text: root.shownStatus
-            foreground: root.shownStatus === "saving\u2026" || root.confirmDiscard || root.shownStatus.indexOf("Undone") === 0 ? root.fg : Commons.Color.urgent
+            foreground: root.shownStatus === "saving\u2026" || root.confirmDiscard || root.shownStatus.indexOf("Undone") === 0 || root.shownStatus.indexOf("Time filled") === 0 ? root.fg : Commons.Color.urgent
         }
         PanelSeparator { Layout.fillWidth: true }
         UiText {
             Layout.fillWidth: true
-            text: root.reachText + "    Ctrl-Enter save"
+            text: root.reachText + "    Ctrl-F find a time    Ctrl-Enter save"
             dim: true; font.pixelSize: Style.font.caption
         }
     }
