@@ -92,20 +92,23 @@ function candidates(text) {
     return out
 }
 
-// Next whole hour strictly after `now` that does not overlap a busy span (up to two weeks on).
+// Next half hour strictly after `now` that does not overlap a busy span (up to two weeks on). Slots are
+// 30 minutes apart, matching the calendar's default event length.
 function nextFreeHour(now, busy, minutes) {
     var len = minutes > 0 ? minutes : 30
-    var start = new Date(now.getFullYear(), now.getMonth(), now.getDate(), now.getHours() + 1, 0, 0, 0)
-    for (var n = 0; n < 24 * 14; n++) {
+    var STEP = 30 * 60000
+    var start = new Date(Math.floor(now.getTime() / STEP) * STEP + STEP)
+    if (start.getTime() <= now.getTime()) start = new Date(start.getTime() + STEP)
+    for (var n = 0; n < 48 * 14; n++) {
         var end = new Date(start.getTime() + len * 60000)
         var clash = (busy || []).some(function(b) { return b.start < end && b.end > start })
         if (!clash) break
-        start = new Date(start.getTime() + 3600000)
+        start = new Date(start.getTime() + STEP)
     }
-    return { start: start, end: new Date(start.getTime() + len * 60000), source: "next free hour" }
+    return { start: start, end: new Date(start.getTime() + len * 60000), source: "next free half hour" }
 }
 
-// The first phrase in `texts` that the time parser reads as a timed event after `now`, else the next free hour.
+// The first phrase in `texts` that the time parser reads as a timed event after `now`, else the next free half hour.
 function suggestTime(texts, o) {
     var now = o.now || new Date()
     var minutes = o.defaultMinutes > 0 ? o.defaultMinutes : 30

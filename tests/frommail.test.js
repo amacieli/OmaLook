@@ -38,22 +38,22 @@ eq(t1.end.getTime() - t1.start.getTime(), 30 * 60000, 'default length');
 
 // a past phrase is not used: falls back to the next free hour
 const t2 = FM.suggestTime(['meeting yesterday 8am'], { now: NOW, parseWhen: W.parseWhen, defaultMinutes: 30 });
-eq(t2.start.getTime(), new Date(2026, 9, 27, 10, 0).getTime(), 'past phrase -> next hour');
-eq(t2.source, 'next free hour', 'source fallback');
+eq(t2.start.getTime(), new Date(2026, 9, 27, 9, 30).getTime(), 'past phrase -> next half hour');
+eq(t2.source, 'next free half hour', 'source fallback');
 
 // no date at all: next whole hour
 const t3 = FM.suggestTime(['no time here'], { now: NOW, parseWhen: W.parseWhen, defaultMinutes: 45 });
-eq(t3.start.getTime(), new Date(2026, 9, 27, 10, 0).getTime(), 'next hour');
+eq(t3.start.getTime(), new Date(2026, 9, 27, 9, 30).getTime(), 'next half hour');
 eq(t3.end.getTime() - t3.start.getTime(), 45 * 60000, 'length 45');
 
-// busy hours are skipped
-const busy = [{ start: new Date(2026, 9, 27, 10, 0), end: new Date(2026, 9, 27, 11, 0) }, { start: new Date(2026, 9, 27, 11, 0), end: new Date(2026, 9, 27, 11, 30) }];
+// busy slots are skipped
+const busy = [{ start: new Date(2026, 9, 27, 9, 30), end: new Date(2026, 9, 27, 10, 0) }, { start: new Date(2026, 9, 27, 10, 0), end: new Date(2026, 9, 27, 11, 0) }, { start: new Date(2026, 9, 27, 11, 0), end: new Date(2026, 9, 27, 11, 30) }];
 const t4 = FM.nextFreeHour(NOW, busy, 30);
-eq(t4.start.getTime(), new Date(2026, 9, 27, 12, 0).getTime(), 'skips busy 10-11 and 11-11:30 (whole hours)');
+eq(t4.start.getTime(), new Date(2026, 9, 27, 11, 30).getTime(), 'skips busy 9:30-11:30 in half-hour steps');
 
 // a time phrase that overlaps nothing but the parser fails: no crash
 const t5 = FM.suggestTime(['at 25:99 maybe'], { now: NOW, parseWhen: () => { throw new Error('boom') } });
-eq(t5.source, 'next free hour', 'parser throws -> fallback');
+eq(t5.source, 'next free half hour', 'parser throws -> fallback');
 
 // full prefill
 const msg = {
@@ -82,6 +82,6 @@ eq(p2.accountId, '', 'no account');
 // nothing in the message and no parser: still an editor prefill
 const p3 = FM.prefill(undefined, { now: NOW });
 eq(p3.subject, '', 'empty message subject');
-eq(p3.start.getTime(), new Date(2026, 9, 27, 10, 0).getTime(), 'empty message -> next hour');
+eq(p3.start.getTime(), new Date(2026, 9, 27, 9, 30).getTime(), 'empty message -> next half hour');
 
 console.log('ok frommail');
