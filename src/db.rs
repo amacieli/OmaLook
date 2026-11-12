@@ -93,6 +93,7 @@ pub mod rules;
 pub mod local_rules;
 pub mod gmail_filters;
 pub mod tasks;
+pub mod drafts;
 
 pub struct Database {
     conn: Connection,
@@ -385,6 +386,35 @@ impl Database {
         )?;
         self.conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_outbox_due ON outbox(account_id, state, send_at)",
+            [],
+        )?;
+
+        // Drafts (docs/PLAN-compose.md Phase B2): the local copy of every compose draft; the provider
+        // copy is `remote_id`. See db/drafts.rs for the rules. dirty = not yet confirmed by the provider.
+        self.conn.execute(
+            "CREATE TABLE IF NOT EXISTS drafts (
+                local_id TEXT PRIMARY KEY,
+                account_id TEXT NOT NULL,
+                remote_id TEXT,
+                remote_version TEXT,
+                kind TEXT NOT NULL DEFAULT 'new',
+                in_reply_to TEXT NOT NULL DEFAULT '',
+                payload_json TEXT NOT NULL,
+                mode TEXT NOT NULL DEFAULT 'system',
+                attachments_sig TEXT NOT NULL DEFAULT '',
+                dirty INTEGER NOT NULL DEFAULT 1,
+                state TEXT NOT NULL DEFAULT 'editing',
+                attempts INTEGER NOT NULL DEFAULT 0,
+                next_attempt_at INTEGER NOT NULL DEFAULT 0,
+                last_error TEXT,
+                notice TEXT,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            )",
+            [],
+        )?;
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_drafts_account ON drafts(account_id, state, dirty)",
             [],
         )?;
 
