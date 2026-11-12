@@ -57,6 +57,10 @@ a failed one with a cross and the server's reason (`Ctrl-Z` reopens it too).
 In the calendar view `Ctrl-Right` / `Ctrl-Left` (or `Ctrl-w >` / `Ctrl-w <`, with a count; commands `cal.pane.widen`, `cal.pane.narrow`) move the divider between the sidebar (mini month, calendars, agenda) and the
 calendar one character at a time. Kept across launches as `[ui] calendar_pane_offset` in `settings.toml` (characters relative to the default; 0 = default). The sidebar and the calendar keep a minimum width.
 
+## Copying recipients (reading pane, OL-044)
+
+Select a To / Cc / Bcc line with the mouse and press `Ctrl+C`, or use the keys (mail view, list or reading pane): `Y t` copy the To addresses, `Y c` Cc, `Y b` Bcc, `Y a` all three. Only bare addresses are copied, comma separated, no duplicates, ready to paste into a compose recipient field.
+
 ## Links in a message (reading pane)
 
 In the reading pane, in both the system-font and the HTML view (needs the pane focused, and at least one link):

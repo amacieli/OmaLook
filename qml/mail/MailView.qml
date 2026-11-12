@@ -42,6 +42,7 @@ RowLayout {
   function linkStep(dir) { preview.linkStep(dir) }
   function linkOpen() { preview.linkOpen() }
   function linkCopy() { preview.linkCopy() }
+  function copyRecipients(which) { preview.copyRecipients(which) }
   function linkClear() { preview.linkClear() }
   function linkHints() { preview.linkHints() }
   function hintInput(key, text) { return preview.hintInput(key, text) }

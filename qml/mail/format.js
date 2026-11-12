@@ -39,6 +39,21 @@ function recipientLine(label, text) {
   return text && text.length > 0 ? label + "  " + text : ""
 }
 
+// Bare addresses out of a To/Cc/Bcc text ("Bob <bob@x.org>, carol@y.org; \"Last, First\" <d@z.org>"):
+// the part inside <...> when there is one, else the token that looks like an address. No duplicates,
+// order kept. Used to copy a recipient field so it pastes cleanly into a compose To/Cc/Bcc field.
+function addresses(text) {
+  if (!text) return []
+  var out = [], seen = {}
+  var re = /<([^<>\s]+@[^<>\s]+)>|([^\s<>,;"']+@[^\s<>,;"']+)/g, m
+  while ((m = re.exec(text)) !== null) {
+    var a = (m[1] || m[2]).replace(/^[("]+|[)".]+$/g, "")
+    var k = a.toLowerCase()
+    if (a && !seen[k]) { seen[k] = true; out.push(a) }
+  }
+  return out
+}
+
 function recipients(m) {
   if (!m) return ""
   return recipientLine("to ", m.to_text || m.to_recipients || m.to || "")

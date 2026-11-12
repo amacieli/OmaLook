@@ -201,6 +201,24 @@ Item {
   }
   function linkClear() { linkIndex = -1; hintMode = false; hintTyped = "" }
   function linkOpen() { if (currentHref !== "") Qt.openUrlExternally(currentHref) }
+  // Every recipient SelectableText, filled as the header rows are created (for Ctrl+C).
+  property var _recipFields: []
+  // Copy the addresses of one header field: "to" | "cc" | "bcc" | "all" (to + cc + bcc, no duplicates).
+  function copyRecipients(which) {
+    if (!root.message) return
+    var keys = which === "to" ? ["to_text"] : which === "cc" ? ["cc_text"] : which === "bcc" ? ["bcc_text"]
+             : ["to_text", "cc_text", "bcc_text"]
+    var seen = {}, out = []
+    keys.forEach(function(k) {
+      Fmt.addresses(root.message[k]).forEach(function(a) {
+        var l = a.toLowerCase()
+        if (!seen[l]) { seen[l] = true; out.push(a) }
+      })
+    })
+    if (out.length === 0) { root.notice("no " + (which === "all" ? "" : which + " ") + "addresses"); return }
+    Quickshell.execDetached(["wl-copy", out.join(", ")])
+    root.notice("copied " + out.length + (out.length === 1 ? " address" : " addresses") + (which === "all" ? "" : " (" + which + ")"))
+  }
   function linkCopy() {
     if (currentHref === "") return
     Quickshell.execDetached(["wl-copy", currentHref])
@@ -386,11 +404,15 @@ Item {
 
   // ---- copy the mouse selection (Ctrl+C). The selectable texts never take keyboard focus, so
   // the shortcut is what gets the selection onto the clipboard; it is only live while something is selected.
+  function _recipSelection() {
+    for (var i = 0; i < _recipFields.length; i++) if (_recipFields[i] && _recipFields[i].selectedText !== "") return _recipFields[i]
+    return null
+  }
   readonly property var _selSrc: htmlScroll.visible && htmlText.visible ? htmlText : sysText
   Shortcut {
     sequences: [StandardKey.Copy]
-    enabled: root.visible && root._selSrc.selectedText !== ""
-    onActivated: { root._selSrc.copy(); root.notice("copied selection") }
+    enabled: root.visible && (root._selSrc.selectedText !== "" || root._recipSelection() !== null)
+    onActivated: { var f = root._recipSelection() || root._selSrc; f.copy(); root.notice("copied selection") }
   }
 
   // ---- empty state
@@ -505,22 +527,32 @@ Item {
         }
       }
 
-      // To / Cc / Bcc: one line each, only the ones that exist.
+      // To / Cc / Bcc: only the ones that exist. Selectable with the mouse (Ctrl+C copies), and
+      // `Y t` / `Y c` / `Y b` / `Y a` copy the bare addresses (see copyRecipients). A long list is
+      // cut to four lines; the keys still copy all of it.
       Repeater {
         model: [
           { label: "to ",  key: "to_text" },
           { label: "cc ",  key: "cc_text" },
           { label: "bcc",  key: "bcc_text" }
         ]
-        UiText {
+        Item {
+          id: recipRow
           required property var modelData
           readonly property string line: root.message ? Fmt.recipientLine(modelData.label, root.message[modelData.key]) : ""
+          property alias field: recipText
           visible: line.length > 0
-          text: line
           Layout.fillWidth: true
-          elide: Text.ElideRight
-          dim: true
-          font.pixelSize: Style.font.caption
+          implicitHeight: Math.min(recipText.contentHeight, recipText.font.pixelSize * 1.5 * 4)
+          clip: true
+          Component.onCompleted: root._recipFields.push(recipText)
+          SelectableText {
+            id: recipText
+            width: parent.width
+            text: recipRow.line
+            dim: true
+            font.pixelSize: Style.font.caption
+          }
         }
       }
 

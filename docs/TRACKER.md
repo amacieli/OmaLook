@@ -5,6 +5,11 @@ IDs are stable (never reused). Status: `open` | `investigating` | `planned` | `i
 
 ## Issues
 
+### OL-044 — Copy To / Cc / Bcc addresses from the reading pane (built 2026-11-11, needs `./build.sh --live`; not seen on screen)
+- **Wanted (user, 2026-11-11):** allow copy/paste of To, Cc and Bcc addresses from the message preview pane.
+- **Built:** the three header lines are selectable with the mouse (drag, double/triple click; `Ctrl+C` copies the selection; middle-click pastes the primary selection) and cut to four lines when long; `Y t`, `Y c`, `Y b`, `Y a` (also `:copyto`, `:copycc`, `:copybcc`, `:copyall`) copy the bare addresses, comma separated and without duplicates, so they paste straight into a compose To/Cc/Bcc field (`Fmt.addresses`, `tests/recipients.test.js`).
+- **Checked:** node test (7 cases), command registry test, qmllint (no new warnings). **Not checked:** on screen.
+
 ### OL-043 — Contacts: full keyboard-driven address book (view, create, edit, organise) and a two-way list link (planned 2026-11-11; plan in docs/PLAN-contacts.md; nothing built)
 - **Wanted (user, 2026-11-11):** a two-way link for distribution lists; keyboard-friendly, reusing the keys and habits of the message view; create and edit contacts with every field Graph allows; a full keyboard path for updating and adding contacts; the functions Outlook's contacts cover. Gmail reconciliation is a later, separate phase.
 - **Found (code read 2026-11-11):** contacts are read-only today (no create/update/delete); the model is lossy (emails without names, addresses flattened to one line, 16 fields read), so a naive write would erase data; `PeopleView` has no keyboard cursor and still has hard-coded colours; the second Graph account's default folder id collides with the first; no delta sync; no changeKey handling.

@@ -174,11 +174,10 @@ Reconcile the same editor and list link with Google People (`contactGroups`, `me
 - Writes: only to a scratch contact folder, named `omalook-spike-*`, with a before/after comparison of the real folders (identical), and a manual one-contact check on the real folder at the end of phase 2.
 - A write is not "done" until the contact was read back from the server and compared.
 
-## 10. Open questions (answers wanted before the phase that needs them)
-1. **List mirror naming** (phase 3): `OL: <list>` category, or the plain list name? Recommended: `OL: <list>`.
-2. **Move semantics** (phase 4): if Graph has no contact move, is "create in target + delete source" acceptable (the Outlook id changes; the favourite flag and list membership follow by address)?
-3. **Fields shown by default in the editor** (phase 2): Name, Email, Phone, Company/Title, Notes with the rest behind `Ctrl-K`, or everything always visible? Recommended: the former.
-4. **Undo window for contacts**: the same `send_delay_secs` as mail and calendar, or none for contact edits (instant save, conflicts still checked)?
+## 10. Decisions (user, 2026-11-11) and remaining questions
+**Decided:** (1) list mirror category is `OL: <list>`; (2) a contact move may be create-in-target + delete-source if Graph has no move; (3) editor shows Name, Email, Phone, Company/Title, Notes by default, the rest behind `Ctrl-K`; (4) **contact edits save instantly: no undo window** (conflicts are still checked; "undo" is a revert write, not a delayed send); all phases to be built in one run, user builds and tests afterwards. Where §3, §5, §6 and §8 say "undo window" for contacts, read "instant save + revert"; `Ctrl-Z` re-applies the previous server copy of the contact (bounded to the last write per contact).
+
+**Still open:**
 5. **Directory (GAL) read** (phase 6): is a tenant consent request acceptable if phase 0 shows it is required, or skip it?
 6. **Favourites**: stay local forever, or mirror as a category (e.g. `OL: ★`) so other OmaLook installs see them? Recommended: local until asked.
 7. **Birthdays to the calendar** (phase 5): wanted at all?

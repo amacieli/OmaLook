@@ -1,0 +1,12 @@
+const fs=require('fs');
+const src=fs.readFileSync('qml/mail/format.js','utf8').replace('.pragma library','');
+const F=new Function(src+';return {addresses}')();
+const eq=(a,b,m)=>{ const x=JSON.stringify(a), y=JSON.stringify(b); if(x!==y){console.error('FAIL',m,x,y);process.exit(1)} };
+eq(F.addresses('Bob <bob@x.org>, carol@y.org'),['bob@x.org','carol@y.org'],'plain');
+eq(F.addresses('"Last, First" <d@z.org>; e@z.org'),['d@z.org','e@z.org'],'quoted comma, semicolon');
+eq(F.addresses('A <a@x.org>, a <A@X.ORG>'),['a@x.org'],'dedupe ignoring case');
+eq(F.addresses(''),[],'empty');
+eq(F.addresses(null),[],'null');
+eq(F.addresses('no addresses here'),[],'none');
+eq(F.addresses('<x@y.org>'),['x@y.org'],'angle only');
+console.log('ok recipients');

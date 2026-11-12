@@ -522,6 +522,10 @@ Item {
     { id: "mail.replyall", title: "Reply all",     scope: "mail", keys: ["R"], run: function() { app.openCompose("replyAll") } },
     { id: "mail.forward",  title: "Forward",       scope: "mail", keys: ["f"], run: function() { app.openCompose("forward") } },
     { id: "mail.read",     title: "Mark read / unread", scope: "mail", keys: ["z"], run: function() { app.toggleRead() } },
+    { id: "copy.to",   title: "Copy To addresses",   scope: "mail", keys: ["Y t"], ex: ["copyto"],   when: function() { return onMessages && !!content && content.copyRecipients !== undefined }, run: function() { content.copyRecipients("to") } },
+    { id: "copy.cc",   title: "Copy Cc addresses",   scope: "mail", keys: ["Y c"], ex: ["copycc"],   when: function() { return onMessages && !!content && content.copyRecipients !== undefined }, run: function() { content.copyRecipients("cc") } },
+    { id: "copy.bcc",  title: "Copy Bcc addresses",  scope: "mail", keys: ["Y b"], ex: ["copybcc"],  when: function() { return onMessages && !!content && content.copyRecipients !== undefined }, run: function() { content.copyRecipients("bcc") } },
+    { id: "copy.all",  title: "Copy To, Cc and Bcc addresses", scope: "mail", keys: ["Y a"], ex: ["copyall"], when: function() { return onMessages && !!content && content.copyRecipients !== undefined }, run: function() { content.copyRecipients("all") } },
     { id: "mail.archive",  title: "Archive",       scope: "mail", keys: ["a"], when: function() { return onMessages }, run: function() { app.archiveSelected() } },
     { id: "mail.trash",    title: "Delete (Trash; permanent in Trash)", scope: "mail", keys: [], ex: ["delete", "trash"], when: function() { return onMessages }, run: function() { app.deleteSelected() } },
     // Invitation answers. Listed before mail.move (which also uses `m`): these only apply while an
