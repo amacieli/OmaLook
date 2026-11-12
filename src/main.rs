@@ -265,10 +265,12 @@ fn initialize_app(config_dir: &PathBuf, db_path: &str, settings_path: &str) -> o
     // Pre-render: mail from "always HTML" senders is drawn ahead of time into the render cache (OL-028).
     let config_dir_render = config_dir.clone();
     std::thread::Builder::new().name("prerender".into()).spawn(move || {
-        let cache = omalook::render_cache::RenderCache::new(omalook::render_cache::RenderCache::default_dir(), omalook::render_cache::CAP_BYTES);
         let db = config_dir_render.join("messages.db");
         std::thread::sleep(std::time::Duration::from_secs(45));      // let the first sync and the window settle
         loop {
+            // the size is read again every round, so a changed setting applies without a restart
+            let cache = omalook::render_cache::open_configured(&config_dir_render);
+            cache.trim();
             omalook::render_cache::prerender_round(db.to_str().unwrap_or("messages.db"), &cache, &render_helper_path(), 3);
             std::thread::sleep(std::time::Duration::from_secs(30));
         }
@@ -755,7 +757,7 @@ fn render_get_json(config_dir: &PathBuf, line: &str) -> String {
     let scale: f64 = query_param(line, "scale").and_then(|v| v.parse().ok()).unwrap_or(1.0);
     let images = query_param(line, "images").as_deref() == Some("1");
     if id.is_empty() || width < 100 { return miss; }
-    let cache = omalook::render_cache::RenderCache::new(omalook::render_cache::RenderCache::default_dir(), omalook::render_cache::CAP_BYTES);
+    let cache = omalook::render_cache::open_configured(config_dir);
     cache.write_hint(omalook::render_cache::Hint { width, scale });
     let Ok(db) = Database::open(config_dir.join("messages.db").to_str().unwrap_or("messages.db")) else { return miss };
     let Ok(Some((t, body))) = db.cached_body(&id) else { return miss };
@@ -788,7 +790,7 @@ fn render_adopt_json(config_dir: &PathBuf, line: &str) -> String {
     if t != "html" { return err("not html"); }
     let received: String = rusqlite::Connection::open(config_dir.join("messages.db")).ok()
         .and_then(|c| c.query_row("SELECT COALESCE(received_at,'') FROM messages WHERE id = ?1", [&id], |r| r.get(0)).ok()).unwrap_or_default();
-    let cache = omalook::render_cache::RenderCache::new(omalook::render_cache::RenderCache::default_dir(), omalook::render_cache::CAP_BYTES);
+    let cache = omalook::render_cache::open_configured(config_dir);
     let k = omalook::render_cache::key(&id, &body, width, scale, images);
     match cache.store(&k, &id, &received, &file, &json) {
         Ok(kept) => format!("{{\"ok\":true,\"kept\":{}}}", kept),
@@ -2776,6 +2778,32 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                         "max_send_delay_secs": MailSettings::MAX_SEND_DELAY_SECS,
                         "large_audience_confirm": large,
                         "max_large_audience_confirm": MailSettings::MAX_LARGE_AUDIENCE,
+                    }).to_string();
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                        body.len(), body
+                    );
+                    let _ = stream.write_all(response.as_bytes());
+                    continue;
+                }
+
+                // ── GET|POST /settings/render?cache_mb=N — size cap of the rendered-HTML cache; lowering it trims the cache at once ──
+                if first_line.contains("GET /settings/render") || first_line.contains("POST /settings/render") {
+                    let settings_path = config_dir.join("settings.toml");
+                    if first_line.contains("POST /settings/render") {
+                        if let Some(wanted) = query_param(first_line, "cache_mb").and_then(|v| v.parse::<i64>().ok()) {
+                            match omalook::settings::write_render_cache_mb(&settings_path, wanted) {
+                                Ok(_) => { omalook::render_cache::open_configured(config_dir).trim(); }
+                                Err(e) => warn!("POST /settings/render: could not save: {}", e),
+                            }
+                        }
+                    }
+                    let cache = omalook::render_cache::open_configured(config_dir);
+                    let body = serde_json::json!({
+                        "cache_mb": omalook::settings::read_render_cache_mb(&settings_path),
+                        "min_mb": omalook::settings::MIN_RENDER_CACHE_MB,
+                        "max_mb": omalook::settings::MAX_RENDER_CACHE_MB,
+                        "used_bytes": cache.total_bytes(),
                     }).to_string();
                     let response = format!(
                         "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",

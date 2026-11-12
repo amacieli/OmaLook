@@ -187,6 +187,37 @@ pub fn read_rules_confirm_over(path: &Path) -> usize {
         .unwrap_or(DEFAULT_RULES_CONFIRM_OVER)
 }
 
+/// `[render] cache_mb`: size cap of the rendered-HTML cache (OL-028), in megabytes. Default 512; kept between
+/// 64 MB and 16 GB. Read on every use, so a change takes effect at once.
+pub const DEFAULT_RENDER_CACHE_MB: u64 = 512;
+pub const MIN_RENDER_CACHE_MB: u64 = 64;
+pub const MAX_RENDER_CACHE_MB: u64 = 16384;
+pub fn read_render_cache_mb(path: &Path) -> u64 {
+    fs::read_to_string(path)
+        .ok()
+        .and_then(|s| toml::from_str::<toml::Value>(&s).ok())
+        .and_then(|v| v.get("render")?.get("cache_mb")?.as_integer())
+        .map(|n| (n.max(0) as u64).clamp(MIN_RENDER_CACHE_MB, MAX_RENDER_CACHE_MB))
+        .unwrap_or(DEFAULT_RENDER_CACHE_MB)
+}
+
+/// Persist `[render] cache_mb` (clamped), leaving every other key and section exactly as it was (the file is edited as a
+/// generic TOML tree, so sections this build does not model survive). Refuses a file that does not parse.
+pub fn write_render_cache_mb(path: &Path, mb: i64) -> Result<u64> {
+    let mut root: toml::Value = match fs::read_to_string(path) {
+        Ok(content) => toml::from_str(&content).map_err(|e| OmarchyError::SettingsError(e.to_string()))?,
+        Err(_) => toml::Value::Table(Default::default()),
+    };
+    let stored = (mb.max(0) as u64).clamp(MIN_RENDER_CACHE_MB, MAX_RENDER_CACHE_MB);
+    let table = root.as_table_mut().ok_or_else(|| OmarchyError::SettingsError("settings.toml is not a table".into()))?;
+    let sec = table.entry("render").or_insert_with(|| toml::Value::Table(Default::default()));
+    sec.as_table_mut().ok_or_else(|| OmarchyError::SettingsError("[render] is not a table".into()))?
+        .insert("cache_mb".into(), toml::Value::Integer(stored as i64));
+    let content = toml::to_string_pretty(&root).map_err(|e| OmarchyError::SettingsError(e.to_string()))?;
+    fs::write(path, content)?;
+    Ok(stored)
+}
+
 /// Persist `[sync] run_in_background`, leaving every other setting as it was. Refuses to touch a
 /// file that does not parse. Returns what was stored.
 pub fn write_run_in_background(path: &Path, on: bool) -> Result<bool> {
@@ -733,5 +764,22 @@ mod mcp_settings_tests {
         assert!(write_mcp_settings(&p, &McpSettings::default()).is_err());
         assert_eq!(fs::read_to_string(&p).unwrap(), "this is = not [valid toml");
         let _ = fs::remove_file(&p);
+    }
+
+    #[test]
+    fn render_cache_size_defaults_clamps_and_keeps_other_sections() {
+        let d = std::env::temp_dir().join(format!("omalook-rcs-{}", std::process::id()));
+        fs::create_dir_all(&d).unwrap();
+        let p = d.join("settings.toml");
+        assert_eq!(read_render_cache_mb(&p), 512);
+        fs::write(&p, "[rules]\napply_confirm_over = 50\n").unwrap();
+        assert_eq!(write_render_cache_mb(&p, 2048).unwrap(), 2048);
+        assert_eq!(read_render_cache_mb(&p), 2048);
+        assert_eq!(read_rules_confirm_over(&p), 50, "an unrelated section survives the write");
+        assert_eq!(write_render_cache_mb(&p, 1).unwrap(), 64);
+        assert_eq!(write_render_cache_mb(&p, 1_000_000).unwrap(), 16384);
+        fs::write(&p, "[render]\ncache_mb = \"big\"\n").unwrap();
+        assert_eq!(read_render_cache_mb(&p), 512);
+        let _ = fs::remove_dir_all(&d);
     }
 }

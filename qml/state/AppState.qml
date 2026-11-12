@@ -17,7 +17,7 @@ Item {
   }
   property bool backendOnline: false
   onBackendOnlineChanged: {
-    if (backendOnline) { perfMark("backend first answered"); loadCalendarSettings(); loadUiSettings(); loadSenders(); loadLists(); loadListTargets(); loadMailSettings(); loadBackgroundSettings(); loadMcp(); loadSearchHistory(); loadViewState() }
+    if (backendOnline) { perfMark("backend first answered"); loadCalendarSettings(); loadUiSettings(); loadSenders(); loadLists(); loadListTargets(); loadMailSettings(); loadRenderSettings(); loadBackgroundSettings(); loadMcp(); loadSearchHistory(); loadViewState() }
   }
 
   // ---- launch timing (see src/perf.rs): marks are queued until the backend answers, then
@@ -1296,6 +1296,29 @@ Item {
     if (d.send_delay_secs !== undefined) sendDelaySecs = d.send_delay_secs
     if (d.max_send_delay_secs) maxSendDelaySecs = d.max_send_delay_secs
     if (d.large_audience_confirm !== undefined) largeAudienceConfirm = d.large_audience_confirm
+  }
+
+  // ---- rendered-HTML cache size (Settings -> Mail; `[render] cache_mb`) ----
+  property int renderCacheMb: 512
+  property int renderCacheMinMb: 64
+  property int renderCacheMaxMb: 16384
+  property real renderCacheUsedBytes: 0
+  function loadRenderSettings() {
+    request("GET", "/settings/render", function(xhr) {
+      if (xhr.status !== 200) return
+      try {
+        var d = JSON.parse(xhr.responseText)
+        renderCacheMb = d.cache_mb; renderCacheMinMb = d.min_mb; renderCacheMaxMb = d.max_mb; renderCacheUsedBytes = d.used_bytes
+      } catch (e) { console.log("[RenderSettings] parse error:", e) }
+    })
+  }
+  function setRenderCacheMb(mb) { renderCacheMb = mb; renderSettingsSave.restart() }
+  Timer {
+    id: renderSettingsSave
+    interval: 600
+    onTriggered: root.request("POST", "/settings/render?cache_mb=" + root.renderCacheMb, function(xhr) {
+      if (xhr.status === 200) { try { var d = JSON.parse(xhr.responseText); root.renderCacheMb = d.cache_mb; root.renderCacheUsedBytes = d.used_bytes } catch (e) {} }
+    })
   }
 
   function loadMailSettings() {

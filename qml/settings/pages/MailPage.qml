@@ -15,7 +15,7 @@ SettingsPage {
   property int markReadDelay: 2
   property bool conversationView: true
 
-  editing: signature.activeFocus || syncDropdown.popupOpen || delay.field.activeFocus || renderingDropdown.popupOpen || sendDelay.field.activeFocus || audience.field.activeFocus
+  editing: signature.activeFocus || syncDropdown.popupOpen || delay.field.activeFocus || renderingDropdown.popupOpen || sendDelay.field.activeFocus || audience.field.activeFocus || renderCache.field.activeFocus
 
   title: "Mail"
   description: "Sync behaviour and reading preferences."
@@ -134,6 +134,32 @@ SettingsPage {
       text: audience.value === 0
         ? "Send never asks about the size of the audience."
         : "A message to more people than this (lists counted by their members) asks \u201cSend to about N people?\u201d first. It is a question, not a block. 0 turns it off."
+      dim: true
+      wrapMode: Text.WordWrap
+      font.pixelSize: Style.font.caption
+    }
+  }
+
+  PanelSeparator { width: parent.width }
+
+  Column {
+    width: parent.width
+    spacing: Style.space(6)
+
+    PanelSectionHeader { text: "RENDERED MAIL CACHE" }
+    NumberField {
+      id: renderCache
+      label: "Size limit for pre-rendered HTML mail (MB)"
+      value: page.app ? page.app.renderCacheMb : 512
+      from: page.app ? page.app.renderCacheMinMb : 64
+      to: page.app ? page.app.renderCacheMaxMb : 16384
+      stepSize: 64
+      onModified: function(v) { if (page.app) page.app.setRenderCacheMb(v) }
+    }
+    UiText {
+      width: parent.width
+      text: "Pictures of HTML messages, kept so they open at once. Using " + (page.app ? Math.round(page.app.renderCacheUsedBytes / 1048576) : 0)
+        + " MB now. When a new picture does not fit, the pictures of the oldest messages are removed first. Lowering the limit trims the cache right away."
       dim: true
       wrapMode: Text.WordWrap
       font.pixelSize: Style.font.caption

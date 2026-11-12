@@ -2,7 +2,7 @@
 //! width and scale. A separate store from the mail cache and from the system-font view, so switching a sender back to
 //! the system font loses nothing. Files live in `~/.cache/omalook/render/` as `<key>.png` + `<key>.json`.
 //!
-//! Size: the whole store is capped at [`CAP_BYTES`] (512 MB, user decision 2026-11-12). When a new render does not fit,
+//! Size: the whole store is capped (default 512 MB, user decision 2026-11-12; `[render] cache_mb` changes it). When a new render does not fit,
 //! entries of the OLDEST messages (by received date) go first; a render of a message older than everything that would
 //! have to go is simply not kept, so old mail never pushes out newer mail.
 //!
@@ -12,8 +12,14 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-/// Whole cache, all entries together.
+/// The default size of the whole cache (`[render] cache_mb` in settings.toml changes it).
 pub const CAP_BYTES: u64 = 512 * 1024 * 1024;
+
+/// A cache over the default folder, sized by the setting as it is right now.
+pub fn open_configured(config_dir: &Path) -> RenderCache {
+    let mb = crate::settings::read_render_cache_mb(&config_dir.join("settings.toml"));
+    RenderCache::new(RenderCache::default_dir(), mb * 1024 * 1024)
+}
 /// Bump when `omalook-render` changes what it draws.
 pub const HELPER_VERSION: &str = "1";
 const RENDER_TIMEOUT: Duration = Duration::from_secs(25);
@@ -119,6 +125,9 @@ impl RenderCache {
         }
         true
     }
+
+    /// Bring the store down to its cap now (after the cap was lowered): oldest messages first.
+    pub fn trim(&self) -> u64 { self.evict(""); self.total_bytes() }
 
     pub fn total_bytes(&self) -> u64 { self.entries().iter().map(|e| e.bytes).sum() }
 }
