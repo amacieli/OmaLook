@@ -233,6 +233,101 @@ Item {
     out.push({ id: "ctf.tip", title: "   type text to match tag names (lucia); =Name is exact; -text excludes", keys: [], run: function() {} })
     return out
   }
+  // ---- People: tags, move, lists, folders, permanent delete (phase 4) ------
+  readonly property bool onPeople: !!content && content.targetRows !== undefined && app.currentView === "contacts"
+  function _peopleTagState(name) {
+    var rows = content.targetRows(), n = 0
+    rows.forEach(function(c) { if ((c.categories || []).some(function(t) { return String(t).toLowerCase() === String(name).toLowerCase() })) n++ })
+    return n === 0 ? "none" : (n === rows.length ? "all" : "some")
+  }
+  function pickContactTags(q) {
+    var rows = content ? content.targetRows() : []
+    if (rows.length === 0) return [{ id: "ptag.none", title: "no contact selected", keys: [], run: function() {} }]
+    var acct = String(rows[0].account_id || ""), query = q.trim(), out = [], exact = false
+    if (app.catAccountId !== acct) { app.loadCategories(acct); return [{ id: "ptag.loading", title: "loading\u2026", keys: [], run: function() {} }] }
+    var known = {}
+    var toggle = function(name) { return function() { content.setCategories(_peopleTagState(name) === "all" ? [] : [name], _peopleTagState(name) === "all" ? [name] : []) } }
+    app.catDefs.forEach(function(d) {
+      known[String(d.name).toLowerCase()] = true
+      if (String(d.name).toLowerCase() === query.toLowerCase()) exact = true
+      if (query !== "" && !_fz(query, d.name)) return
+      var st = _peopleTagState(d.name)
+      out.push({ id: "ptag." + d.name, title: (st === "all" ? "\u2713 " : st === "some" ? "\u2013 " : "   ") + d.name, swatch: d.color, keys: [], run: toggle(d.name) })
+    })
+    // tags the contacts carry that are not in the account's list (list mirrors "OL: ..." belong to the lists, not here)
+    var extra = {}
+    rows.forEach(function(c) { (c.categories || []).forEach(function(t) { if (!known[String(t).toLowerCase()] && String(t).indexOf("OL: ") !== 0) extra[t] = true }) })
+    Object.keys(extra).forEach(function(n) {
+      if (query !== "" && !_fz(query, n)) return
+      if (n.toLowerCase() === query.toLowerCase()) exact = true
+      out.push({ id: "ptag.x." + n, title: (_peopleTagState(n) === "all" ? "\u2713 " : "\u2013 ") + n + "   (not in this account's list)", keys: [], run: toggle(n) })
+    })
+    if (query !== "" && !exact) out.push({ id: "ptag.new", title: "+ Use new name \u201c" + query + "\u201d (no colour until it is added to the account's list)", keys: [], run: toggle(query) })
+    if (out.length === 0) out.push({ id: "ptag.empty", title: "no tags yet \u2014 type a name", keys: [], run: function() {} })
+    return out
+  }
+  function openContactTagPicker() {
+    var rows = content.targetRows()
+    if (rows.length === 0) return
+    app.loadCategories(String(rows[0].account_id || ""), function() { root.paletteRequested("tag ") })
+  }
+  function pickMoveFolders(q) {
+    var query = q.trim()
+    var f = content ? content.foldersForTargets() : []
+    var out = f.filter(function(x) { return query === "" || _fz(query, x.name) })
+      .map(function(x) { return { id: "pmove." + x.id, title: (x.parent_id ? "   \u21b3 " : "") + x.name + "   (" + x.count + ")", keys: [], run: function() { content.moveTo(x.id, x.name) } } })
+    return out.length ? out : [{ id: "pmove.none", title: "no folders for this account", keys: [], run: function() {} }]
+  }
+  function pickAddToList(q) {
+    var query = q.trim()
+    var out = (app.dlLists || []).filter(function(l) { return query === "" || _fz(query, l.name) })
+      .map(function(l) { return { id: "plist." + l.id, title: l.name + "   (" + l.members.length + ")", keys: [], run: function() { content.addToList(l.id, l.name) } } })
+    return out.length ? out : [{ id: "plist.none", title: "no lists yet \u2014 make one in Settings \u2192 Lists", keys: [], run: function() {} }]
+  }
+  function pickPurge(q) {
+    var n = content ? content.targetIds().length : 0
+    if (q.trim().toLowerCase() !== "delete")
+      return [{ id: "ppurge.hint", title: "Type  delete  to remove " + n + " contact" + (n === 1 ? "" : "s") + " for good (Deleted Items is skipped; no undo)", keys: [], run: function() {} }]
+    return [{ id: "ppurge.go", title: "Permanently delete " + n + " contact" + (n === 1 ? "" : "s") + " \u2014 cannot be undone", keys: [], run: function() { content.purgeTargets() } }]
+  }
+  function pickNewFolder(q) {
+    var name = q.trim(), acct = content ? content.currentAccountId() : ""
+    if (name === "") return [{ id: "pnf.hint", title: "type a name for the new folder (in the account of the selected contact)", keys: [], run: function() {} }]
+    return [{ id: "pnf.go", title: "Create folder \u201c" + name + "\u201d", keys: [], run: function() { content.folderCall("create", { account_id: acct, name: name }, "Folder created") } }]
+  }
+  function pickRenameFolder(q) {
+    var name = q.trim(), f = content && content.selected ? content.folderList.filter(function(x) { return x.id === content.selected.folder_id })[0] : null
+    if (!f) return [{ id: "prf.none", title: "select a contact in the folder to rename", keys: [], run: function() {} }]
+    if (name === "") return [{ id: "prf.hint", title: "type the new name for \u201c" + f.name + "\u201d", keys: [], run: function() {} }]
+    return [{ id: "prf.go", title: "Rename \u201c" + f.name + "\u201d to \u201c" + name + "\u201d", keys: [], run: function() { content.folderCall("rename", { account_id: f.account_id, id: f.id, name: name }, "Folder renamed") } }]
+  }
+  function pickDeleteFolder(q) {
+    var f = content && content.selected ? content.folderList.filter(function(x) { return x.id === content.selected.folder_id })[0] : null
+    if (!f || !f.parent_id) return [{ id: "pdf.none", title: "select a contact in the folder to delete (the main Contacts folder cannot be deleted)", keys: [], run: function() {} }]
+    if (q.trim().toLowerCase() !== "delete") return [{ id: "pdf.hint", title: "Type  delete  to delete the folder \u201c" + f.name + "\u201d and its " + f.count + " contacts (they go to Deleted Items)", keys: [], run: function() {} }]
+    return [{ id: "pdf.go", title: "Delete folder \u201c" + f.name + "\u201d", keys: [], run: function() { content.folderCall("delete", { account_id: f.account_id, id: f.id }, "Folder deleted") } }]
+  }
+
+  // ---- People: files, merge, photo (phase 5) ------------------------------
+  function pickExport(q) {
+    var n = content ? content.targetIds().length : 0
+    var qq = q.trim().toLowerCase()
+    var all = [{ id: "pexp.vcf", title: "vCard (.vcf) \u2014 " + n + " contact" + (n === 1 ? "" : "s") + " to the downloads folder", f: "vcf" },
+               { id: "pexp.csv", title: "CSV (.csv) \u2014 opens in a spreadsheet", f: "csv" }]
+    return all.filter(function(x) { return qq === "" || x.f.indexOf(qq) === 0 })
+      .map(function(x) { return { id: x.id, title: x.title, keys: [], run: function() { content.exportTargets(x.f) } } })
+  }
+  function pickImport(q) {
+    var p = q.trim()
+    if (p === "") return [{ id: "pimp.hint", title: "type the path of a .vcf or .csv file (~ works)", keys: [], run: function() {} }]
+    return [{ id: "pimp.go", title: "Import contacts from " + p, keys: [], run: function() { content.importFile(p) } }]
+  }
+  function pickPhoto(q) {
+    var p = q.trim()
+    if (p === "") return [{ id: "pph.hint", title: "type the path of a .jpg picture for the selected contact", keys: [], run: function() {} }]
+    return [{ id: "pph.go", title: "Use " + p + " as the photo", keys: [], run: function() { content.setPhoto(p) } }]
+  }
+
   // ---- People: act on the contact under the cursor ----------------------
   // The detail (every field) is loaded first, then the choice is made: one target acts at once, several
   // open the palette on the matching ex command so the keyboard picks.
@@ -636,6 +731,18 @@ Item {
       run: function() { content.ensureDetail(function(ok) { if (ok) say(content.copyText(content.cardText(), "contact")) }) } },
     { id: "people.scrolldown", title: "Scroll the detail pane down", scope: "contacts/list", keys: ["C-e"], when: function() { return !!content && content.detailOpen === true }, run: function() { content.scrollDetail(60) } },
     { id: "people.scrollup",   title: "Scroll the detail pane up", scope: "contacts/list", keys: ["C-y"], when: function() { return !!content && content.detailOpen === true }, run: function() { content.scrollDetail(-60) } },
+    { id: "people.tag",      title: "Set tags on this contact (or the marked ones)\u2026", scope: "contacts/list", keys: ["t"], ex: ["tag", "category", "cat"], pick: pickContactTags, when: function() { return onPeople }, run: function() { openContactTagPicker() } },
+    { id: "people.move",     title: "Move to a folder\u2026", scope: "contacts/list", keys: ["m"], ex: ["move", "mv"], pick: pickMoveFolders, when: function() { return onPeople }, run: function() { root.paletteRequested("move ") } },
+    { id: "people.tolist",   title: "Add to a distribution list\u2026", scope: "contacts/list", keys: ["a"], ex: ["addtolist", "tolist"], pick: pickAddToList, run: function() { root.paletteRequested("addtolist ") } },
+    { id: "people.purge",    title: "Delete for good (skips Deleted Items)\u2026", scope: "contacts/list", keys: ["X"], ex: ["purge"], pick: pickPurge, run: function() { root.paletteRequested("purge ") } },
+    { id: "people.newfolder", title: "New contact folder\u2026", scope: "contacts/list", keys: [], ex: ["newfolder"], pick: pickNewFolder, run: function() { root.paletteRequested("newfolder ") } },
+    { id: "people.renamefolder", title: "Rename the selected contact's folder\u2026", scope: "contacts/list", keys: [], ex: ["renamefolder"], pick: pickRenameFolder, run: function() { root.paletteRequested("renamefolder ") } },
+    { id: "people.deletefolder", title: "Delete the selected contact's folder\u2026", scope: "contacts/list", keys: [], ex: ["deletefolder"], pick: pickDeleteFolder, run: function() { root.paletteRequested("deletefolder ") } },
+    { id: "people.merge",    title: "Merge the marked contacts (the first is kept)", scope: "contacts/list", keys: ["M"], run: function() { content.mergeMarked() } },
+    { id: "people.export",   title: "Export to a vCard or CSV file\u2026", scope: "contacts/list", keys: ["E"], ex: ["export"], pick: pickExport, run: function() { root.paletteRequested("export ") } },
+    { id: "people.import",   title: "Import a vCard or CSV file\u2026", scope: "contacts/list", keys: [], ex: ["import"], pick: pickImport, run: function() { root.paletteRequested("import ") } },
+    { id: "people.photo",    title: "Set the photo from a .jpg file\u2026", scope: "contacts/list", keys: [], ex: ["photo"], pick: pickPhoto, run: function() { root.paletteRequested("photo ") } },
+    { id: "mail.addcontact", title: "Add the sender to contacts", scope: "mail", keys: [], ex: ["addcontact", "savecontact"], when: function() { return onMessages && app.currentMessageId !== "" }, run: function() { app.addSenderToContacts() } },
     { id: "people.new",     title: "New contact", scope: "contacts/list", keys: ["c", "n"], run: function() { content.newContact() } },
     { id: "people.edit",    title: "Edit this contact", scope: "contacts/list", keys: ["e"], run: function() { var m = content.editContact(); if (m) say(m) } },
     { id: "people.undo",    title: "Undo the last contact change", scope: "contacts/list", keys: ["C-z"], run: function() { content.undoLast() } },

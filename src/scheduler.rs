@@ -56,6 +56,11 @@ fn contacts_provider(provider: &str, id: &str) -> Arc<dyn ContactsProvider> {
     }
 }
 
+/// The contacts provider of an account, for writes made on request (folders), not by a sync loop.
+pub fn contacts_provider_for(account_id: &str) -> Arc<dyn ContactsProvider> {
+    contacts_provider(provider_of(account_id), account_id)
+}
+
 pub struct SyncScheduler {
     db_path: PathBuf,
     settings_path: PathBuf,

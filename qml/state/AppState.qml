@@ -1187,6 +1187,21 @@ Item {
     return acct[0].id
   }
 
+  // Add the sender of the message under the cursor to the contacts (account of the message when it can save).
+  function addSenderToContacts() {
+    var m = currentMessage
+    if (!m || !m.from_email) { notify("No sender to add"); return }
+    var ok = accounts.filter(function(a) { return a.signed_in && a.email && a.provider !== "gmail" })
+    if (ok.length === 0) { notify("No account can save contacts yet"); return }
+    var acct = ok[0].id
+    for (var i = 0; i < ok.length; i++) if (String(m.account_id || "") === ok[i].id) acct = ok[i].id
+    request("POST", "/contacts/quick", function(xhr) {
+      var r = {}
+      try { r = JSON.parse(xhr.responseText) } catch (e) {}
+      notify(r.ok === true ? "Added " + (m.from_name || m.from_email) + " to your contacts" : (r.error || "Not added"))
+    }, JSON.stringify({ account_id: acct, name: m.from_name || "", address: m.from_email }))
+  }
+
   // A new message to these addresses (the People view's `w`).
   function composeTo(addresses) {
     gotoView("mail")

@@ -82,10 +82,25 @@ impl ContactsOutboxWorker {
             let base_etag = fresh.get(&contact_id).cloned().unwrap_or(base_etag);
             let p: Value = serde_json::from_str(&payload).unwrap_or(Value::Null);
             let folder = p["folder_id"].as_str().unwrap_or("").to_string();
+            // a delete that belongs to a move waits for its copy, and is dropped if the copy failed
+            if let Some(dep) = p["after_create"].as_str() {
+                match self.db.contact_outbox_get(dep).ok().flatten().map(|o| o.state) {
+                    Some(st) if st == "sent" => {}
+                    Some(st) if st == "pending" || st == "sending" => {
+                        let _ = self.db.contact_outbox_mark_retry(&id, "waiting for the copy", Database::now_ms() + 3000);
+                        continue;
+                    }
+                    _ => {
+                        let _ = self.db.contact_outbox_mark(&id, "failed", Some("not deleted: the copy in the other folder was not made"), None);
+                        let _ = self.db.set_contact_state(&contact_id, "ok");
+                        continue;
+                    }
+                }
+            }
             let result = match op.as_str() {
                 "create" => self.provider.create_contact(&folder, &p["patch"]).await.map(Some),
                 "update" => self.provider.update_contact(&contact_id, &p["patch"], if base_etag.is_empty() { None } else { Some(&base_etag) }).await.map(Some),
-                "delete" => self.provider.delete_contact(&contact_id, false).await.map(|_| None),
+                "delete" => self.provider.delete_contact(&contact_id, p["permanent"].as_bool().unwrap_or(false)).await.map(|_| None),
                 other => {
                     let _ = self.db.contact_outbox_mark(&id, "failed", Some(&format!("unknown operation: {other}")), None);
                     continue;
@@ -94,7 +109,7 @@ impl ContactsOutboxWorker {
             match result {
                 Ok(raw) => {
                     if let Some(etag) = raw.as_ref().and_then(|r| r["@odata.etag"].as_str()) { fresh.insert(contact_id.clone(), etag.to_string()); }
-                    self.succeeded(&id, &op, &contact_id, &folder, raw)
+                    self.succeeded(&id, &op, &contact_id, &folder, raw, p["favorite_from"].as_str())
                 }
                 Err(e) if is_transient(&e) && attempt < MAX_ATTEMPTS => {
                     let wait = retry_delay_secs(attempt);
@@ -116,7 +131,7 @@ impl ContactsOutboxWorker {
         n
     }
 
-    fn succeeded(&self, id: &str, op: &str, contact_id: &str, folder: &str, raw: Option<Value>) {
+    fn succeeded(&self, id: &str, op: &str, contact_id: &str, folder: &str, raw: Option<Value>, favorite_from: Option<&str>) {
         info!("Contacts outbox {}: {} {} done", self.account_id, op, contact_id);
         let real = raw.as_ref().and_then(|r| r["id"].as_str()).unwrap_or(contact_id).to_string();
         // the operation is done before the row is judged: "is another write still waiting?"
@@ -133,6 +148,7 @@ impl ContactsOutboxWorker {
                 }
                 let still = self.db.contact_outbox_open_for(&real).unwrap_or(0) > 0;
                 let _ = self.db.put_contact_json(&raw, Some(folder), if still { "pending" } else { "ok" });
+                if let Some(from) = favorite_from { let _ = self.db.move_contact_favorite(from, &real); }
                 if let Some(etag) = raw["@odata.etag"].as_str() { let _ = self.db.contact_outbox_rebase(&real, etag); }
             }
             _ => {}
@@ -245,6 +261,32 @@ mod tests {
         w.drain().await;
         assert_eq!(w.drain().await, 0, "the throttled write waits before its next attempt");
         assert_eq!(db.contact_outbox_list().unwrap().iter().filter(|o| o.state == "pending").count(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_move_deletes_the_original_only_after_the_copy_exists() {
+        let (w, fake, db) = setup(vec![Ok(json!({"id":"NEW","@odata.etag":"W/\"1\"","givenName":"Ada"})), Ok(json!(null))]);
+        db.upsert_contact_folder(&ContactFolder { id: "f2".into(), display_name: "Work".into(), parent_folder_id: Some("f1".into()) }).unwrap();
+        db.put_contact_json(&json!({"id":"c1","givenName":"Ada"}), Some("f1"), "ok").unwrap();
+        db.set_contact_favorite("c1", true).unwrap();
+        crate::contacts_write::move_contacts(&db, &["c1".into()], "f2", 1);
+        w.drain().await;
+        let calls = fake.calls.lock().unwrap().clone();
+        assert!(calls[0].starts_with("create f2"), "{calls:?}");
+        assert_eq!(calls[1], "delete c1");
+        assert!(db.get_contact_record("c1").unwrap().is_none());
+        let rec = db.get_contact_record("NEW").unwrap().unwrap();
+        assert_eq!((rec.folder_id.as_deref(), rec.is_favorite), (Some("f2"), true), "the favourite follows");
+    }
+
+    #[tokio::test]
+    async fn a_failed_copy_keeps_the_original() {
+        let (w, fake, db) = setup(vec![http(400)]);
+        db.put_contact_json(&json!({"id":"c1","givenName":"Ada"}), Some("f1"), "ok").unwrap();
+        crate::contacts_write::move_contacts(&db, &["c1".into()], "f2", 1);
+        w.drain().await;
+        assert_eq!(fake.calls.lock().unwrap().len(), 1, "the delete was never sent");
+        assert_eq!(db.get_contact_record("c1").unwrap().unwrap().sync_state, "ok", "the original is back");
     }
 
     #[tokio::test]

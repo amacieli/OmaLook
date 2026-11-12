@@ -1053,6 +1053,99 @@ fn account_of_contact(config_dir: &PathBuf, id: &str) -> String {
         .unwrap_or_default()
 }
 
+/// Create, rename or delete a contact folder (done at once, not queued: folders are rare and the answer matters).
+fn contacts_folder_call(config_dir: &PathBuf, first_line: &str, req: &serde_json::Value) -> String {
+    let err = |m: &str| serde_json::json!({ "ok": false, "error": m }).to_string();
+    let account = req["account_id"].as_str().unwrap_or("").to_string();
+    if account.is_empty() { return err("no contact account selected"); }
+    if !SCHEDULER.get().map(|s| s.is_running(&account)).unwrap_or(false) { return err("that account is not signed in"); }
+    let name = req["name"].as_str().unwrap_or("").trim().to_string();
+    let id = req["id"].as_str().unwrap_or("").to_string();
+    let parent = req["parent_id"].as_str().filter(|p| !p.is_empty()).map(String::from);
+    let path = config_dir.join("messages.db");
+    let db = match Database::open_for_account(path.to_str().unwrap_or("messages.db"), &account) { Ok(d) => d, Err(e) => return err(&format!("database: {}", e)) };
+    let provider = omalook::scheduler::contacts_provider_for(&account);
+    let rt = match tokio::runtime::Builder::new_current_thread().enable_all().build() { Ok(r) => r, Err(e) => return err(&e.to_string()) };
+    let out: Result<serde_json::Value, omalook::errors::OmarchyError> = rt.block_on(async {
+        if first_line.contains("/contacts/folder/create") {
+            if name.is_empty() { return Ok(serde_json::json!({ "ok": false, "error": "the folder needs a name" })); }
+            let f = provider.create_folder(parent.as_deref(), &name).await?;
+            let _ = db.upsert_contact_folder(&f);
+            Ok(serde_json::json!({ "ok": true, "id": f.id }))
+        } else if first_line.contains("/contacts/folder/rename") {
+            if name.is_empty() || id.is_empty() { return Ok(serde_json::json!({ "ok": false, "error": "the folder needs a name" })); }
+            provider.rename_folder(&id, &name).await?;
+            let old = db.list_contact_folders_ext(Some(&account)).unwrap_or_default().into_iter().find(|f| f["id"] == id.as_str());
+            let _ = db.upsert_contact_folder(&omalook::models::ContactFolder { id: id.clone(), display_name: name.clone(), parent_folder_id: old.and_then(|f| f["parent_id"].as_str().map(String::from)) });
+            Ok(serde_json::json!({ "ok": true }))
+        } else if first_line.contains("/contacts/folder/delete") {
+            if id.is_empty() { return Ok(serde_json::json!({ "ok": false, "error": "no folder given" })); }
+            provider.delete_folder(&id).await?;
+            let _ = db.delete_contact_folder(&id);
+            Ok(serde_json::json!({ "ok": true }))
+        } else {
+            Ok(serde_json::json!({ "ok": false, "error": "unknown folder action" }))
+        }
+    });
+    match out { Ok(v) => v.to_string(), Err(e) => err(&omalook::contacts_outbox::short_error(&e)) }
+}
+
+fn photo_cache_file(id: &str) -> PathBuf {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    id.hash(&mut h);
+    let base = std::env::var("XDG_CACHE_HOME").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".cache"));
+    base.join("omalook").join("contact-photos").join(format!("{:016x}.jpg", h.finish()))
+}
+
+/// `GET /contacts/photo?id=`: the path of the contact's photo on disk, fetched in the background the first time.
+fn contact_photo_path(config_dir: &PathBuf, id: &str) -> String {
+    let file = photo_cache_file(id);
+    let none_marker = file.with_extension("none");
+    let fresh = |p: &PathBuf| std::fs::metadata(p).and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).map(|a| a < std::time::Duration::from_secs(24 * 3600)).unwrap_or(false);
+    if file.exists() && fresh(&file) { return serde_json::json!({ "ok": true, "path": file.to_string_lossy() }).to_string(); }
+    if none_marker.exists() && fresh(&none_marker) { return serde_json::json!({ "ok": true, "path": "" }).to_string(); }
+    let account = account_of_contact(config_dir, id);
+    if account.is_empty() || id.starts_with("local-") || !SCHEDULER.get().map(|s| s.is_running(&account)).unwrap_or(false) {
+        return serde_json::json!({ "ok": true, "path": "" }).to_string();
+    }
+    let id = id.to_string();
+    std::thread::spawn(move || {
+        let provider = omalook::scheduler::contacts_provider_for(&account);
+        let Ok(rt) = tokio::runtime::Builder::new_current_thread().enable_all().build() else { return };
+        if let Some(dir) = file.parent() { let _ = std::fs::create_dir_all(dir); }
+        match rt.block_on(provider.get_photo(&id)) {
+            Ok(Some(bytes)) if !bytes.is_empty() => { let _ = std::fs::write(&file, bytes); let _ = std::fs::remove_file(&none_marker); }
+            Ok(_) => { let _ = std::fs::write(&none_marker, b""); }
+            Err(_) => {}
+        }
+    });
+    serde_json::json!({ "ok": true, "path": "", "pending": true }).to_string()
+}
+
+/// `POST /contacts/photo/set`: a JPEG file becomes the contact's photo (at once, not queued).
+fn contact_photo_set(config_dir: &PathBuf, id: &str, path: &str) -> String {
+    let err = |m: &str| serde_json::json!({ "ok": false, "error": m }).to_string();
+    let expanded = if let Some(rest) = path.trim().strip_prefix("~/") { std::env::var("HOME").map(|h| format!("{h}/{rest}")).unwrap_or_default() } else { path.trim().to_string() };
+    let bytes = match std::fs::read(&expanded) { Ok(b) => b, Err(_) => return err("cannot read that file") };
+    if bytes.len() > 4 * 1024 * 1024 { return err("the picture is larger than 4 MB"); }
+    if !(bytes.len() > 3 && bytes[0] == 0xFF && bytes[1] == 0xD8) { return err("only JPEG pictures can be set (a .jpg file)"); }
+    let account = account_of_contact(config_dir, id);
+    if account.is_empty() || id.starts_with("local-") { return err("that contact is not saved yet"); }
+    if !SCHEDULER.get().map(|s| s.is_running(&account)).unwrap_or(false) { return err("that account is not signed in"); }
+    let provider = omalook::scheduler::contacts_provider_for(&account);
+    let Ok(rt) = tokio::runtime::Builder::new_current_thread().enable_all().build() else { return err("could not start") };
+    match rt.block_on(provider.set_photo(id, &bytes)) {
+        Ok(_) => {
+            let f = photo_cache_file(id);
+            let _ = std::fs::write(&f, &bytes);
+            let _ = std::fs::remove_file(f.with_extension("none"));
+            serde_json::json!({ "ok": true, "path": f.to_string_lossy() }).to_string()
+        }
+        Err(e) => err(&omalook::contacts_outbox::short_error(&e)),
+    }
+}
+
 /// The `/contacts/*` routes except `POST /contacts/favorite` (kept where it was). None = not one of ours.
 /// GET /contacts/get?id=, GET /contacts/folders?account=; POST /contacts/save, /delete, /undo, /retry, /discard.
 fn contacts_route(config_dir: &PathBuf, stream: &mut std::net::TcpStream, initial: &[u8], first_line: &str) -> Option<String> {
@@ -1060,6 +1153,53 @@ fn contacts_route(config_dir: &PathBuf, stream: &mut std::net::TcpStream, initia
     static SEQ: AtomicU32 = AtomicU32::new(0);
     let seq = || SEQ.fetch_add(1, Ordering::Relaxed) & 0xfff;
     let post = first_line.starts_with("POST ");
+    if post && first_line.contains("/contacts/merge") {
+        let body = match read_post_body(stream, initial, 1024 * 1024) { Ok(b) => b, Err(e) => return Some(serde_json::json!({ "ok": false, "error": e }).to_string()) };
+        let req: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+        let ids: Vec<String> = req["ids"].as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default();
+        let account = ids.first().map(|i| account_of_contact(config_dir, i)).unwrap_or_default();
+        return Some(contacts_write_call(config_dir, &account, |db| omalook::contacts_write::merge(db, &ids, seq())));
+    }
+    if post && first_line.contains("/contacts/quick") {
+        let body = match read_post_body(stream, initial, 64 * 1024) { Ok(b) => b, Err(e) => return Some(serde_json::json!({ "ok": false, "error": e }).to_string()) };
+        let req: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+        let account = req["account_id"].as_str().unwrap_or("").to_string();
+        let (name, address) = (req["name"].as_str().unwrap_or("").to_string(), req["address"].as_str().unwrap_or("").to_string());
+        return Some(contacts_write_call(config_dir, &account, |db| omalook::contacts_api::quick_add(db, &name, &address, seq())));
+    }
+    if post && first_line.contains("/contacts/export") {
+        let body = match read_post_body(stream, initial, 1024 * 1024) { Ok(b) => b, Err(e) => return Some(serde_json::json!({ "ok": false, "error": e }).to_string()) };
+        let req: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+        let ids: Vec<String> = req["ids"].as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default();
+        let format = req["format"].as_str().unwrap_or("vcf").to_string();
+        let dir = omalook::attachments::download_dir(&config_dir.join("settings.toml"));
+        let path = config_dir.join("messages.db");
+        return Some(match Database::open(path.to_str().unwrap_or("messages.db")) {
+            Ok(db) => omalook::contacts_api::export(&db, &ids, &format, &dir).to_string(),
+            Err(e) => serde_json::json!({ "ok": false, "error": format!("database: {}", e) }).to_string(),
+        });
+    }
+    if post && first_line.contains("/contacts/import") {
+        let body = match read_post_body(stream, initial, 64 * 1024) { Ok(b) => b, Err(e) => return Some(serde_json::json!({ "ok": false, "error": e }).to_string()) };
+        let req: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+        let raw_path = req["path"].as_str().unwrap_or("").trim().to_string();
+        let expanded = if let Some(rest) = raw_path.strip_prefix("~/") { std::env::var("HOME").map(|h| format!("{h}/{rest}")).unwrap_or(raw_path.clone()) } else { raw_path.clone() };
+        let (account, folder) = (req["account_id"].as_str().unwrap_or("").to_string(), req["folder_id"].as_str().unwrap_or("").to_string());
+        return Some(contacts_write_call(config_dir, &account, |db| {
+            let folder = if folder.is_empty() { db.default_contact_folder().ok().flatten().unwrap_or_default() } else { folder.clone() };
+            if folder.is_empty() { return serde_json::json!({ "ok": false, "error": "this account's contact folder is not known yet" }); }
+            omalook::contacts_api::import(db, std::path::Path::new(&expanded), &folder, seq())
+        }));
+    }
+    if first_line.contains("GET /contacts/photo") {
+        let id = query_param(first_line, "id").unwrap_or_default();
+        return Some(contact_photo_path(config_dir, &id));
+    }
+    if post && first_line.contains("/contacts/photo/set") {
+        let body = match read_post_body(stream, initial, 64 * 1024) { Ok(b) => b, Err(e) => return Some(serde_json::json!({ "ok": false, "error": e }).to_string()) };
+        let req: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+        return Some(contact_photo_set(config_dir, req["id"].as_str().unwrap_or(""), req["path"].as_str().unwrap_or("")));
+    }
     if post && first_line.contains("/contacts/save") {
         let body = match read_post_body(stream, initial, 1024 * 1024) { Ok(b) => b, Err(e) => return Some(serde_json::json!({ "ok": false, "error": e }).to_string()) };
         let req: serde_json::Value = match serde_json::from_str(&body) { Ok(v) => v, Err(e) => return Some(serde_json::json!({ "ok": false, "error": format!("unreadable contact: {}", e) }).to_string()) };
@@ -1067,9 +1207,44 @@ fn contacts_route(config_dir: &PathBuf, stream: &mut std::net::TcpStream, initia
         let account = if id.is_empty() { req["account_id"].as_str().unwrap_or("").to_string() } else { account_of_contact(config_dir, id) };
         return Some(contacts_write_call(config_dir, &account, |db| omalook::contacts_write::save(db, &req, seq())));
     }
+    if post && (first_line.contains("/contacts/categories") || first_line.contains("/contacts/move")) {
+        let body = match read_post_body(stream, initial, 1024 * 1024) { Ok(b) => b, Err(e) => return Some(serde_json::json!({ "ok": false, "error": e }).to_string()) };
+        let req: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+        let list = |k: &str| -> Vec<String> { req[k].as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default() };
+        let ids = list("ids");
+        let moving = first_line.contains("/contacts/move");
+        let folder = req["folder_id"].as_str().unwrap_or("").to_string();
+        let target_account = if moving {
+            let path = config_dir.join("messages.db");
+            Database::open(path.to_str().unwrap_or("messages.db")).ok().and_then(|d| d.contact_folder_account(&folder).ok().flatten()).unwrap_or_default()
+        } else { String::new() };
+        let mut by: std::collections::BTreeMap<String, Vec<String>> = Default::default();
+        let mut elsewhere = 0;
+        for i in ids {
+            let a = account_of_contact(config_dir, &i);
+            if moving && a != target_account { elsewhere += 1; continue; }
+            by.entry(a).or_default().push(i);
+        }
+        let (add, remove) = (list("add"), list("remove"));
+        let mut changed = 0;
+        let mut last_err = String::new();
+        for (acct, ids) in by {
+            let out = contacts_write_call(config_dir, &acct, |db| if moving { omalook::contacts_write::move_contacts(db, &ids, &folder, seq()) } else { omalook::contacts_write::set_categories(db, &ids, &add, &remove, seq()) });
+            let r: serde_json::Value = serde_json::from_str(&out).unwrap_or_default();
+            if r["ok"] == true { changed += r["moved"].as_i64().or(r["changed"].as_i64()).unwrap_or(0); } else { last_err = r["error"].as_str().unwrap_or("").to_string(); }
+        }
+        return Some(if changed == 0 && !last_err.is_empty() { serde_json::json!({ "ok": false, "error": last_err }).to_string() }
+                    else { serde_json::json!({ "ok": true, "changed": changed, "skipped_other_account": elsewhere }).to_string() });
+    }
+    if post && first_line.contains("/contacts/folder/") {
+        let body = match read_post_body(stream, initial, 64 * 1024) { Ok(b) => b, Err(e) => return Some(serde_json::json!({ "ok": false, "error": e }).to_string()) };
+        let req: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+        return Some(contacts_folder_call(config_dir, first_line, &req));
+    }
     if post && first_line.contains("/contacts/delete") {
         let body = match read_post_body(stream, initial, 1024 * 1024) { Ok(b) => b, Err(e) => return Some(serde_json::json!({ "ok": false, "error": e }).to_string()) };
         let req: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+        let permanent = req["permanent"].as_bool().unwrap_or(false);
         let ids: Vec<String> = req["ids"].as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default();
         // one account at a time: group by the account each contact belongs to
         let mut by: std::collections::BTreeMap<String, Vec<String>> = Default::default();
@@ -1077,7 +1252,7 @@ fn contacts_route(config_dir: &PathBuf, stream: &mut std::net::TcpStream, initia
         let mut deleted = 0;
         let mut last_err = String::new();
         for (acct, list) in by {
-            let r: serde_json::Value = serde_json::from_str(&contacts_write_call(config_dir, &acct, |db| omalook::contacts_write::delete(db, &list, seq()))).unwrap_or_default();
+            let r: serde_json::Value = serde_json::from_str(&contacts_write_call(config_dir, &acct, |db| omalook::contacts_write::delete_ext(db, &list, seq(), permanent))).unwrap_or_default();
             if r["ok"] == true { deleted += r["deleted"].as_i64().unwrap_or(0); } else { last_err = r["error"].as_str().unwrap_or("").to_string(); }
         }
         return Some(if deleted == 0 && !last_err.is_empty() { serde_json::json!({ "ok": false, "error": last_err }).to_string() } else { serde_json::json!({ "ok": true, "deleted": deleted }).to_string() });
@@ -2140,14 +2315,16 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                 if first_line.contains("GET /contacts") {
                     let view = query_param(first_line, "view").unwrap_or_else(|| "all".to_string());
                     let sort = query_param(first_line, "sort").unwrap_or_else(|| "first".to_string());
+                    let dup_view = view == "duplicates";
                     let body = match Database::open(config_dir.join("messages.db").to_str().unwrap_or("messages.db")) {
                         Ok(db) => match db.query_contacts_full(
-                            &view, &sort,
+                            if dup_view { "all" } else { &view }, &sort,
                             query_param(first_line, "account").as_deref(),
                             query_param(first_line, "q").as_deref(),
                             query_param(first_line, "folder").as_deref(),
                             query_param(first_line, "category").as_deref(),
                         ) {
+                            Ok(rows) if dup_view => serde_json::to_string(&omalook::contacts_api::duplicates_view(&db, rows)).unwrap_or_else(|_| "[]".to_string()),
                             Ok(rows) => serde_json::to_string(&rows).unwrap_or_else(|_| "[]".to_string()),
                             Err(e) => {
                                 warn!("GET /contacts: query failed: {}", e);

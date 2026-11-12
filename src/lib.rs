@@ -42,6 +42,7 @@ pub mod contacts_daemon;
 pub mod contacts_api;
 pub mod contacts_write;
 pub mod list_sync;
+pub mod contacts_io;
 pub mod contacts_outbox;
 pub mod sms_daemon;
 pub mod sms_names;

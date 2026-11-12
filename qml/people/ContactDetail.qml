@@ -16,6 +16,7 @@ Item {
     // GET /contacts/get answer: { ok, contact, folder_name, account_email, sync_state, problem, ... }
     property var detail: null
     property bool loading: false
+    property string photoPath: ""      // file path of the contact's picture ("" = none: initials are shown)
     readonly property var c: detail && detail.ok === true ? detail.contact : null
     readonly property var secs: c ? PF.sections(c) : []
     readonly property color dimC: Qt.darker(Commons.Color.foreground, 1.4)
@@ -58,7 +59,18 @@ Item {
                     Layout.preferredWidth: Style.space(52); Layout.preferredHeight: Style.space(52)
                     radius: width / 2
                     color: Qt.rgba(Commons.Color.accent.r, Commons.Color.accent.g, Commons.Color.accent.b, 0.25)
+                    clip: true
+                    Image {
+                        anchors.fill: parent
+                        visible: root.photoPath !== "" && status === Image.Ready
+                        source: root.photoPath !== "" ? "file://" + root.photoPath : ""
+                        fillMode: Image.PreserveAspectCrop
+                        asynchronous: true
+                        cache: false
+                        sourceSize.width: 128; sourceSize.height: 128
+                    }
                     UiText {
+                        visible: root.photoPath === ""
                         anchors.centerIn: parent
                         text: {
                             var n = root.c ? PF.displayName(root.c) : ""

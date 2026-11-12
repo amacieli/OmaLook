@@ -231,7 +231,10 @@ pub fn save(db: &Database, req: &Value, seq: u32) -> Value {
 }
 
 /// `POST /contacts/delete`: each contact is hidden at once and deleted on the server (to Deleted Items).
-pub fn delete(db: &Database, ids: &[String], seq: u32) -> Value {
+pub fn delete(db: &Database, ids: &[String], seq: u32) -> Value { delete_ext(db, ids, seq, false) }
+
+/// As `delete`; `permanent` skips Deleted Items (cannot be undone: the undo stack leaves it out).
+pub fn delete_ext(db: &Database, ids: &[String], seq: u32, permanent: bool) -> Value {
     let now = Database::now_ms();
     let mut done = 0;
     for (n, id) in ids.iter().enumerate() {
@@ -245,11 +248,85 @@ pub fn delete(db: &Database, ids: &[String], seq: u32) -> Value {
             }
             continue;
         }
-        let payload = json!({ "before": rec.raw, "folder_id": rec.folder_id.clone().unwrap_or_default() }).to_string();
+        let mut payload = json!({ "before": rec.raw, "folder_id": rec.folder_id.clone().unwrap_or_default() });
+        if permanent { payload["permanent"] = json!(true); payload["undo_of"] = json!("permanent"); }
+        let payload = payload.to_string();
         let op = new_id("cop", now, seq + n as u32);
         if db.set_contact_state(id, "deleted").is_ok() && db.contact_outbox_enqueue(&op, "delete", id, &payload, &rec.etag, now).is_ok() { done += 1; }
     }
     json!({ "ok": true, "deleted": done })
+}
+
+/// Add and remove categories on contacts (the tag picker, list membership). Only contacts that change get a write.
+pub fn set_categories(db: &Database, ids: &[String], add: &[String], remove: &[String], seq: u32) -> Value {
+    let mut changed = 0;
+    let mut last_err = String::new();
+    for (n, id) in ids.iter().enumerate() {
+        let rec = match db.get_contact_record(id) { Ok(Some(r)) => r, _ => continue };
+        let mut cats: Vec<String> = rec.raw["categories"].as_array().map(|a| a.iter().filter_map(|c| c.as_str().map(String::from)).collect()).unwrap_or_default();
+        let before = cats.clone();
+        cats.retain(|c| !remove.iter().any(|r| r.eq_ignore_ascii_case(c)));
+        for a in add { if !cats.iter().any(|c| c.eq_ignore_ascii_case(a)) { cats.push(a.clone()); } }
+        if cats == before { continue; }
+        let r = save(db, &json!({ "id": id, "fields": { "categories": cats } }), seq + n as u32);
+        if r["ok"] == true { changed += 1; } else { last_err = r["error"].as_str().unwrap_or("").to_string(); }
+    }
+    if changed == 0 && !last_err.is_empty() { return json!({ "ok": false, "error": last_err }); }
+    json!({ "ok": true, "changed": changed })
+}
+
+/// Move contacts to another folder of the same account. Graph has no move for contacts (checked live), so
+/// each one is copied into the target and the original deleted once the copy exists (the delete waits for
+/// the copy, and is dropped if the copy fails). The server gives the copy a new id; favourites follow it.
+pub fn move_contacts(db: &Database, ids: &[String], folder_id: &str, seq: u32) -> Value {
+    let now = Database::now_ms();
+    let mut moved = 0;
+    for (n, id) in ids.iter().enumerate() {
+        let rec = match db.get_contact_record(id) { Ok(Some(r)) => r, _ => continue };
+        if rec.folder_id.as_deref() == Some(folder_id) || id.starts_with("local-") || rec.sync_state != "ok" { continue; }
+        let mut patch = Map::new();
+        for k in TEXT.iter().chain(LISTS.iter()).chain(ADDRESSES.iter()).chain(["emailAddresses", "birthday"].iter()) {
+            let v = &rec.raw[*k];
+            if !is_blank(v) { patch.insert((*k).to_string(), v.clone()); }
+        }
+        let patch = clean_fields(&Value::Object(patch)).unwrap_or_default();
+        let local = new_id("local", now, seq + n as u32);
+        let mut raw = apply_patch(&json!({ "id": local }), &patch);
+        raw["id"] = json!(local);
+        let create_op = new_id("cop", now, seq + n as u32);
+        let delete_op = new_id("cop", now + 1, seq + n as u32);
+        if db.put_contact_json(&raw, Some(folder_id), "pending").is_err() { continue; }
+        let cp = json!({ "patch": Value::Object(patch), "folder_id": folder_id, "undo_of": "move", "favorite_from": id }).to_string();
+        let dp = json!({ "before": rec.raw, "folder_id": rec.folder_id.clone().unwrap_or_default(), "undo_of": "move", "after_create": create_op }).to_string();
+        if db.contact_outbox_enqueue(&create_op, "create", &local, &cp, "", now).is_ok()
+            && db.set_contact_state(id, "deleted").is_ok()
+            && db.contact_outbox_enqueue(&delete_op, "delete", id, &dp, &rec.etag, now + 1).is_ok() { moved += 1; }
+    }
+    json!({ "ok": true, "moved": moved })
+}
+
+/// Merge duplicates: the first id keeps its place and gains what the others have that it lacks (nothing it
+/// already has is overwritten); the others are deleted. Undo reverses the last step only (the deletion).
+pub fn merge(db: &Database, ids: &[String], seq: u32) -> Value {
+    if ids.len() < 2 { return json!({ "ok": false, "error": "mark at least two contacts to merge" }); }
+    let mut recs = vec![];
+    for id in ids {
+        match db.get_contact_record(id) {
+            Ok(Some(r)) if r.sync_state == "ok" && !id.starts_with("local-") => recs.push(r),
+            Ok(Some(_)) => return json!({ "ok": false, "error": "wait for pending changes to finish before merging" }),
+            _ => return json!({ "ok": false, "error": "a marked contact no longer exists" }),
+        }
+    }
+    if recs.iter().any(|r| r.account_id != recs[0].account_id) { return json!({ "ok": false, "error": "contacts of different accounts cannot be merged" }); }
+    let others: Vec<Value> = recs[1..].iter().map(|r| r.raw.clone()).collect();
+    let fields = crate::contacts_io::merge_fields(&recs[0].raw, &others);
+    if !fields.is_empty() {
+        let r = save(db, &json!({ "id": recs[0].id, "fields": Value::Object(fields) }), seq);
+        if r["ok"] != true { return r; }
+    }
+    let rest: Vec<String> = recs[1..].iter().map(|r| r.id.clone()).collect();
+    delete(db, &rest, seq + 1);
+    json!({ "ok": true, "kept": recs[0].id, "removed": rest.len() })
 }
 
 /// `POST /contacts/undo`: put back what the newest write of this account changed. A write still
@@ -478,6 +555,71 @@ mod tests {
         let local = save(&db, &json!({"fields": {"givenName":"Bob"}, "folder_id": "f1"}), 5)["id"].as_str().unwrap().to_string();
         assert_eq!(delete(&db, &[local.clone()], 6)["deleted"], 1);
         assert!(db.get_contact_record(&local).unwrap().is_none());
+    }
+
+    #[test]
+    fn categories_are_added_and_removed_case_blind_and_only_changed_contacts_are_written() {
+        let db = db();
+        db.put_contact_json(&json!({"id":"c1","categories":["Blue","red"]}), Some("f1"), "ok").unwrap();
+        db.put_contact_json(&json!({"id":"c2","categories":["Blue"]}), Some("f1"), "ok").unwrap();
+        let r = set_categories(&db, &["c1".into(), "c2".into()], &["blue".into(), "Green".into()], &["RED".into()], 1);
+        assert_eq!(r["changed"], 2);
+        let due = db.contact_outbox_claim_due(Database::now_ms() + 1).unwrap();
+        let p: Vec<Value> = due.iter().map(|d| serde_json::from_str::<Value>(&d.3).unwrap()["patch"]["categories"].clone()).collect();
+        assert_eq!(p[0], json!(["Blue", "Green"]));
+        assert_eq!(p[1], json!(["Blue", "Green"]));
+        let r = set_categories(&db, &["c1".into()], &["Blue".into()], &[], 9);
+        assert_eq!(r["changed"], 0, "{r}");
+    }
+
+    #[test]
+    fn a_move_copies_then_deletes_and_the_delete_waits_for_the_copy() {
+        let db = db();
+        db.upsert_contact_folder(&crate::models::ContactFolder { id: "f2".into(), display_name: "Work".into(), parent_folder_id: Some("f1".into()) }).unwrap();
+        db.put_contact_json(&json!({"id":"c1","givenName":"Ada","emailAddresses":[{"address":"a@x.org"}],"displayName":"Ada"}), Some("f1"), "ok").unwrap();
+        let r = move_contacts(&db, &["c1".into()], "f2", 1);
+        assert_eq!(r["moved"], 1);
+        assert_eq!(db.get_contact_record("c1").unwrap().unwrap().sync_state, "deleted");
+        let due = db.contact_outbox_claim_due(Database::now_ms() + 5).unwrap();
+        assert_eq!(due.len(), 2);
+        assert_eq!(due[0].1, "create");
+        let cp: Value = serde_json::from_str(&due[0].3).unwrap();
+        assert_eq!(cp["folder_id"], "f2");
+        assert_eq!(cp["patch"]["emailAddresses"][0]["address"], "a@x.org");
+        let dp: Value = serde_json::from_str(&due[1].3).unwrap();
+        assert_eq!(dp["after_create"], json!(due[0].0));
+        // a move is not on the undo stack
+        assert_eq!(undo(&db, 3)["ok"], false);
+        // moving into the folder it is already in does nothing
+        db.put_contact_json(&json!({"id":"c2","givenName":"B"}), Some("f2"), "ok").unwrap();
+        assert_eq!(move_contacts(&db, &["c2".into()], "f2", 4)["moved"], 0);
+    }
+
+    #[test]
+    fn a_permanent_delete_is_marked_and_cannot_be_undone() {
+        let db = db();
+        db.put_contact_json(&json!({"id":"c1","givenName":"Ada"}), Some("f1"), "ok").unwrap();
+        delete_ext(&db, &["c1".into()], 1, true);
+        let due = db.contact_outbox_claim_due(Database::now_ms() + 1).unwrap();
+        let p: Value = serde_json::from_str(&due[0].3).unwrap();
+        assert_eq!(p["permanent"], true);
+        assert_eq!(undo(&db, 2)["ok"], false);
+    }
+
+    #[test]
+    fn merging_fills_the_keeper_and_deletes_the_rest() {
+        let db = db();
+        db.put_contact_json(&json!({"id":"c1","@odata.etag":"W/\"1\"","givenName":"Ada","emailAddresses":[{"address":"a@x.org"}]}), Some("f1"), "ok").unwrap();
+        db.put_contact_json(&json!({"id":"c2","givenName":"Adeline","surname":"L","mobilePhone":"5","emailAddresses":[{"address":"a@x.org"},{"address":"b@x.org"}]}), Some("f1"), "ok").unwrap();
+        assert_eq!(merge(&db, &["c1".into()], 1)["ok"], false);
+        let r = merge(&db, &["c1".into(), "c2".into()], 2);
+        assert_eq!(r["ok"], true, "{r}");
+        let k = db.get_contact_record("c1").unwrap().unwrap();
+        assert_eq!(k.raw["givenName"], "Ada");
+        assert_eq!(k.raw["surname"], "L");
+        assert_eq!(k.raw["mobilePhone"], "5");
+        assert_eq!(k.raw["emailAddresses"].as_array().unwrap().len(), 2);
+        assert_eq!(db.get_contact_record("c2").unwrap().unwrap().sync_state, "deleted");
     }
 
     #[test]

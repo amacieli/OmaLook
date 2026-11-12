@@ -461,6 +461,23 @@ impl Database {
         }
     }
 
+    /// A folder that was deleted on the server: it and the contacts cached in it go (writes in flight stay).
+    pub fn delete_contact_folder(&self, id: &str) -> Result<()> {
+        self.conn.execute("DELETE FROM contacts WHERE folder_id = ?1 AND account_id = ?2 AND sync_state = 'ok'", params![id, self.account_id])?;
+        self.conn.execute("DELETE FROM contact_folders WHERE (id = ?1 OR parent_folder_id = ?1) AND account_id = ?2", params![id, self.account_id])?;
+        self.conn.execute("DELETE FROM contact_sync WHERE folder_id = ?1 AND account_id = ?2", params![id, self.account_id])?;
+        Ok(())
+    }
+
+    /// The account a folder belongs to.
+    pub fn contact_folder_account(&self, id: &str) -> Result<Option<String>> {
+        match self.conn.query_row("SELECT COALESCE(account_id, '') FROM contact_folders WHERE id = ?1", params![id], |r| r.get::<_, String>(0)) {
+            Ok(v) => Ok(Some(v)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
     /// For each account: when its newest write that Ctrl-Z may take back was queued: `(created_at, account_id)`.
     pub fn contact_outbox_newest_per_account(&self) -> Result<Vec<(i64, String)>> {
         let mut stmt = self.conn.prepare(
