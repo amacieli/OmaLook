@@ -385,6 +385,56 @@ impl Database {
     }
 }
 
+impl Database {
+    /// Every contact folder (optionally one account's) with its account and how many contacts it holds.
+    pub fn list_contact_folders_ext(&self, account: Option<&str>) -> Result<Vec<Value>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT f.id, f.display_name, f.parent_folder_id, COALESCE(f.account_id, ''), COALESCE(a.email, ''),
+                    (SELECT COUNT(*) FROM contacts c WHERE c.folder_id = f.id AND c.sync_state <> 'deleted')
+             FROM contact_folders f LEFT JOIN accounts a ON a.id = f.account_id
+             WHERE (?1 IS NULL OR f.account_id = ?1 OR lower(a.email) = lower(?1))
+             ORDER BY lower(COALESCE(a.email, '')), (f.parent_folder_id IS NOT NULL), lower(f.display_name)",
+        )?;
+        let rows = stmt
+            .query_map(params![account], |r| {
+                Ok(serde_json::json!({
+                    "id": r.get::<_, String>(0)?, "name": r.get::<_, String>(1)?, "parent_id": r.get::<_, Option<String>>(2)?,
+                    "account_id": r.get::<_, String>(3)?, "account_email": r.get::<_, String>(4)?, "count": r.get::<_, i64>(5)?,
+                }))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// The newest failed or conflicting write of a contact (what the detail pane says is wrong).
+    pub fn contact_last_error(&self, contact_id: &str) -> Result<Option<(String, String, String)>> {
+        match self.conn.query_row(
+            "SELECT id, state, COALESCE(last_error, '') FROM contact_outbox
+             WHERE contact_id = ?1 AND state IN ('failed', 'conflict') ORDER BY created_at DESC, rowid DESC LIMIT 1",
+            params![contact_id],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)),
+        ) {
+            Ok(v) => Ok(Some(v)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// (account email, folder name) of a cached contact, for display.
+    pub fn contact_context(&self, id: &str) -> Result<(String, String)> {
+        match self.conn.query_row(
+            "SELECT COALESCE(a.email, ''), COALESCE(f.display_name, 'Contacts')
+             FROM contacts c LEFT JOIN accounts a ON a.id = c.account_id LEFT JOIN contact_folders f ON f.id = c.folder_id WHERE c.id = ?1",
+            params![id],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+        ) {
+            Ok(v) => Ok(v),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok((String::new(), String::new())),
+            Err(e) => Err(e.into()),
+        }
+    }
+}
+
 fn map_op(r: &rusqlite::Row<'_>) -> rusqlite::Result<ContactOp> {
     Ok(ContactOp {
         id: r.get(0)?,

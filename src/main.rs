@@ -1023,6 +1023,29 @@ fn compose_outbox_response(config_dir: &PathBuf, first_line: &str) -> String {
     }
 }
 
+/// The `/contacts/*` routes except `POST /contacts/favorite` (kept where it was). None = not one of ours.
+/// GET /contacts/get?id=, GET /contacts/folders?account=. The write routes join them in phase 2.
+fn contacts_route(config_dir: &PathBuf, _stream: &mut std::net::TcpStream, _initial: &[u8], first_line: &str) -> Option<String> {
+    let db_path = config_dir.join("messages.db");
+    let open = || Database::open(db_path.to_str().unwrap_or("messages.db"));
+    let err = |m: String| serde_json::json!({ "ok": false, "error": m }).to_string();
+    if first_line.contains("GET /contacts/get") {
+        let id = query_param(first_line, "id").unwrap_or_default();
+        return Some(match open() {
+            Ok(db) => omalook::contacts_api::detail(&db, &id).to_string(),
+            Err(e) => err(format!("database: {}", e)),
+        });
+    }
+    if first_line.contains("GET /contacts/folders") {
+        let account = query_param(first_line, "account");
+        return Some(match open() {
+            Ok(db) => omalook::contacts_api::folders(&db, account.as_deref()).to_string(),
+            Err(e) => err(format!("database: {}", e)),
+        });
+    }
+    None
+}
+
 /// POST /calendar/event — queue a new calendar event from the editor (docs/PLAN-calendar-events.md
 /// sections 6 and 10). Body: the editor's JSON (`EventDraft::from_request`) plus `account_id` and an
 /// optional `transaction_id` (the editor makes one per draft, so a repeated press is one event).
@@ -1990,12 +2013,28 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                     continue;
                 }
 
-                // ── GET /contacts?view=all|favorites|lists&sort=first|last|company|recent ──
+                // ── /contacts/get, /contacts/folders (and the write routes of phase 2 onward): see `contacts_route` ──
+                if let Some(body) = contacts_route(config_dir, &mut stream, &buf[..n], first_line) {
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                        body.len(), body
+                    );
+                    let _ = stream.write_all(response.as_bytes());
+                    continue;
+                }
+
+                // ── GET /contacts?view=all|favorites|lists&sort=first|last|company|recent&q=&folder=&category= ──
                 if first_line.contains("GET /contacts") {
                     let view = query_param(first_line, "view").unwrap_or_else(|| "all".to_string());
                     let sort = query_param(first_line, "sort").unwrap_or_else(|| "first".to_string());
                     let body = match Database::open(config_dir.join("messages.db").to_str().unwrap_or("messages.db")) {
-                        Ok(db) => match db.query_contacts_for(&view, &sort, query_param(first_line, "account").as_deref()) {
+                        Ok(db) => match db.query_contacts_full(
+                            &view, &sort,
+                            query_param(first_line, "account").as_deref(),
+                            query_param(first_line, "q").as_deref(),
+                            query_param(first_line, "folder").as_deref(),
+                            query_param(first_line, "category").as_deref(),
+                        ) {
                             Ok(rows) => serde_json::to_string(&rows).unwrap_or_else(|_| "[]".to_string()),
                             Err(e) => {
                                 warn!("GET /contacts: query failed: {}", e);

@@ -38,6 +38,17 @@ RowLayout {
   // A composer (reply line or new conversation) owns the keyboard while it has focus.
   readonly property bool editing: conv.composerFocused || newThread.opened
 
+  // The People view's `S` asks for a new conversation to a known number.
+  function takeDraftTo() {
+    var d = app.smsDraftTo
+    if (!d) return
+    app.smsDraftTo = null
+    newThread.open()
+    newThread.addChip(d.label, d.number)
+  }
+  Connections { target: root.app; function onSmsDraftToChanged() { root.takeDraftTo() } }
+  Component.onCompleted: Qt.callLater(root.takeDraftTo)
+
   // ---- key registry hooks (AppCommands) ---------------------------------
   function keyMove(dx, dy) {
     if (dy === 0) return false
@@ -316,7 +327,7 @@ RowLayout {
     function onSmsRevChanged() { root.loadThreads(); if (root.openKey !== "") root.loadNewest(false) }
   }
 
-  Component.onCompleted: loadThreads()
+  Component.onCompleted: { loadThreads(); Qt.callLater(root.takeDraftTo) }
   Component.onDestruction: root.app.smsHasThread = false
 
   SmsThreadList {

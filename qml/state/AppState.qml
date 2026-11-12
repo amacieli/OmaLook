@@ -1176,7 +1176,16 @@ Item {
     return acct[0].id
   }
 
-  function openCompose(kind) {
+  // A new message to these addresses (the People view's `w`).
+  function composeTo(addresses) {
+    gotoView("mail")
+    openCompose("new", { to: addresses.join(", ") })
+  }
+  // The SMS view opens its new-conversation line with this recipient ({label, number}), then clears it.
+  property var smsDraftTo: null
+  function textTo(label, number) { smsDraftTo = { label: label, number: number }; gotoView("sms") }
+
+  function openCompose(kind, preset) {
     var m = currentMessage
     var init = { kind: kind, accountId: "", to: "", cc: "", bcc: "", subject: "", quote: null, inReplyTo: "" }
     var acct = accounts.filter(function(a) { return a.signed_in && a.email })
@@ -1200,6 +1209,7 @@ Item {
         }
       }
     }
+    if (preset) for (var pk in preset) init[pk] = preset[pk]
     composeStatus = ""
     composeInitial = init
     composing = true

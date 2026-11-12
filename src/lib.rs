@@ -39,6 +39,7 @@ pub mod gmail_filters;
 pub mod calendar_tags;
 pub mod attach_spool;
 pub mod contacts_daemon;
+pub mod contacts_api;
 pub mod sms_daemon;
 pub mod sms_names;
 pub mod providers;

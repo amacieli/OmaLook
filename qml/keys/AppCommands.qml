@@ -233,6 +233,33 @@ Item {
     out.push({ id: "ctf.tip", title: "   type text to match tag names (lucia); =Name is exact; -text excludes", keys: [], run: function() {} })
     return out
   }
+  // ---- People: act on the contact under the cursor ----------------------
+  // The detail (every field) is loaded first, then the choice is made: one target acts at once, several
+  // open the palette on the matching ex command so the keyboard picks.
+  property var _peopleAct: null
+  function _peopleTargets(kinds, what, act, ex) {
+    if (!content || !content.ensureDetail) return
+    content.ensureDetail(function(ok) {
+      var t = ok ? content.currentTargets(kinds) : []
+      if (t.length === 0) { say("This contact has no " + what); return }
+      if (t.length === 1) { var m = act(t[0]); if (m) say(m); return }
+      root._peopleAct = act
+      root.paletteRequested(ex + " ")
+    })
+  }
+  function _pickPeople(kinds, q) {
+    var t = content && content.currentTargets ? content.currentTargets(kinds) : []
+    var query = q.trim().toLowerCase()
+    return t.filter(function(x) { return query === "" || (x.label + " " + x.shown).toLowerCase().indexOf(query) >= 0 })
+      .map(function(x, i) {
+        return { id: "people.t." + i, title: x.label + "   " + x.shown, keys: [], run: function() { var m = root._peopleAct ? root._peopleAct(x) : ""; if (m) say(m) } }
+      })
+  }
+  function pickMailTargets(q)  { return _pickPeople(["email"], q) }
+  function pickTextTargets(q)  { return _pickPeople(["phone"], q) }
+  function pickOpenTargets(q)  { return _pickPeople(["url", "address", "email", "phone"], q) }
+  function pickCopyTargets(q)  { return _pickPeople(["email", "phone", "address", "url"], q) }
+
   function openEventTagPicker() {
     var ev = content && content.selectedEvent ? content.selectedEvent : null
     if (!ev) { say("No event selected"); return }
@@ -584,7 +611,32 @@ Item {
 
     // people
     { id: "people.refresh", title: "Refresh contacts", scope: "contacts/list", keys: ["r"], run: function() { content.load() } },
-    { id: "people.new",     title: "New contact",      scope: "contacts/list", keys: ["c"], run: soon("new contact") },
+    { id: "people.search",  title: "Filter contacts\u2026", scope: "contacts/list", keys: ["/"], ex: ["find"], run: function() { content.startSearch() } },
+    { id: "people.back",    title: "Close detail / clear filter / unmark", scope: "contacts/list", keys: ["Esc"],
+      when: function() { return !!content && content.detailOpen !== undefined && (content.detailOpen || content.searchText !== "" || content.markCount > 0) },
+      run: function() { if (content.detailOpen) content.detailOpen = false; else if (content.searchText !== "") content.clearSearch(); else content.clearMarks() } },
+    { id: "people.fav",     title: "Favorite / unfavorite", scope: "contacts/list", keys: ["f"], run: function() { var m = content.toggleFavorite(); if (m) say(m) } },
+    { id: "people.sort",    title: "Cycle the sort order", scope: "contacts/list", keys: ["o"], run: function() { say(content.cycleSort()) } },
+    { id: "people.view",    title: "Cycle all / favorites / folders", scope: "contacts/list", keys: ["V"], run: function() { say(content.cycleView()) } },
+    { id: "people.account", title: "Cycle the account shown", scope: "contacts/list", keys: ["A"], when: function() { return !!content && content.accountEmails !== undefined && content.accountEmails.length > 1 }, run: function() { say(content.cycleAccount()) } },
+    { id: "people.mark",    title: "Mark / unmark and move down", scope: "contacts/list", keys: ["Space"], run: function() { content.toggleMark() } },
+    { id: "people.markall", title: "Mark every contact shown", scope: "contacts/list", keys: ["*"], run: function() { content.markAll() } },
+    { id: "people.unmark",  title: "Clear the marks", scope: "contacts/list", keys: ["U"], when: function() { return !!content && content.markCount > 0 }, run: function() { content.clearMarks() } },
+    { id: "people.mail",    title: "Write to this contact (or the marked ones)\u2026", scope: "contacts/list", keys: ["w"], ex: ["mailto", "write"], pick: pickMailTargets,
+      run: function() {
+        if (content.markCount > 0) { var a = content.addressesOfTargets(); if (a.length) app.composeTo(a); else say("None of the marked contacts has an address"); return }
+        root._peopleTargets(["email"], "email address", function(t) { app.composeTo([t.value]) }, "mailto") } },
+    { id: "people.text",    title: "Text this contact\u2026", scope: "contacts/list", keys: ["S"], ex: ["text", "sms"], pick: pickTextTargets,
+      run: function() { root._peopleTargets(["phone"], "phone number", function(t) { app.textTo(content.selected ? content.selected.display_name : t.value, t.value) }, "text") } },
+    { id: "people.open",    title: "Open an address, link, email or number\u2026", scope: "contacts/list", keys: ["O"], ex: ["open"], pick: pickOpenTargets,
+      run: function() { root._peopleTargets(["url", "address", "email", "phone"], "address or link", function(t) { content.openTarget(t) }, "open") } },
+    { id: "people.copy",    title: "Copy a field\u2026", scope: "contacts/list", keys: ["y"], ex: ["copyfield"], pick: pickCopyTargets,
+      run: function() { root._peopleTargets(["email", "phone", "address", "url"], "field to copy", function(t) { return content.copyText(t.value, t.label.toLowerCase()) }, "copyfield") } },
+    { id: "people.copycard", title: "Copy the whole contact as text", scope: "contacts/list", keys: ["Y"],
+      run: function() { content.ensureDetail(function(ok) { if (ok) say(content.copyText(content.cardText(), "contact")) }) } },
+    { id: "people.scrolldown", title: "Scroll the detail pane down", scope: "contacts/list", keys: ["C-e"], when: function() { return !!content && content.detailOpen === true }, run: function() { content.scrollDetail(60) } },
+    { id: "people.scrollup",   title: "Scroll the detail pane up", scope: "contacts/list", keys: ["C-y"], when: function() { return !!content && content.detailOpen === true }, run: function() { content.scrollDetail(-60) } },
+    { id: "people.new",     title: "New contact", scope: "contacts/list", keys: ["c"], run: soon("new contact") },
 
     // tasks
     { id: "tasks.filter",  title: "Cycle filter (all / active / done)", scope: "tasks/list", keys: ["f"], run: function() {
