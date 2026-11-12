@@ -73,6 +73,11 @@ impl GoogleApi {
         self.send(reqwest::Method::DELETE, url, None).await
     }
 
+    /// PUT (Gmail's `drafts.update` replaces the draft's message).
+    pub async fn put(&self, url: &str, body: &serde_json::Value) -> Result<serde_json::Value> {
+        self.send(reqwest::Method::PUT, url, Some(body)).await
+    }
+
     /// Send a finished RFC 822 file as a message through Gmail's resumable upload (`messages.send`).
     ///
     /// The file is read in 8 MiB pieces, so memory use does not grow with the message. Starting

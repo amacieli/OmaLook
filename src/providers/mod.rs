@@ -167,6 +167,38 @@ pub trait EmailProvider: Send + Sync {
         Err(crate::errors::OmarchyError::HttpError("send_message not supported".into()))
     }
 
+    /// Save a draft to the provider's Drafts folder (docs/PLAN-compose.md Phase B2). `remote_id`
+    /// None creates the draft (threaded for a reply or forward); Some replaces its content. The
+    /// attachment set is re-sent only when `attachments_changed` (Graph) or always (Gmail, whose
+    /// draft is one MIME message). Errors follow the usual rules: network / 5xx / 429 are retried
+    /// by the draft worker, other failures are kept as the draft's error.
+    async fn save_draft(
+        &self,
+        _msg: &crate::compose::OutgoingMessage,
+        _remote_id: Option<&str>,
+        _from: &str,
+        _attachments_changed: bool,
+    ) -> Result<RemoteDraft> {
+        Err(crate::errors::OmarchyError::HttpError("save_draft not supported".into()))
+    }
+
+    /// The provider's current version marker of a draft (Graph `changeKey`, Gmail message id).
+    /// Ok(None) when the draft no longer exists.
+    async fn draft_version(&self, _remote_id: &str) -> Result<Option<String>> {
+        Err(crate::errors::OmarchyError::HttpError("draft_version not supported".into()))
+    }
+
+    /// Delete a draft from the provider. Already gone counts as done.
+    async fn delete_draft(&self, _remote_id: &str) -> Result<()> {
+        Err(crate::errors::OmarchyError::HttpError("delete_draft not supported".into()))
+    }
+
+    /// Send an existing draft: its content is first brought up to `msg`, then it is sent, so
+    /// neither Drafts nor Sent gets a second copy.
+    async fn send_draft(&self, _msg: &crate::compose::OutgoingMessage, _remote_id: &str, _from: &str) -> Result<()> {
+        Err(crate::errors::OmarchyError::HttpError("send_draft not supported".into()))
+    }
+
     /// True when the provider can report changes since a stored link (Graph delta), so the
     /// daemon syncs by change feed instead of re-reading whole folders.
     fn supports_delta(&self) -> bool {
@@ -204,6 +236,14 @@ pub fn http_client() -> reqwest::Client {
 
 pub mod graph;
 pub use graph::GraphEmailProvider;
+
+/// A draft as the provider stores it after a save.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RemoteDraft {
+    pub id: String,
+    /// Graph `changeKey` or Gmail message id: compared before the next save to spot edits made elsewhere.
+    pub version: Option<String>,
+}
 
 pub mod tasks;
 pub use tasks::{GraphTasksProvider, TasksProvider};

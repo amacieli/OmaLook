@@ -186,6 +186,18 @@ impl SyncScheduler {
             OutboxWorker::new(&id, db, provider).run().await;
         });
 
+        // Drafts (docs/PLAN-compose.md Phase B2): pushes saved drafts to the Drafts folder, debounced.
+        let drafts_stop = Arc::new(Notify::new());
+        let (id, path, kind, gmail) = (account_id.to_string(), self.db_str(), provider.clone(), provider == "gmail");
+        spawn_sync_thread(format!("drafts-{}", account_id), drafts_stop.clone(), move || async move {
+            let provider = email_provider(&kind, &id, &path);
+            let db = match Database::open_for_account(&path, &id) {
+                Ok(db) => Arc::new(db),
+                Err(e) => return error!("Drafts {}: cannot open database: {}", id, e),
+            };
+            crate::draft_sync::DraftWorker::new(&id, db, provider, gmail.then_some(crate::draft_sync::LARGE_PUSH_BYTES)).run().await;
+        });
+
         // Calendar writes (new events) wait out the same undo window, then go out from here.
         let cal_outbox_stop = Arc::new(Notify::new());
         let (id, path, kind, settings_path) = (account_id.to_string(), self.db_str(), provider.clone(), self.settings_path.clone());
@@ -210,7 +222,7 @@ impl SyncScheduler {
             ContactsOutboxWorker::new(&id, db, provider).run().await;
         });
 
-        running.insert(account_id.to_string(), vec![mail_stop, cal_stop, contacts_stop, tasks_stop, outbox_stop, cal_outbox_stop, contacts_outbox_stop]);
+        running.insert(account_id.to_string(), vec![mail_stop, cal_stop, contacts_stop, tasks_stop, outbox_stop, cal_outbox_stop, contacts_outbox_stop, drafts_stop]);
         info!("Scheduler: started sync for account {}", account_id);
         true
     }

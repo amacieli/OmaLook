@@ -27,6 +27,7 @@ pub mod compose;
 pub mod addresses;
 pub mod fs_browse;
 pub mod outbox;
+pub mod draft_sync;
 pub mod calendar_daemon;
 pub mod tasks_daemon;
 pub mod calendar_write;

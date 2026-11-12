@@ -31,8 +31,6 @@ class DocumentHandler : public QObject {
     // True when the document carries font / size / colour / highlight / alignment, which
     // system-font mode cannot send.
     Q_PROPERTY(bool hasRichAttributes READ hasRichAttributes NOTIFY contentChanged)
-    // Content-IDs (without "cid:") of the pictures the document shows, in document order (OL-054).
-    Q_PROPERTY(QStringList pictureCids READ pictureCids NOTIFY contentChanged)
 
 public:
     QQuickTextDocument *document() const { return m_doc; }
@@ -56,7 +54,6 @@ public:
     int alignment() const;
     bool hasFormatting() const;
     bool hasRichAttributes() const;
-    QStringList pictureCids() const;
 
     Q_INVOKABLE void toggleBold();
     Q_INVOKABLE void toggleItalic();
@@ -76,15 +73,7 @@ public:
     // Strip every attribute system-font mode cannot send (font, size, colour, highlight,
     // alignment) from the whole document. Called when switching HTML -> system.
     Q_INVOKABLE void flattenToSystem();
-    // Inline pictures (OL-054). insertImage reads `path` and puts it at the caret as "cid:<cid>";
-    // registerImage makes an already-present "cid:<cid>" picture (a draft being restored, or a
-    // reply's quote) show from `path`; removeImage deletes every picture with that Content-ID.
-    // All three return / do nothing when the file is not a readable image.
-    Q_INVOKABLE bool insertImage(const QString &path, const QString &cid);
-    Q_INVOKABLE bool registerImage(const QString &path, const QString &cid);
-    Q_INVOKABLE void removeImage(const QString &cid);
-    // Replace the document with HTML / plain text. Remote and local <img> sources are dropped
-    // before the document sees them: the editor never fetches anything (AGENTS.md).
+    // Replace the document with HTML / plain text.
     Q_INVOKABLE void setHtml(const QString &html);
     Q_INVOKABLE void setPlainText(const QString &text);
     // Raw QTextDocument output. The Rust side's compose_html::clean() tidies it for sending.

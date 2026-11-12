@@ -109,24 +109,35 @@ impl Database {
         Ok(rows)
     }
 
-    /// Dirty drafts of an account that are due now, oldest first.
-    pub fn draft_due(&self, account_id: &str, now_ms: i64) -> Result<Vec<DraftRow>> {
+    /// Dirty drafts of an account that are due now, oldest first. An autosaved draft (`editing`)
+    /// waits until `debounce_ms` has passed since its last change; a saved one goes at once.
+    pub fn draft_due(&self, account_id: &str, now_ms: i64, debounce_ms: i64) -> Result<Vec<DraftRow>> {
         let mut st = self.conn.prepare(&format!(
             "SELECT {} FROM drafts WHERE account_id = ?1 AND dirty = 1 AND state != 'sent' AND next_attempt_at <= ?2
+               AND (state = 'saved' OR updated_at <= ?3)
              ORDER BY updated_at ASC",
             COLS
         ))?;
-        let rows = st.query_map(params![account_id, now_ms], row_of)?.collect::<rusqlite::Result<Vec<_>>>()?;
+        let rows = st
+            .query_map(params![account_id, now_ms, now_ms - debounce_ms], row_of)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
 
-    /// When the next dirty draft of an account is due (None: nothing waits).
-    pub fn draft_next_due(&self, account_id: &str) -> Result<Option<i64>> {
-        Ok(self.conn.query_row(
-            "SELECT MIN(next_attempt_at) FROM drafts WHERE account_id = ?1 AND dirty = 1 AND state != 'sent' AND next_attempt_at < ?2",
-            params![account_id, PARKED],
-            |r| r.get::<_, Option<i64>>(0),
-        )?)
+    /// When the next dirty draft of an account becomes due (None: nothing waits). Parked drafts
+    /// do not count.
+    pub fn draft_next_due(&self, account_id: &str, debounce_ms: i64) -> Result<Option<i64>> {
+        let mut st = self.conn.prepare(
+            "SELECT next_attempt_at, updated_at, state FROM drafts WHERE account_id = ?1 AND dirty = 1 AND state != 'sent' AND next_attempt_at < ?2",
+        )?;
+        let rows = st.query_map(params![account_id, PARKED], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, String>(2)?)))?;
+        let mut best: Option<i64> = None;
+        for row in rows {
+            let (at, updated, state) = row?;
+            let due = if state == "saved" { at } else { at.max(updated + debounce_ms) };
+            best = Some(best.map_or(due, |b| b.min(due)));
+        }
+        Ok(best)
     }
 
     /// Drafts left in `editing` with unsaved changes: what a crash left behind.
@@ -205,6 +216,14 @@ impl Database {
         Ok(self.conn.execute("DELETE FROM drafts WHERE local_id = ?1", params![local_id])? == 1)
     }
 
+    /// Ids of every live draft of every account. The spool root is shared by accounts, so the
+    /// sweep must keep them all.
+    pub fn draft_all_live_ids(&self) -> Result<Vec<String>> {
+        let mut st = self.conn.prepare("SELECT local_id FROM drafts WHERE state != 'sent'")?;
+        let rows = st.query_map([], |r| r.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
     pub fn draft_prune_sent(&self) -> Result<usize> {
         Ok(self.conn.execute("DELETE FROM drafts WHERE state = 'sent'", [])?)
     }
@@ -226,13 +245,13 @@ mod draft_tests {
         assert!(row.dirty);
         assert_eq!(row.state, "editing");
         assert_eq!(row.remote_id, None);
-        assert_eq!(db.draft_due("a1", 0).unwrap().len(), 1);
+        assert_eq!(db.draft_due("a1", i64::MAX - 1, 0).unwrap().len(), 1);
         db.draft_mark_pushed("d1", row.updated_at, "AAMk-1", Some("ck1"), "sig").unwrap();
         let row = db.draft_get("d1").unwrap().unwrap();
         assert!(!row.dirty, "nothing changed during the push: clean");
         assert_eq!(row.remote_id.as_deref(), Some("AAMk-1"));
         assert_eq!(row.remote_version.as_deref(), Some("ck1"));
-        assert!(db.draft_due("a1", i64::MAX - 1).unwrap().is_empty());
+        assert!(db.draft_due("a1", i64::MAX - 1, 0).unwrap().is_empty());
     }
 
     #[test]
@@ -250,17 +269,17 @@ mod draft_tests {
     #[test]
     fn failure_backoff_and_parking() {
         let db = db();
-        db.draft_save("d1", "new", "", "{}", "system", "editing").unwrap();
+        db.draft_save("d1", "new", "", "{}", "system", "saved").unwrap();
         db.draft_mark_failed("d1", "offline", 5_000).unwrap();
-        assert!(db.draft_due("a1", 4_999).unwrap().is_empty());
-        assert_eq!(db.draft_next_due("a1").unwrap(), Some(5_000));
-        assert_eq!(db.draft_due("a1", 5_000).unwrap().len(), 1);
+        assert!(db.draft_due("a1", 4_999, 0).unwrap().is_empty());
+        assert_eq!(db.draft_next_due("a1", 0).unwrap(), Some(5_000));
+        assert_eq!(db.draft_due("a1", 5_000, 0).unwrap().len(), 1);
         db.draft_mark_failed("d1", "400 bad", PARKED).unwrap();
-        assert_eq!(db.draft_next_due("a1").unwrap(), None, "parked drafts do not keep the worker awake");
+        assert_eq!(db.draft_next_due("a1", 0).unwrap(), None, "parked drafts do not keep the worker awake");
         assert!(db.draft_get("d1").unwrap().unwrap().dirty, "a 4xx keeps the local copy dirty");
         // A new save un-parks it.
         db.draft_save("d1", "new", "", "{}", "system", "saved").unwrap();
-        assert_eq!(db.draft_due("a1", 0).unwrap().len(), 1);
+        assert_eq!(db.draft_due("a1", 0, 0).unwrap().len(), 1);
     }
 
     #[test]

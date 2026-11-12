@@ -33,7 +33,6 @@ FocusScope {
   property var recentDirs: []             // folders visited before, newest first
 
   signal picked(var files)                // [{ path, name, size }]
-  property string title: "Attach files"   // "Insert pictures" when the pick goes into the text (OL-054)
   signal canceled()
   signal navigated(string dir)
 
@@ -209,7 +208,7 @@ FocusScope {
 
       RowLayout {
         Layout.fillWidth: true
-        UiText { text: root.title; font.bold: true; font.pixelSize: Style.font.heading }
+        UiText { text: "Attach files"; font.bold: true; font.pixelSize: Style.font.heading }
         Item { Layout.fillWidth: true }
         UiText {
           text: (root.placesMode ? "places · " : "") + "sort: " + root.sortKey + (root.showHidden ? " · hidden files shown" : "")

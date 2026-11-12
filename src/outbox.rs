@@ -137,7 +137,14 @@ impl OutboxWorker {
                 crate::attach_spool::remove(&self.spool_root, &id);
                 continue;
             }
-            match self.provider.send_message(&msg, &from).await {
+            // A message from a draft is sent from the draft's provider copy (no second copy in
+            // Drafts or Sent); any other message is sent as queued.
+            let sent = if msg.draft_id.is_empty() {
+                self.provider.send_message(&msg, &from).await
+            } else {
+                crate::draft_sync::send_from_draft(&self.db, self.provider.as_ref(), &crate::draft_sync::default_root(), &msg, &from).await
+            };
+            match sent {
                 Ok(()) => {
                     info!("Outbox {}: sent {} (attempt {})", self.account_id, id, attempt);
                     if let Err(e) = self.db.outbox_mark_sent(&id) {

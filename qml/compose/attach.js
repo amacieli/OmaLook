@@ -106,13 +106,6 @@ function combine(originals, picked) {
 
 // ---- files on the clipboard (Ctrl+V in the compose pane; phase 5) -----------------------------------------
 // `types` is `wl-paste --list-types`, `text` the content of the best file type (see clipboardFileType).
-// Pictures the editor shows inline in HTML mode (OL-054). SVG stays a plain file.
-function isPicture(name) { return /\.(png|jpe?g|gif|webp|bmp)$/i.test(String(name || "")) }
-// Whether `wl-paste --list-types` shows picture data the editor can take (PNG).
-function clipboardHasPng(types) {
-  return String(types || "").split("\n").map(function(x) { return x.trim() }).indexOf("image/png") >= 0
-}
-
 // Which clipboard type carries files, or "" when the clipboard holds none (then Ctrl+V is an ordinary text paste).
 function clipboardFileType(types) {
   var t = String(types || "").split("\n").map(function(x) { return x.trim() })
