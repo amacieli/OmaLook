@@ -209,6 +209,78 @@ impl GraphCalendarProvider {
     }
 }
 
+/// One mailbox's answer from `getSchedule` (docs/PLAN-calendar-events.md section 4, 15).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct ScheduleAnswer {
+    /// The address asked about (Graph echoes it back as `scheduleId`).
+    pub schedule_id: String,
+    /// One digit per interval from the start: 0 free, 1 tentative, 2 busy, 3 out of office, 4 working elsewhere.
+    pub availability_view: String,
+    /// Graph's per-mailbox error (no free/busy for this address), as its message.
+    pub error: Option<String>,
+    /// The mailbox's working hours as Graph reports them (`daysOfWeek`, `startTime`, `endTime`).
+    pub working_hours: Option<serde_json::Value>,
+}
+
+/// Path of the free/busy call, relative to the Graph v1.0 root.
+pub(crate) const SCHEDULE_PATH: &str = "me/calendar/getSchedule";
+
+/// Request body for `getSchedule`: local wall-clock start/end in `time_zone`, one digit per `interval_min` minutes.
+pub(crate) fn schedule_body(
+    schedules: &[String],
+    start: chrono::NaiveDateTime,
+    end: chrono::NaiveDateTime,
+    interval_min: u32,
+    time_zone: &str,
+) -> serde_json::Value {
+    let stamp = |dt: chrono::NaiveDateTime| dt.format("%Y-%m-%dT%H:%M:%S").to_string();
+    serde_json::json!({
+        "schedules": schedules,
+        "startTime": { "dateTime": stamp(start), "timeZone": time_zone },
+        "endTime": { "dateTime": stamp(end), "timeZone": time_zone },
+        "availabilityViewInterval": interval_min,
+    })
+}
+
+/// `{"value": [...]}` from `getSchedule` -> one answer per mailbox. Rows without a `scheduleId` are dropped.
+pub(crate) fn parse_schedule(json: &serde_json::Value) -> Vec<ScheduleAnswer> {
+    json["value"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|v| {
+            let schedule_id = v["scheduleId"].as_str().filter(|s| !s.is_empty())?.to_string();
+            let error = match &v["error"] {
+                serde_json::Value::Null => None,
+                e => Some(e["message"].as_str().or_else(|| e["responseCode"].as_str()).unwrap_or("error").to_string()),
+            };
+            Some(ScheduleAnswer {
+                schedule_id,
+                availability_view: v["availabilityView"].as_str().unwrap_or("").to_string(),
+                error,
+                working_hours: if v["workingHours"].is_object() { Some(v["workingHours"].clone()) } else { None },
+            })
+        })
+        .collect()
+}
+
+impl GraphCalendarProvider {
+    /// Free/busy for up to 20 mailboxes (yours and attendees) over `[start, end)` local wall-clock,
+    /// one availability digit per `interval_min` minutes. Read-only.
+    pub async fn get_schedule(
+        &self,
+        schedules: &[String],
+        start: chrono::NaiveDateTime,
+        end: chrono::NaiveDateTime,
+        interval_min: u32,
+    ) -> Result<Vec<ScheduleAnswer>> {
+        let body = schedule_body(schedules, start, end, interval_min, &self.time_zone);
+        let text = self.graph_call(reqwest::Method::POST, SCHEDULE_PATH, Some(body), Some(&self.time_zone)).await?;
+        let json: serde_json::Value = serde_json::from_str(&text).map_err(|e| OmarchyError::HttpError(e.to_string()))?;
+        Ok(parse_schedule(&json))
+    }
+}
+
 #[async_trait]
 impl CalendarProvider for GraphCalendarProvider {
     async fn fetch_events(&self, limit: usize) -> Result<Vec<CalendarEvent>> {
@@ -431,5 +503,37 @@ mod tests {
         let ev = |cats: serde_json::Value| p.parse_event(&serde_json::json!({"id": "x", "start": {"dateTime": "2026-10-05T09:00:00"}, "end": {"dateTime": "2026-10-05T10:00:00"}, "categories": cats}));
         assert_eq!(ev(serde_json::json!(["Family", "Saint Lucia"])).tags, vec!["Family".to_string(), "Saint Lucia".to_string()]);
         assert!(ev(serde_json::json!([])).tags.is_empty() && ev(serde_json::Value::Null).tags.is_empty());
+    }
+
+    #[test]
+    fn get_schedule_request_is_a_post_with_local_times_and_the_interval() {
+        assert_eq!(SCHEDULE_PATH, "me/calendar/getSchedule");
+        let start = chrono::NaiveDate::from_ymd_opt(2026, 11, 16).unwrap().and_hms_opt(0, 0, 0).unwrap();
+        let end = chrono::NaiveDate::from_ymd_opt(2026, 11, 20).unwrap().and_hms_opt(0, 0, 0).unwrap();
+        let body = schedule_body(&["adam@x.com".to_string(), "bo@y.com".to_string()], start, end, 15, "America/New_York");
+        assert_eq!(body["schedules"], serde_json::json!(["adam@x.com", "bo@y.com"]));
+        assert_eq!(body["startTime"], serde_json::json!({"dateTime": "2026-11-16T00:00:00", "timeZone": "America/New_York"}));
+        assert_eq!(body["endTime"]["dateTime"], "2026-11-20T00:00:00");
+        assert_eq!(body["availabilityViewInterval"], 15);
+        assert!(body.get("startTime").is_some() && body.get("value").is_none());
+    }
+
+    #[test]
+    fn get_schedule_answers_parse_views_errors_and_working_hours() {
+        let json = serde_json::json!({"value": [
+            {"scheduleId": "adam@x.com", "availabilityView": "0022", "error": null,
+             "workingHours": {"daysOfWeek": ["monday"], "startTime": "08:00:00.0000000", "endTime": "17:00:00.0000000", "timeZone": {"name": "Eastern Standard Time"}},
+             "scheduleItems": [{"status": "busy", "start": {"dateTime": "2026-11-16T09:30:00.0000000"}, "end": {"dateTime": "2026-11-16T10:00:00.0000000"}}]},
+            {"scheduleId": "ext@other.org", "availabilityView": "", "error": {"responseCode": "ErrorItemNotFound", "message": "No free/busy data"}},
+            {"availabilityView": "0000", "error": null}
+        ]});
+        let answers = parse_schedule(&json);
+        assert_eq!(answers.len(), 2, "a row without scheduleId is dropped");
+        assert_eq!(answers[0].schedule_id, "adam@x.com");
+        assert_eq!(answers[0].availability_view, "0022");
+        assert!(answers[0].error.is_none() && answers[0].working_hours.is_some());
+        assert_eq!(answers[1].error.as_deref(), Some("No free/busy data"));
+        assert!(answers[1].working_hours.is_none());
+        assert!(parse_schedule(&serde_json::json!({})).is_empty());
     }
 }

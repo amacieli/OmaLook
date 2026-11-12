@@ -34,6 +34,7 @@ pub mod draft_sync;
 pub mod calendar_daemon;
 pub mod tasks_daemon;
 pub mod calendar_write;
+pub mod calendar_finder;
 pub mod calendar_outbox;
 pub mod join_link;
 pub mod invites;

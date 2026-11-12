@@ -1858,6 +1858,52 @@ fn calendar_tags_response(config_dir: &PathBuf, first_line: &str) -> String {
     serde_json::json!({ "ok": true, "id": id, "event_id": target, "series": series, "tags": tags, "delay_secs": delay }).to_string()
 }
 
+/// GET /calendar/find?account=A&attendees=a@x,b@y&optional=c@z&accounts=A2,A3&from=YYYY-MM-DD&to=YYYY-MM-DD&duration=MIN[&limit=5]
+/// (OL-021 track A, docs/PLAN-calendar-events.md 5.6): ranked free slots. `account` is the account the answer is for
+/// (Exchange; its getSchedule covers you and the attendees); `attendees` are required, `optional` optional; `accounts`
+/// are other signed-in accounts whose calendars count as your busy time; `to` is exclusive. Read-only: nothing is
+/// queued or sent. Answers the finder JSON (`calendar_finder::find_free_time`) or `{ok:false, error}`.
+fn calendar_find_response(config_dir: &PathBuf, first_line: &str) -> String {
+    use chrono::NaiveDate;
+    let err = |m: &str| serde_json::json!({ "ok": false, "error": m }).to_string();
+    let list = |key: &str| -> Vec<String> {
+        query_param(first_line, key)
+            .unwrap_or_default()
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect()
+    };
+    let date = |key: &str| query_param(first_line, key).and_then(|s| NaiveDate::parse_from_str(&s, "%Y-%m-%d").ok());
+    let (from, to) = match (date("from"), date("to")) {
+        (Some(f), Some(t)) => (f, t),
+        _ => return err("from and to must be dates (YYYY-MM-DD, to exclusive)"),
+    };
+    let duration_min = match query_param(first_line, "duration").and_then(|s| s.parse::<i64>().ok()) {
+        Some(d) => d,
+        None => return err("duration (minutes) is missing"),
+    };
+    let account_id = query_param(first_line, "account").unwrap_or_default();
+    if account_id.is_empty() {
+        return err("missing account");
+    }
+    let mut attendees: Vec<(String, bool)> = list("attendees").into_iter().map(|a| (a, true)).collect();
+    attendees.extend(list("optional").into_iter().map(|a| (a, false)));
+    let req = omalook::calendar_finder::FindRequest {
+        account_id,
+        attendees,
+        other_accounts: list("accounts"),
+        from,
+        to,
+        duration_min,
+        limit: query_param(first_line, "limit").and_then(|s| s.parse().ok()).unwrap_or(5),
+    };
+    match omalook::calendar_finder::find_free_time(config_dir, &req) {
+        Ok(v) => v.to_string(),
+        Err(e) => err(&e),
+    }
+}
+
 /// JSON body for the /settings/senders endpoints (see the route comment).
 fn sender_prefs_response(config_dir: &PathBuf, first_line: &str) -> String {
     use omalook::db::SenderAdd;
@@ -3207,6 +3253,16 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                     continue;
                 }
 
+                // ── GET /calendar/find — free-time finder (OL-021 track A): ranked free slots, read-only ──
+                if first_line.contains("GET /calendar/find") {
+                    let body = calendar_find_response(config_dir, first_line);
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                        body.len(), body
+                    );
+                    let _ = stream.write_all(response.as_bytes());
+                    continue;
+                }
                 // ── GET /calendar/events?month=YYYY-MM — cached calendar events ──
                 if first_line.contains("GET /calendar/events") {
                     let month: String = first_line
