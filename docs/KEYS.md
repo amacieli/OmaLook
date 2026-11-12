@@ -178,6 +178,8 @@ for the last one use `R`. `L` is not bound inside the compose pane.
 
 These keys work in the compose pane. Text fields own their keys, so they are all Ctrl-based.
 
+Drafts (OL-048): the pane autosaves 10 s after the last edit of the body or subject, and when the window loses focus; the status line shows `saved locally` or `save failed (retrying)`. No key is bound yet to reopen a draft from the Drafts folder (`AppState.resumeDraft`), and `Esc` still asks Discard / Keep editing.
+
 Attached files show as **one line** between the header and the editor, whatever their number (no line at all with no files):
 `📎 3 files · 4.2 MB of 25 MB` and a chip per file (with 4 or more files: two chips and `+N`). The meter is in the warning
 colour above 80 % of what the From account's provider accepts, and in the error colour when Send would be refused; the biggest

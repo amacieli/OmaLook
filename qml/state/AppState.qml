@@ -1298,6 +1298,45 @@ Item {
 
   function closeCompose() { composing = false; composeStatus = ""; focusRequested() }
 
+  // ---- drafts (OL-048 Phase B2) ----------------------------------------------------------------
+  // Save the compose pane's draft locally (POST /drafts/save?state=editing|saved); `done` gets the
+  // backend's answer: {ok, id, ...} or {ok:false, error}.
+  function saveDraft(message, state, done) {
+    request("POST", "/drafts/save?state=" + encodeURIComponent(state), function(xhr) {
+      var r = null
+      try { r = JSON.parse(xhr.responseText) } catch (e) {}
+      done(xhr.status === 200 && r ? r : { ok: false, error: "could not reach the backend" })
+    }, JSON.stringify(message))
+  }
+
+  // Close the pane and drop its draft: the provider's copy and the local row go (POST /drafts/discard).
+  // Stays open with the reason if the backend refuses (e.g. the draft is being sent right now).
+  function discardDraftAndClose(draftId) {
+    if (!draftId) { closeCompose(); return }
+    request("POST", "/drafts/discard?id=" + encodeURIComponent(draftId), function(xhr) {
+      var r = null
+      try { r = JSON.parse(xhr.responseText) } catch (e) {}
+      if (xhr.status === 200 && r && r.ok) closeCompose()
+      else composeStatus = r && r.error ? String(r.error) : "could not discard the draft (is the backend running?)"
+    })
+  }
+
+  // Open a saved draft (GET /drafts/get?id=) in the compose pane in its own mode, with its
+  // reply/forward link and its attachments; sending it goes through its draft id.
+  function resumeDraft(localId) {
+    request("GET", "/drafts/get?id=" + encodeURIComponent(localId), function(xhr) {
+      var r = null
+      try { r = JSON.parse(xhr.responseText) } catch (e) {}
+      if (xhr.status !== 200 || !r || !r.ok || !r.draft || !r.draft.payload) {
+        composeStatus = r && r.error ? String(r.error) : "could not open the draft"
+        return
+      }
+      var p = r.draft.payload
+      p.draft_id = localId
+      reopenCompose(p)
+    })
+  }
+
   // ---- sending ---------------------------------------------------------------------------
   // Send hands the message to the backend's outbox, which holds it for `sendDelaySecs` (Settings
   // -> Mail) so it can still be taken back, then sends it at once from its own worker. The
@@ -1544,6 +1583,7 @@ Item {
       to: _addrText(m.to), cc: _addrText(m.cc), bcc: _addrText(m.bcc),
       toEntries: m.to, ccEntries: m.cc, bccEntries: m.bcc,
       subject: m.subject, quote: null, restore: m.body, mode: m.mode, attachments: m.attachments || [],
+      draftId: m.draft_id || "",
       forwardedKeep: m.forwarded_keep
     }
     composing = true

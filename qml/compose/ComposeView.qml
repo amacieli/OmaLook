@@ -52,6 +52,12 @@ FocusScope {
   signal discardRequested()
   signal focusRequested()
 
+  // Drafts (OL-048 Phase B2): the local draft id ("" until the first save; resumed drafts carry theirs),
+  // the save function (AppState.saveDraft, injected like fetchLimits) and the autosave clock.
+  property string draftId: initial.draftId || ""
+  property var saveDraftFn: null
+  property int autosaveSecs: 10
+
   property string mode: defaultMode
   property string accountId: initial.accountId || ""
   // "" | "discard" | "nosubject" | "flatten"
@@ -388,6 +394,7 @@ FocusScope {
       in_reply_to: initial.inReplyTo || "",
       to: _recipientsOf(header.to), cc: _recipientsOf(header.cc), bcc: _recipientsOf(header.bcc),
       subject: header.subject.text,
+      draft_id: root.draftId,
       mode: root.mode,
       body: _body(),
       attachments: root.liveAttachments.map(function(a) {
@@ -469,6 +476,39 @@ FocusScope {
     if (initial.restore) { editor.forceActiveFocus(); editor.cursorPosition = editor.length }
     else if (initial.kind === "new" || initial.kind === "forward") header.to.input.forceActiveFocus()
     else { editor.forceActiveFocus(); editor.cursorPosition = 0 }
+  }
+
+  // ---- drafts (OL-048 Phase B2) --------------------------------------------------------------
+  // Autosave `autosaveSecs` after the last edit of the body or subject; also when the window loses
+  // focus. Status line: "saving…" / "saved locally" / "save failed (retrying)" (a failed autosave retries).
+  // "saved to Drafts" needs the provider's copy (set by the draft worker): not shown here yet.
+  function saveDraftNow(state) {
+    if (!_ready || saveDraftFn === null) return
+    autosaveTimer.stop()
+    if (!root.dirty && root.draftId === "") return
+    root.localStatus = "saving\u2026"
+    saveDraftFn(root.buildMessage(), state, function(r) {
+      if (r && r.ok) {
+        root.draftId = r.id
+        root.localStatus = "saved locally"
+      } else {
+        root.localStatus = "save failed (retrying)"
+        if (state === "editing") autosaveTimer.restart()
+      }
+    })
+  }
+  function _touchDraft() { if (_ready && root.dirty) autosaveTimer.restart() }
+  Timer {
+    id: autosaveTimer
+    interval: root.autosaveSecs * 1000
+    onTriggered: root.saveDraftNow("editing")
+  }
+  Connections { target: editor; ignoreUnknownSignals: true; function onTextChanged() { root._touchDraft() } }
+  Connections { target: header.subject; ignoreUnknownSignals: true; function onTextChanged() { root._touchDraft() } }
+  Connections {
+    target: root.Window.window
+    ignoreUnknownSignals: true
+    function onActiveChanged() { if (root.Window.window && !root.Window.window.active) root.saveDraftNow("editing") }
   }
 
   Keys.onPressed: function(e) {

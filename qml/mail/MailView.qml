@@ -98,6 +98,7 @@ RowLayout {
       item.recentDirs = Qt.binding(function() { return root.app.attachRecentDirs })
       item.fetchLimits = function(accountId, cb) { root.app.attachLimits(accountId, cb) }
       item.fetchOriginals = function(messageId, cb) { root.app.composeOriginals(messageId, cb) }
+      item.saveDraftFn = function(message, state, done) { root.app.saveDraft(message, state, done) }
       item.forceActiveFocus()
     }
     Connections {
@@ -108,7 +109,8 @@ RowLayout {
       target: composeLoader.item
       ignoreUnknownSignals: true
       function onSendRequested(message) { root.app.submitCompose(message) }
-      function onDiscardRequested() { root.app.closeCompose() }
+      // Discard also drops the saved draft (its provider copy and local row).
+      function onDiscardRequested() { root.app.discardDraftAndClose(composeLoader.item ? composeLoader.item.draftId : "") }
       function onPaletteRequested() { root.app.focusPaletteRequested("") }
       function onBrowsed(dir) { root.app.attachBrowseDir = dir; root.app.rememberAttachDir(dir) }
     }
