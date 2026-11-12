@@ -1638,6 +1638,10 @@ fn lists_response(config_dir: &PathBuf, first_line: &str) -> String {
         else { db.set_list_sync_target(&account, on).map(|_| serde_json::json!({ "ok": true }).to_string()) }
     } else if first_line.contains("GET /lists/targets") {
         db.list_sync_targets().map(|v| serde_json::json!(v).to_string())
+    } else if first_line.contains("GET /lists/sync/status") {
+        db.list_link_log(60).map(|log| serde_json::json!({ "reports": omalook::list_sync::last_reports(), "log": log }).to_string())
+    } else if first_line.contains("POST /lists/sync/now") {
+        Ok(serde_json::json!({ "ok": true }).to_string())
     } else if first_line.contains("POST /lists/create") {
         db.list_create(&name).map(|(op, id)| serde_json::json!({ "ok": op == ListOp::Done, "status": status(op), "id": id }).to_string())
     } else if first_line.contains("POST /lists/rename") {
@@ -1651,7 +1655,31 @@ fn lists_response(config_dir: &PathBuf, first_line: &str) -> String {
     } else {
         db.lists_all().map(|l| serde_json::to_string(&l).unwrap_or_else(|_| "[]".into()))
     };
+    // a change to the lists (or to where they are mirrored) is followed by a run of the link
+    let changed = ["/lists/targets/set", "/lists/create", "/lists/rename", "/lists/delete", "/lists/members/add", "/lists/members/remove", "/lists/sync/now"];
+    if first_line.starts_with("POST ") && changed.iter().any(|p| first_line.contains(p)) {
+        lists_link_run(config_dir.clone());
+    }
     r.unwrap_or_else(|e| err(&e.to_string()))
+}
+
+/// Run the two-way list link for every mirror account that is signed in (off the request thread).
+fn lists_link_run(config_dir: PathBuf) {
+    std::thread::spawn(move || {
+        let path = config_dir.join("messages.db");
+        let path = path.to_str().unwrap_or("messages.db").to_string();
+        let targets = match Database::open(&path).and_then(|d| d.list_sync_targets()) { Ok(t) => t, Err(_) => return };
+        let create = omalook::settings::read_lists_create_contacts(&config_dir.join("settings.toml"));
+        for account in targets {
+            if omalook::accounts::provider_of(&account) == "gmail" { continue; }
+            if !SCHEDULER.get().map(|s| s.is_running(&account)).unwrap_or(false) { continue; }
+            if let Ok(db) = Database::open_for_account(&path, &account) {
+                let walked = db.flag_is_set(omalook::contacts_daemon::FULL_FLAG).unwrap_or(false);
+                let policy = if create { omalook::list_sync::CreatePolicy::Always } else { omalook::list_sync::CreatePolicy::Skip };
+                omalook::list_sync::run_and_record(&db, walked, policy);
+            }
+        }
+    });
 }
 
 /// Addresses seen in mail (From / To / Cc / Bcc), best first, for recipient suggestions. The

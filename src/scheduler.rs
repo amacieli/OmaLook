@@ -143,14 +143,15 @@ impl SyncScheduler {
             CalendarDaemon::new(cfg, db, provider).start().await;
         });
 
-        let (id, path, kind) = (account_id.to_string(), self.db_str(), provider.clone());
+        let (id, path, kind, contacts_settings) = (account_id.to_string(), self.db_str(), provider.clone(), self.settings_path.clone());
         spawn_sync_thread(format!("contacts-{}", account_id), contacts_stop.clone(), move || async move {
             let provider = contacts_provider(&kind, &id);
             let db = match Database::open_for_account(&path, &id) {
                 Ok(db) => Arc::new(db),
                 Err(e) => return error!("Contacts sync {}: cannot open database: {}", id, e),
             };
-            ContactsDaemon::new(ContactsDaemonConfig::default(), db, provider).start().await;
+            let cfg = ContactsDaemonConfig { create_contacts: crate::settings::read_lists_create_contacts(&contacts_settings), ..ContactsDaemonConfig::default() };
+            ContactsDaemon::new(cfg, db, provider).start().await;
         });
 
         // To Do tasks (Microsoft accounts; Google Tasks needs a scope the Gmail sign-in does not ask for).

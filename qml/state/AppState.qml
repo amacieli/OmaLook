@@ -893,6 +893,17 @@ Item {
       try { var v = JSON.parse(xhr.responseText); if (Array.isArray(v)) root.listSyncTargets = v } catch (e) {}
     })
   }
+  // What the two-way link did last, per mirror account, and a short log (GET /lists/sync/status).
+  property var listSyncStatus: ({ reports: [], log: [] })
+  function loadListSyncStatus() {
+    request("GET", "/lists/sync/status", function(xhr) {
+      if (xhr.status !== 200) return
+      try { var v = JSON.parse(xhr.responseText); if (v && v.reports) root.listSyncStatus = v } catch (e) {}
+    })
+  }
+  function syncListsNow() {
+    request("POST", "/lists/sync/now", function(xhr) { Qt.callLater(function() { root.loadListSyncStatus() }) })
+  }
   function setListTarget(accountId, on) {
     var cur = listSyncTargets.filter(function(a) { return a !== accountId })
     if (on) cur.push(accountId)

@@ -91,6 +91,7 @@ impl Database {
             "CREATE INDEX IF NOT EXISTS idx_contact_outbox_due ON contact_outbox(account_id, state, due_at)",
             [],
         )?;
+        self.init_list_link_schema()?;
         // The old pseudo id of the default folder collided between accounts; the real id replaces it
         // (the next folder sync stores it, and the next delta walk re-reads the contacts).
         self.conn.execute("DELETE FROM contact_folders WHERE id = 'contacts'", [])?;

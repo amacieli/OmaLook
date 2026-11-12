@@ -249,6 +249,15 @@ pub fn write_send_delay(path: &Path, secs: i32) -> Result<u64> {
 
 /// Recipient count above which Send asks for confirmation (`[mail] large_audience_confirm`):
 /// default 20, 0 = never ask.
+/// `[lists] create_contacts = "always"`: a list member with no contact gets one in Exchange (default: no).
+pub fn read_lists_create_contacts(path: &Path) -> bool {
+    fs::read_to_string(path)
+        .ok()
+        .and_then(|s| toml::from_str::<toml::Value>(&s).ok())
+        .and_then(|v| v.get("lists")?.get("create_contacts")?.as_str().map(|x| x.eq_ignore_ascii_case("always")))
+        .unwrap_or(false)
+}
+
 pub fn read_large_audience(path: &Path) -> i32 {
     fs::read_to_string(path)
         .ok()

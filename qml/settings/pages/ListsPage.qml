@@ -40,6 +40,7 @@ SettingsPage {
     page.app.listNotice = ""
     page.app.loadLists(function() { page.ensureSelection() })
     page.app.loadListTargets()
+    page.app.loadListSyncStatus()
     if (page.app.composeContacts.length === 0) page.app.loadComposeContacts()
   }
 
@@ -167,8 +168,26 @@ SettingsPage {
       delegate: ColumnLayout {
         id: acct
         required property var modelData
-        readonly property bool canSync: modelData.provider === "gmail"
+        readonly property bool canSync: modelData.provider !== "gmail"   // Exchange: category mirror; Google comes later
         readonly property bool on: !!page.app && page.app.listSyncTargets.indexOf(modelData.id) >= 0
+        readonly property var report: {
+          var rs = page.app ? page.app.listSyncStatus.reports : []
+          for (var i = 0; i < rs.length; i++) if (rs[i].account === modelData.id) return rs[i]
+          return null
+        }
+        readonly property bool problem: !!report && (!!report.skipped || report.lists.some(function(l) { return l.not_mirrored.length > 0 }))
+        // one short paragraph: why it did not run, what could not be mirrored, then the latest log lines
+        readonly property string status: {
+          if (!report) return "Not run yet in this session."
+          if (report.skipped) return "Waiting: " + report.skipped + "."
+          var out = []
+          report.lists.forEach(function(l) {
+            l.not_mirrored.forEach(function(n) { out.push("\u25cb " + l.list + ": " + n[0] + " \u2014 " + n[1]) })
+          })
+          var log = page.app.listSyncStatus.log.filter(function(e) { return e.account_id === modelData.id }).slice(0, 5)
+          log.forEach(function(e) { out.push(new Date(e.at).toLocaleTimeString(Qt.locale(), "hh:mm") + "  " + e.list + ": " + e.text) })
+          return out.length ? out.join("\n") : "In step."
+        }
         width: parent.width
         spacing: 2
 
@@ -194,8 +213,21 @@ SettingsPage {
           font.pixelSize: Style.font.caption
           text: !acct.canSync
             ? "Outlook cannot store distribution lists. They stay on this computer and still work when sending from this account."
-            : (acct.on ? "Chosen. Copying lists to this account is not built yet: for now they stay on this computer, and still work from this account."
+            : (acct.on ? "Mirrored: each list is the category \u201cOL: <list name>\u201d on this account's contacts, both ways. Outlook shows the category on each contact (it cannot send to it; OmaLook can)."
                        : "Off.")
+        }
+        UiText {
+          visible: acct.on && acct.status !== ""
+          Layout.fillWidth: true
+          wrapMode: Text.WordWrap
+          font.pixelSize: Style.font.caption
+          foreground: acct.problem ? Hues.yellow : Commons.Color.foreground
+          text: acct.status
+        }
+        Button {
+          visible: acct.on
+          text: "Sync now"
+          onClicked: page.app.syncListsNow()
         }
       }
     }

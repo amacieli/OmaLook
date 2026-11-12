@@ -87,6 +87,7 @@ pub fn categories_from_json(s: Option<&str>) -> Vec<String> {
 pub mod sms;
 pub mod lists;
 pub mod contacts;
+pub mod list_link;
 pub mod tags;
 pub mod rules;
 pub mod local_rules;

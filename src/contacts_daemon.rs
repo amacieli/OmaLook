@@ -21,18 +21,20 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// Set (per account) once a full walk of the contacts has finished.
-const FULL_FLAG: &str = "contacts_full_walk";
+pub const FULL_FLAG: &str = "contacts_full_walk";
 /// How often the whole contact list is walked again.
 const FULL_EVERY: Duration = Duration::from_secs(6 * 3600);
 
 pub struct ContactsDaemonConfig {
     pub poll_interval_secs: u64,
     pub folder_sync_interval_secs: u64,
+    /// List link: create a contact for a list member that has none (settings.toml `[lists] create_contacts = "always"`).
+    pub create_contacts: bool,
 }
 
 impl Default for ContactsDaemonConfig {
     fn default() -> Self {
-        Self { poll_interval_secs: 120, folder_sync_interval_secs: 600 }
+        Self { poll_interval_secs: 120, folder_sync_interval_secs: 600, create_contacts: false }
     }
 }
 
@@ -88,6 +90,13 @@ impl ContactsDaemon {
                             Ok(n) => {
                                 if n > 0 { info!("Synced {} contacts", n) } else { debug!("No contact changes") }
                                 last_sync = Some(Instant::now());
+                                // lists mirrored as categories follow the contacts (Graph only; docs/PLAN-contacts.md section 7)
+                                if self.provider.supports_delta() {
+                                    let policy = if self.config.create_contacts { crate::list_sync::CreatePolicy::Always } else { crate::list_sync::CreatePolicy::Skip };
+                                    let walked = self.db.flag_is_set(FULL_FLAG).unwrap_or(false) || full_due;
+                                    let r = crate::list_sync::run_and_record(&self.db, walked, policy);
+                                    if let Some(why) = &r.skipped { debug!("List link {}: not run ({})", r.account, why) }
+                                }
                                 if full_due {
                                     last_full = Some(Instant::now());
                                     if let Err(e) = self.db.set_flag(FULL_FLAG) { warn!("Could not record the full contacts walk: {}", e); }

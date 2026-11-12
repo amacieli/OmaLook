@@ -133,6 +133,8 @@ impl Database {
             params![name, name_key(name), now],
         )?;
         if n == 0 { return Ok((ListOp::Exists, None)); }
+        // a list of this name wanted again: its category may be adopted again
+        let _ = self.list_link_ignore(&format!("OL: {}", name), false);
         Ok((ListOp::Done, Some(self.conn.last_insert_rowid())))
     }
 
@@ -151,6 +153,11 @@ impl Database {
     }
 
     pub fn list_delete(&self, id: i64) -> Result<bool> {
+        // a deleted list must not come back from the category still on the contacts
+        if let Ok(name) = self.conn.query_row("SELECT name FROM dl_lists WHERE id = ?1", params![id], |r| r.get::<_, String>(0)) {
+            let _ = self.list_link_ignore(&format!("OL: {}", name), true);
+        }
+        self.conn.execute("DELETE FROM dl_sync_base WHERE list_id = ?1", params![id])?;
         self.conn.execute("DELETE FROM dl_members WHERE list_id = ?1", params![id])?;
         Ok(self.conn.execute("DELETE FROM dl_lists WHERE id = ?1", params![id])? > 0)
     }
