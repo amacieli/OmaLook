@@ -195,7 +195,7 @@ for the last one use `R`. `L` is not bound inside the compose pane.
 
 These keys work in the compose pane. Text fields own their keys, so they are all Ctrl-based.
 
-Drafts (OL-048): the pane autosaves 10 s after the last edit of the body or subject, and when the window loses focus; the status line shows `saved locally` or `save failed (retrying)`. No key is bound yet to reopen a draft from the Drafts folder (`AppState.resumeDraft`), and `Esc` still asks Discard / Keep editing.
+Drafts (OL-048): the pane autosaves 10 s after the last edit of the body or subject, when the window loses focus, and when an attachment is added or removed; the status line shows `saving…`, `saved locally`, `saved to Drafts` (the provider has the copy) or `save failed (retrying)`. The Drafts folder lists unsent local drafts; `Enter` or `e` on one opens it in the pane. `Esc` on an empty message closes it; on a changed one it asks `Save draft` (Enter, the default) / `Discard` / `Cancel` (Esc). Quitting saves an open message as a draft. At start, unsaved drafts from a crash are offered once: `Resume` (Enter) or `Discard`, `Esc` keeps them for the next start. A draft attachment whose file is gone shows a `!` chip `(file missing)` and stays in the draft.
 
 Attached files show as **one line** between the header and the editor, whatever their number (no line at all with no files):
 `📎 3 files · 4.2 MB of 25 MB` and a chip per file (with 4 or more files: two chips and `+N`). The meter is in the warning
