@@ -3448,6 +3448,36 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                     continue;
                 }
 
+                // ── GET /compose/identities?account=ID, POST /compose/identity_default?account=ID&email= — send-as addresses (OL-051). Slow (provider call), own thread. ──
+                if first_line.contains("GET /compose/identities") || first_line.contains("POST /compose/identity_default") {
+                    let first = first_line.to_string();
+                    let dir = config_dir.clone();
+                    std::thread::spawn(move || {
+                        let body = identities_response(&dir, &first);
+                        let response = format!(
+                            "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                            body.len(), body
+                        );
+                        let _ = stream.write_all(response.as_bytes());
+                    });
+                    continue;
+                }
+
+                // ── GET /messages/list-info?id=ID — List-Id / List-Post of a message (lazy provider fetch, cached). ──
+                if first_line.contains("GET /messages/list-info") {
+                    let id = query_param(first_line, "id").unwrap_or_default();
+                    let dir = config_dir.clone();
+                    std::thread::spawn(move || {
+                        let body = list_info_json(&dir, &id);
+                        let response = format!(
+                            "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                            body.len(), body
+                        );
+                        let _ = stream.write_all(response.as_bytes());
+                    });
+                    continue;
+                }
+
                 // ── GET /messages/invite?id=ID — meeting type of a message and whether it can be
                 // answered. Cached after the first look. ──
                 if first_line.contains("GET /messages/invite") {
@@ -3504,36 +3534,6 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                 // ── Render cache (OL-028): GET /render/get?id&width&scale&images · POST /render/adopt?id&width&scale&images&file ──
                 if first_line.contains("GET /render/get") || first_line.contains("POST /render/adopt") {
                     let (dir, line) = (config_dir.clone(), first_line.to_string());
-                // ── GET /compose/identities?account=ID, POST /compose/identity_default?account=ID&email= — send-as addresses (OL-051). Slow (provider call), own thread. ──
-                if first_line.contains("GET /compose/identities") || first_line.contains("POST /compose/identity_default") {
-                    let first = first_line.to_string();
-                    let dir = config_dir.clone();
-                    std::thread::spawn(move || {
-                        let body = identities_response(&dir, &first);
-                        let response = format!(
-                            "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
-                            body.len(), body
-                        );
-                        let _ = stream.write_all(response.as_bytes());
-                    });
-                    continue;
-                }
-
-                // ── GET /messages/list-info?id=ID — List-Id / List-Post of a message (lazy provider fetch, cached). ──
-                if first_line.contains("GET /messages/list-info") {
-                    let id = query_param(first_line, "id").unwrap_or_default();
-                    let dir = config_dir.clone();
-                    std::thread::spawn(move || {
-                        let body = list_info_json(&dir, &id);
-                        let response = format!(
-                            "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
-                            body.len(), body
-                        );
-                        let _ = stream.write_all(response.as_bytes());
-                    });
-                    continue;
-                }
-
                     std::thread::spawn(move || {
                         let body = if line.contains("GET /render/get") { render_get_json(&dir, &line) } else { render_adopt_json(&dir, &line) };
                         let response = format!(
@@ -3647,21 +3647,6 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                 // ── GET /settings/signatures — every account's signature: {account_id: text} (OL-050) ──
                 // ── POST /settings/signature?account=ID with body {"text": "..."} — set or clear one (empty) ──
                 if first_line.contains("GET /settings/signatures") || first_line.contains("POST /settings/signature") {
-                // ── GET /messages/list-info?id=ID — List-Id / List-Post of a message (lazy provider fetch, cached). ──
-                if first_line.contains("GET /messages/list-info") {
-                    let id = query_param(first_line, "id").unwrap_or_default();
-                    let dir = config_dir.clone();
-                    std::thread::spawn(move || {
-                        let body = list_info_json(&dir, &id);
-                        let response = format!(
-                            "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
-                            body.len(), body
-                        );
-                        let _ = stream.write_all(response.as_bytes());
-                    });
-                    continue;
-                }
-
                     let settings_path = config_dir.join("settings.toml");
                     let result: std::result::Result<std::collections::BTreeMap<String, String>, String> = if first_line.contains("POST /settings/signature") {
                         let account = query_param(first_line, "account").unwrap_or_default();
