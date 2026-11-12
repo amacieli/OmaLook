@@ -52,6 +52,8 @@ FocusScope {
   signal sendRequested(var message)
   signal discardRequested()
   signal focusRequested()
+  // Esc on a changed message, "Save draft": saved, then the owner closes the pane.
+  signal saveAndCloseRequested()
 
   // Drafts (OL-048 Phase B2): the local draft id ("" until the first save; resumed drafts carry theirs),
   // the save function (AppState.saveDraft, injected like fetchLimits) and the autosave clock.
@@ -490,19 +492,29 @@ FocusScope {
   // Autosave `autosaveSecs` after the last edit of the body or subject; also when the window loses
   // focus. Status line: "saving…" / "saved locally" / "save failed (retrying)" (a failed autosave retries).
   // "saved to Drafts" needs the provider's copy (set by the draft worker): not shown here yet.
-  function saveDraftNow(state) {
-    if (!_ready || saveDraftFn === null) return
+  // `done(ok)` is optional (Save draft closes the pane only when the save landed).
+  function saveDraftNow(state, done) {
+    if (!_ready || saveDraftFn === null) { if (done) done(false); return }
     autosaveTimer.stop()
-    if (!root.dirty && root.draftId === "") return
+    if (!root.dirty && root.draftId === "") { if (done) done(true); return }
     root.localStatus = "saving\u2026"
     saveDraftFn(root.buildMessage(), state, function(r) {
       if (r && r.ok) {
         root.draftId = r.id
         root.localStatus = "saved locally"
+        if (done) done(true)
       } else {
         root.localStatus = "save failed (retrying)"
         if (state === "editing") autosaveTimer.restart()
+        if (done) done(false)
       }
+    })
+  }
+  // Esc / Discard on a changed message: Save draft / Discard / Cancel (see closeDialog).
+  function saveAndClose() {
+    root.saveDraftNow("saved", function(ok) {
+      if (ok) root.saveAndCloseRequested()
+      else root.localStatus = "not saved: the message is still open"
     })
   }
   function _touchDraft() { if (_ready && root.dirty) autosaveTimer.restart() }
@@ -522,7 +534,7 @@ FocusScope {
   Keys.onPressed: function(e) {
     if (browser.opened || attachList.opened) return
     if (root.confirming !== "") {
-      if (confirmDialog.handleKey(e)) e.accepted = true
+      if (root.confirming === "close" ? closeDialog.handleKey(e) : confirmDialog.handleKey(e)) e.accepted = true
       return
     }
     var ctrl = e.modifiers & Qt.ControlModifier
@@ -849,6 +861,7 @@ else if (ctrl && !shift && e.key === Qt.Key_V) { root.startPaste(); e.accepted =
     if (confirming !== "") {
       _focusBeforeConfirm = Window.activeFocusItem
       confirmDialog.selectedIndex = 1
+      closeDialog.selectedIndex = 0
       dialogKeys.forceActiveFocus()
     } else {
       if (_focusBeforeConfirm) _focusBeforeConfirm.forceActiveFocus()
@@ -857,7 +870,25 @@ else if (ctrl && !shift && e.key === Qt.Key_V) { root.startPaste(); e.accepted =
   }
   Item {
     id: dialogKeys
-    Keys.onPressed: function(e) { if (confirmDialog.handleKey(e)) e.accepted = true }
+    Keys.onPressed: function(e) {
+      if (root.confirming === "close" ? closeDialog.handleKey(e) : confirmDialog.handleKey(e)) e.accepted = true
+    }
+  }
+
+  // Esc on a changed message: Save draft (the default, Enter) / Discard / Cancel (Esc keeps editing).
+  ChoiceDialog {
+    id: closeDialog
+    anchors.fill: parent
+    z: 1000
+    opened: root.confirming === "close"
+    message: "Save this message as a draft?"
+    choices: [ { text: "Save draft" }, { text: "Discard", destructive: true }, { text: "Cancel" } ]
+    escapeIndex: 2
+    onChosen: function(i) {
+      root.confirming = ""
+      if (i === 0) root.saveAndClose()
+      else if (i === 1) root.discardRequested()
+    }
   }
 
   ConfirmDialog {
