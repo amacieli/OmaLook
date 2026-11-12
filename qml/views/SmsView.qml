@@ -47,7 +47,6 @@ RowLayout {
     newThread.addChip(d.label, d.number)
   }
   Connections { target: root.app; function onSmsDraftToChanged() { root.takeDraftTo() } }
-  Component.onCompleted: Qt.callLater(root.takeDraftTo)
 
   // ---- key registry hooks (AppCommands) ---------------------------------
   function keyMove(dx, dy) {
