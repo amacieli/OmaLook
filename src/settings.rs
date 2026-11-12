@@ -302,6 +302,27 @@ pub fn write_large_audience(path: &Path, n: i32) -> Result<i32> {
     write_mail(path, |m| m.large_audience_confirm = n).map(|m| m.large_audience_confirm)
 }
 
+/// Every account's signature (`[mail.signatures]`), keyed by account id. Empty when none is set
+/// or the file does not parse.
+pub fn read_signatures(path: &Path) -> std::collections::BTreeMap<String, String> {
+    fs::read_to_string(path)
+        .ok()
+        .and_then(|s| toml::from_str::<Settings>(&s).ok())
+        .map(|s| s.mail.sanitized().signatures)
+        .unwrap_or_default()
+}
+
+/// Set or clear (empty text) one account's signature. Returns every account's signature as stored.
+pub fn write_signature(path: &Path, account: &str, text: &str) -> Result<std::collections::BTreeMap<String, String>> {
+    let text = text.to_string();
+    let account = account.to_string();
+    write_mail(path, move |m| {
+        let cleaned = crate::models::clean_signature(&text);
+        if cleaned.is_empty() { m.signatures.remove(&account); } else { m.signatures.insert(account, cleaned); }
+    })
+    .map(|m| m.signatures)
+}
+
 fn write_mail(path: &Path, change: impl FnOnce(&mut MailSettings)) -> Result<MailSettings> {
     let mut settings: Settings = match fs::read_to_string(path) {
         Ok(content) => toml::from_str(&content).map_err(|e| OmarchyError::SettingsError(e.to_string()))?,

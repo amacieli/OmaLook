@@ -451,6 +451,10 @@ pub struct MailSettings {
     /// confirmation first. A warning, never a block. 0 = never ask. Default 20.
     #[serde(default = "MailSettings::default_large_audience")]
     pub large_audience_confirm: i32,
+    /// Per-account signature, keyed by account id (OL-050). Plain text; the compose pane inserts
+    /// it above the quoted text. Empty map = no signatures. Stored as `[mail.signatures]`.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub signatures: std::collections::BTreeMap<String, String>,
 }
 
 impl MailSettings {
@@ -465,12 +469,68 @@ impl MailSettings {
         Self {
             send_delay_secs: self.send_delay_secs.clamp(0, Self::MAX_SEND_DELAY_SECS),
             large_audience_confirm: self.large_audience_confirm.clamp(0, Self::MAX_LARGE_AUDIENCE),
+            signatures: self.signatures.iter()
+                .map(|(k, v)| (k.clone(), clean_signature(v)))
+                .filter(|(k, v)| !k.is_empty() && !v.is_empty())
+                .collect(),
         }
     }
 }
 
+/// Longest signature kept, in characters, and most lines.
+pub const MAX_SIGNATURE_CHARS: usize = 2000;
+pub const MAX_SIGNATURE_LINES: usize = 20;
+
+/// A signature as stored: line endings made `\n`, control characters (except tab) dropped,
+/// trailing spaces on each line and blank lines at either end removed, then capped in length
+/// and line count. Empty = no signature. The text is plain; it is never parsed as markup.
+pub fn clean_signature(text: &str) -> String {
+    let normalised = text.replace("\r\n", "\n").replace('\r', "\n");
+    let lines: Vec<String> = normalised
+        .split('\n')
+        .map(|l| l.chars().filter(|c| *c == '\t' || !c.is_control()).collect::<String>().trim_end().to_string())
+        .collect();
+    let mut kept: Vec<String> = lines.into_iter().take(MAX_SIGNATURE_LINES).collect();
+    while kept.first().map(|l| l.trim().is_empty()).unwrap_or(false) { kept.remove(0); }
+    while kept.last().map(|l| l.trim().is_empty()).unwrap_or(false) { kept.pop(); }
+    let joined = kept.join("\n");
+    joined.chars().take(MAX_SIGNATURE_CHARS).collect::<String>().trim_end().to_string()
+}
+
+#[cfg(test)]
+mod signature_tests {
+    use super::*;
+
+    #[test]
+    fn clean_signature_keeps_plain_lines() {
+        assert_eq!(clean_signature("Adam\nOmaLook  \r\n\n"), "Adam\nOmaLook");
+        assert_eq!(clean_signature("\n\n  \nAdam"), "Adam");
+        assert_eq!(clean_signature("   "), "");
+    }
+
+    #[test]
+    fn clean_signature_drops_control_characters_and_caps_length() {
+        assert_eq!(clean_signature("a\u{7}b\tc\u{1b}[31m"), "ab\tc[31m");
+        let long = "x".repeat(MAX_SIGNATURE_CHARS + 50);
+        assert_eq!(clean_signature(&long).chars().count(), MAX_SIGNATURE_CHARS);
+        let many: String = (0..40).map(|i| format!("line {}\n", i)).collect();
+        assert_eq!(clean_signature(&many).lines().count(), MAX_SIGNATURE_LINES);
+    }
+
+    #[test]
+    fn sanitized_drops_empty_signatures() {
+        let mut m = MailSettings::default();
+        m.signatures.insert("gmail-1".into(), "  \n ".into());
+        m.signatures.insert("graph-2".into(), "Adam\r\nCTO".into());
+        m.signatures.insert(String::new(), "orphan".into());
+        let s = m.sanitized();
+        assert_eq!(s.signatures.len(), 1);
+        assert_eq!(s.signatures.get("graph-2").map(String::as_str), Some("Adam\nCTO"));
+    }
+}
+
 impl Default for MailSettings {
-    fn default() -> Self { Self { send_delay_secs: Self::DEFAULT_SEND_DELAY_SECS, large_audience_confirm: Self::DEFAULT_LARGE_AUDIENCE } }
+    fn default() -> Self { Self { send_delay_secs: Self::DEFAULT_SEND_DELAY_SECS, large_audience_confirm: Self::DEFAULT_LARGE_AUDIENCE, signatures: Default::default() } }
 }
 
 /// How far recurring meetings are expanded into individual occurrences, in whole years

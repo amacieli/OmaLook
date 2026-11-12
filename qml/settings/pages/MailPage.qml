@@ -4,8 +4,8 @@ import qs.Ui
 import "../../common"
 import ".."
 
-// "Message rendering" and "Delay sending email" are wired to the backend (settings.toml); the
-// other values are placeholders and are not persisted.
+// "Message rendering", "Delay sending email", "Ask before sending" and "Signature" are wired to the
+// backend (settings.toml); the other values are placeholders and are not persisted.
 SettingsPage {
   id: page
 
@@ -15,7 +15,7 @@ SettingsPage {
   property int markReadDelay: 2
   property bool conversationView: true
 
-  editing: signature.activeFocus || syncDropdown.popupOpen || delay.field.activeFocus || renderingDropdown.popupOpen || sendDelay.field.activeFocus || audience.field.activeFocus || renderCache.field.activeFocus
+  editing: sigText.activeFocus || syncDropdown.popupOpen || delay.field.activeFocus || renderingDropdown.popupOpen || sendDelay.field.activeFocus || audience.field.activeFocus || renderCache.field.activeFocus
 
   title: "Mail"
   description: "Sync behaviour and reading preferences."
@@ -168,15 +168,50 @@ SettingsPage {
 
   PanelSeparator { width: parent.width }
 
+  // OL-050: one signature per account, saved to settings.toml. Inserted above the quoted text of
+  // replies and forwards, and below the cursor in new messages.
   Column {
+    id: sigSection
     width: parent.width
     spacing: Style.space(6)
+    readonly property var signedIn: page.app ? page.app.accounts.filter(function(a) { return a.signed_in && a.email }) : []
+    property string accountId: signedIn.length > 0 ? signedIn[0].id : ""
+    onAccountIdChanged: sigText.text = page.app && page.app.signatures[accountId] ? page.app.signatures[accountId] : ""
 
     PanelSectionHeader { text: "SIGNATURE" }
-    TextField {
-      id: signature
+    Dropdown {
+      id: sigAccount
       width: parent.width
-      placeholderText: "Appended to new messages"
+      label: "Account"
+      value: sigSection.accountId
+      options: sigSection.signedIn.map(function(a) { return { value: a.id, label: a.email } })
+      onChanged: function(v) { sigSection.accountId = v }
+    }
+    TextArea {
+      id: sigText
+      width: parent.width
+      height: Math.max(implicitHeight, Style.space(110))
+      wrapMode: TextEdit.Wrap
+      font.family: Style.font.family
+      font.pixelSize: Style.font.body
+      color: Commons.Color.foreground
+      placeholderTextColor: Qt.darker(Commons.Color.foreground, 1.8)
+      placeholderText: "Blank for no signature"
+      enabled: sigSection.accountId !== ""
+    }
+    Button {
+      bordered: true
+      text: "Save signature"
+      enabled: sigSection.accountId !== ""
+      onClicked: { if (page.app) page.app.setSignature(sigSection.accountId, sigText.text) }
+    }
+    UiText {
+      width: parent.width
+      text: "Plain text. Sent with a \"-- \" line above it in system-font mail; HTML mail gets the text alone. "
+        + "In compose, Ctrl+G turns it off for that one message."
+      dim: true
+      wrapMode: Text.WordWrap
+      font.pixelSize: Style.font.caption
     }
   }
 }

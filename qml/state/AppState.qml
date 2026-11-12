@@ -17,7 +17,7 @@ Item {
   }
   property bool backendOnline: false
   onBackendOnlineChanged: {
-    if (backendOnline) { perfMark("backend first answered"); loadCalendarSettings(); loadUiSettings(); loadSenders(); loadLists(); loadListTargets(); loadMailSettings(); loadRenderSettings(); loadBackgroundSettings(); loadMcp(); loadSearchHistory(); loadViewState() }
+    if (backendOnline) { perfMark("backend first answered"); loadCalendarSettings(); loadUiSettings(); loadSenders(); loadLists(); loadListTargets(); loadMailSettings(); loadRenderSettings(); loadSignatures(); loadBackgroundSettings(); loadMcp(); loadSearchHistory(); loadViewState() }
   }
 
   // ---- launch timing (see src/perf.rs): marks are queued until the backend answers, then
@@ -1162,6 +1162,21 @@ Item {
       if (!r || r.ok !== true) notify(ruleNotice)
       else notify("Rule queued: mail from " + (d.kind === "domain" ? "@" + d.domain : d.address) + " \u2192 \u201c" + d.tag + "\u201d (applies to new mail only)")
     })
+  }
+
+  // OL-050: each account's signature (Settings -> Mail), {account_id: text}, from settings.toml.
+  property var signatures: ({})
+  function loadSignatures() {
+    request("GET", "/settings/signatures", function(xhr) {
+      if (xhr.status !== 200) return
+      try { var v = JSON.parse(xhr.responseText); if (v && typeof v === "object") root.signatures = v } catch (e) { console.log("[Signatures] parse error:", e) }
+    })
+  }
+  function setSignature(accountId, text) {
+    request("POST", "/settings/signature?account=" + encodeURIComponent(accountId), function(xhr) {
+      if (xhr.status !== 200) { notify("Could not save the signature: " + xhr.status); return }
+      loadSignatures()
+    }, JSON.stringify({ text: text }))
   }
 
   function setLargeAudienceConfirm(n) {

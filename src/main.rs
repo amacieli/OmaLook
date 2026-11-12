@@ -3306,6 +3306,36 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                     let response = format!(
                         "HTTP/1.1 {}\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                         status, body.len(), body
+                    let response = format!(
+                        "HTTP/1.1 {}\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                        status, body.len(), body
+                    );
+                    let _ = stream.write_all(response.as_bytes());
+                    continue;
+                }
+
+                // ── GET /settings/signatures — every account's signature: {account_id: text} (OL-050) ──
+                // ── POST /settings/signature?account=ID with body {"text": "..."} — set or clear one (empty) ──
+                if first_line.contains("GET /settings/signatures") || first_line.contains("POST /settings/signature") {
+                    let settings_path = config_dir.join("settings.toml");
+                    let result: std::result::Result<std::collections::BTreeMap<String, String>, String> = if first_line.contains("POST /settings/signature") {
+                        let account = query_param(first_line, "account").unwrap_or_default();
+                        let body_start = request.find("\r\n\r\n").map(|i| i + 4).unwrap_or(request.len());
+                        let text = serde_json::from_str::<serde_json::Value>(request[body_start..].trim())
+                            .ok()
+                            .and_then(|v| v.get("text").and_then(|t| t.as_str()).map(|s| s.to_string()));
+                        match (account.is_empty(), text) {
+                            (true, _) => Err("missing account".to_string()),
+                            (false, None) => Err("body must be {\"text\": \"...\"}".to_string()),
+                            (false, Some(t)) => omalook::settings::write_signature(&settings_path, &account, &t).map_err(|e| e.to_string()),
+                        }
+                    } else {
+                        Ok(omalook::settings::read_signatures(&settings_path))
+                    };
+                    let (status, body) = match result {
+                        Ok(map) => ("200 OK", serde_json::to_string(&map).unwrap_or_else(|_| "{}".into())),
+                        Err(e) => ("400 Bad Request", serde_json::json!({ "error": e }).to_string()),
+                    };
                     );
                     let _ = stream.write_all(response.as_bytes());
                     continue;

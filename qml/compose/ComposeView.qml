@@ -11,6 +11,7 @@ import "modes.js" as Modes
 import "attach.js" as Att
 import "../mail/format.js" as Fmt
 import "external.js" as External
+import "signature.js" as Sig
 
 // Compose pane. Takes the reading pane's slot in MailView (PLAN-compose.md decision Q3).
 //
@@ -26,6 +27,8 @@ FocusScope {
   property var initial: ({ kind: "new", accountId: "", to: "", cc: "", bcc: "", subject: "", quote: null })
   property var accounts: []
   property var contacts: []
+  // OL-050: every account's signature, {account_id: text}, from the owner (Settings -> Mail).
+  property var signatures: ({})
   property var lists: []
   property int largeAudience: 20     // confirm above this many recipients (0 = never)
   property string defaultMode: "system"
@@ -77,6 +80,42 @@ FocusScope {
     return "<p></p><p>On " + Fmt.escapeHtml(q.date || "") + ", " + Fmt.escapeHtml(q.from || "") + " wrote:</p><blockquote>" + lines + "</blockquote>"
   }
 
+  // ---- OL-050 signature. `_sigInserted` is the exact text put in the editor, so it can be found again.
+  // Ctrl+G (and `:signature`) takes it out or puts it back for this message only.
+  property bool signatureOn: true
+  property string _sigInserted: ""
+  property bool _ready: false
+  readonly property string _sig: (root.signatures && root.accountId && root.signatures[root.accountId]) ? root.signatures[root.accountId] : ""
+  function _quoteFirstLine() {
+    return initial.quote ? "On " + (initial.quote.date || "") + ", " + (initial.quote.from || "") + " wrote:" : ""
+  }
+  // Returns false when the block was edited by hand (then it is left where it is).
+  function _removeSignature() {
+    if (root._sigInserted === "") return true
+    var at = Sig.locate(handler.plainText(), root._sigInserted)
+    if (at < 0) return false
+    editor.remove(at, at + root._sigInserted.length)
+    root._sigInserted = ""
+    return true
+  }
+  function _insertSignature() {
+    if (initial.restore || initial.kind === "bounce") return
+    if (!_removeSignature()) return
+    if (!root.signatureOn || root._sig === "") return
+    var plain = handler.plainText()
+    var ins = Sig.insertion(plain, root._sig, root.mode === Modes.SYSTEM, Sig.quoteStart(plain, _quoteFirstLine()))
+    if (!ins) return
+    editor.insert(ins.at, ins.text)
+    root._sigInserted = ins.text
+  }
+  function toggleSignature() {
+    root.localStatus = ""
+    if (root._sig === "") { root.localStatus = "No signature for this account (Settings \u2192 Mail)."; return }
+    root.signatureOn = !root.signatureOn
+    if (root.signatureOn) _insertSignature()
+    else if (!_removeSignature()) { root.localStatus = "The signature was edited; remove it by hand."; root.signatureOn = true }
+    if (root.localStatus === "") root.localStatus = root.signatureOn ? "Signature on for this message." : "Signature off for this message."
+  }
   function _recipientsOf(f) { return f.recipients.map(function(r) { return r.list ? { email: "", name: r.name, list: r.list } : { email: r.email, name: r.name } }) }
 
   function _body() {
@@ -105,7 +144,8 @@ FocusScope {
     root.limits = Att.defaultLimits(root._account ? root._account.provider : "")
     if (root.fetchLimits && id !== "") root.fetchLimits(id, function(l) { if (l && l.hard && root.accountId === id) root.limits = l })
   }
-  onAccountIdChanged: _loadLimits()
+  // A From switch also swaps the signature for the new account's one.
+  onAccountIdChanged: { _loadLimits(); if (_ready) _insertSignature() }
   onAccountsChanged: _loadLimits()
   onFetchLimitsChanged: _loadLimits()
 
@@ -338,6 +378,7 @@ FocusScope {
     else { editor.forceActiveFocus(); editor.cursorPosition = 0 }
   }
 
+    else if (name === "signature") root.toggleSignature()
   Keys.onPressed: function(e) {
     if (browser.opened || attachList.opened) return
     if (root.confirming !== "") {
@@ -418,9 +459,12 @@ else if (ctrl && !shift && e.key === Qt.Key_V) { root.startPaste(); e.accepted =
         text: "Discard"
         iconText: "\uf1f8"
         tooltipText: "Esc"
+    // The signature goes in before `_seedText` is taken, so a message with only a signature is not "dirty".
+    if (!initial.restore) _insertSignature()
         onClicked: root.requestClose()
       }
       Button {
+    _ready = true
         bordered: true
         selected: true
         text: "Send"
@@ -452,6 +496,7 @@ else if (ctrl && !shift && e.key === Qt.Key_V) { root.startPaste(); e.accepted =
       id: externalBanner
       visible: root._externals.length > 0
       Layout.fillWidth: true
+    else if (ctrl && !shift && e.key === Qt.Key_G) { root.toggleSignature(); e.accepted = true }
       Layout.leftMargin: Style.spacing.lg
       Layout.rightMargin: Style.spacing.lg
       Layout.topMargin: Style.spacing.md
@@ -598,7 +643,7 @@ else if (ctrl && !shift && e.key === Qt.Key_V) { root.startPaste(); e.accepted =
       UiText {
         dim: true
         font.pixelSize: Style.font.caption
-        text: "Ctrl+Enter send · Esc discard · Ctrl+K link · Ctrl+Shift+A attach"
+        text: "Ctrl+Enter send · Esc discard · Ctrl+K link · Ctrl+Shift+A attach · Ctrl+G signature"
       }
     }
   }

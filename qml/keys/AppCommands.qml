@@ -676,6 +676,7 @@ Item {
     { id: "mail.markall",  title: "Mark all in list", scope: "mail", keys: ["*"], when: function() { return app.focusPane === "msg" }, run: function() { app.markAll() } },
     { id: "mail.attachments", title: "Attachments\u2026", scope: "mail", keys: ["A"], ex: ["attachments", "att"], pick: pickAttachments, when: function() { return onMessages && !app.composing && app.realAttachments().length > 0 }, run: function() { root.paletteRequested("attachments ") } },
     // Compose pane (the chords themselves live in ComposeView: text fields own their keys, so these have no key here).
+    { id: "compose.signature", title: "Signature on / off for this message (Ctrl+G)", scope: "mail", keys: [], ex: ["signature", "sig"], when: function() { return app.composing }, run: function() { app.composeAction("signature") } },
     { id: "compose.attach",      title: "Attach files\u2026 (Ctrl+Shift+A)",        scope: "mail", keys: [], ex: ["attach"],      when: function() { return app.composing }, run: function() { app.composeAction("attach") } },
     { id: "compose.attachments", title: "List the attachments (Ctrl+Shift+L)",   scope: "mail", keys: [], ex: ["attachments"], when: function() { return app.composing }, run: function() { app.composeAction("attachments") } },
     { id: "compose.detach",      title: "Remove the last attachment (Ctrl+Shift+Backspace)", scope: "mail", keys: [], ex: ["detach"], when: function() { return app.composing }, run: function() { app.composeAction("detach") } },

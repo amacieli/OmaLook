@@ -153,6 +153,16 @@ Change the folder with `[attachments] download_dir = "~/Documents/mail"` in `set
 file with your desktop's default application. Commands: `mail.attachments`, `mail.attachments.saveall` (also `:attachments`,
 `:saveattachments`). Gmail accounts are not supported yet.
 
+## Signatures while composing
+
+Each account can have a signature (Settings → Mail → Signature; saved to `settings.toml` as `[mail.signatures]`). It goes in
+when a message is opened: below the cursor in a new message, above the quoted text in a reply or forward. In system-font
+mail it starts with a `-- ` line; in HTML mail it is plain lines. Switching From swaps it for that account's signature.
+
+| Key | Action |
+|-----|--------|
+| `Ctrl+G` | Turn the signature off or on for this message only (also `:signature` in the palette). An edited signature is left alone, and the status line says so |
+
 ## Attaching files while composing
 
 These keys work in the compose pane. Text fields own their keys, so they are all Ctrl-based.

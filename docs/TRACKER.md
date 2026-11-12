@@ -177,6 +177,14 @@ IDs are stable (never reused). Status: `open` | `investigating` | `planned` | `i
 - **Status:** OL-023 is separate and not part of this umbrella.
 
 
+### OL-050 — Per-account signatures in Settings → Mail and compose (backlog 7) (built 2026-11-12, needs `./build.sh --live`; not seen on screen)
+- **Built:** `[mail.signatures]` in `settings.toml` (`models::clean_signature`, `settings::read_signatures` / `write_signature`); `GET /settings/signatures` and `POST /settings/signature?account=ID` with `{"text": ...}` (empty text clears). Settings → Mail picks a signed-in account and edits its signature. `qml/compose/signature.js` inserts it: new messages below the cursor, replies and forwards above the quoted text. System mode gets `-- ` as the first line; HTML mode gets the plain lines. `Ctrl+G` / `:signature` turns it off for one message; switching From swaps it. Documented in `docs/KEYS.md`.
+- **Unit-tested:** `cargo test --lib -- --skip test_copy_to_clipboard signature` (4 Rust tests: cleaning, control characters, length caps, empty entries dropped); `node tests/signature.test.js` (block text, reply and new-message insertion, locating the block after typing above it, edited block left alone).
+- **qmllint:** no errors in ComposeView.qml, AppState.qml, MailPage.qml, MailView.qml, AppCommands.qml.
+- **NOT verified:** rendering on screen; that the signature survives a real send (it is ordinary body text, so the MIME path is unchanged); HTML-mode insertion into the rich editor (inherits the formatting of the neighbouring text); the cursor position after insertion in a forward.
+- **Not built:** nothing in the signature list.
+
+
 ### OL-022 — New mail takes the first signed-in account instead of the viewed or last-used one (done in tree 2026-10-30, needs `./build.sh --live`)
 - **Done (2026-10-30):** `AppState.newMailAccountId()`: the account of the folder being viewed when the list is filtered to one account, else `last_mail_account` (written to `view_state.json` when a message is queued for sending), else the first signed-in account; a stored account that is no longer signed in is skipped. Replies/forwards unchanged. Not run in the live UI.
 - **Seen:** 2026-10-25 while planning OL-021 (user asked whether mail has the same gap; confirmed by reading the code). `AppState.openCompose()` (`qml/state/AppState.qml`) sets a new message's account to the first signed-in account; the folder or account being viewed and the last account used are ignored. Replies and forwards use the message's own account (correct). The From dropdown in `ComposeHeader.qml` is the only workaround.
