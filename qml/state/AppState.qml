@@ -1217,6 +1217,25 @@ Item {
     }, JSON.stringify({ account_id: acct, name: m.from_name || "", address: m.from_email }))
   }
 
+  // Reply to the mailing list the open message came through (OL-053): the reply is addressed to the
+  // list's List-Post address, not the sender. The backend reads the message's List-* headers from the
+  // provider once and caches the answer; a message that is not list mail says so.
+  function replyToList() {
+    var m = currentMessage
+    if (!m || !m.id) return
+    var id = String(m.id)
+    request("GET", "/messages/list-info?id=" + encodeURIComponent(id), function(xhr) {
+      var r = null
+      try { r = JSON.parse(xhr.responseText) } catch (e) { r = null }
+      if (!r) { notify("Could not reach the backend"); return }
+      if (r.error) { notify(r.error); return }
+      if (r.refusal) { notify(r.refusal); return }
+      if (String(currentMessageId) !== id) return      // moved to another message meanwhile
+      openCompose("reply", { to: r.post })
+      notify("Replying to the list " + r.post)
+    })
+  }
+
   // A new message to these addresses (the People view's `w`).
   function composeTo(addresses) {
     gotoView("mail")

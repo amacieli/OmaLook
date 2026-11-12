@@ -390,6 +390,57 @@ fn invite_info_json(config_dir: &PathBuf, id: &str) -> String {
     }
 }
 
+/// List lookup of a message for reply-to-list (OL-053): `{is_list, list_id, post, no_post}` plus a `refusal`
+/// sentence when a reply cannot go to the list, or `{"error"}`. The headers are fetched from the provider once
+/// per message (the cache keeps no List-* headers) and the answer is cached for good in `list_info`.
+fn list_info_json(config_dir: &PathBuf, id: &str) -> String {
+    use omalook::list_headers::{refusal, ListInfo};
+    let err = |m: &str| format!("{{\"error\":{}}}", serde_json::to_string(m).unwrap());
+    if id.is_empty() {
+        return err("missing id");
+    }
+    let db = match Database::open(config_dir.join("messages.db").to_str().unwrap_or("messages.db")) {
+        Ok(db) => db,
+        Err(e) => return err(&format!("database: {}", e)),
+    };
+    let with_refusal = |info: ListInfo| {
+        let mut j = info.to_json();
+        j["refusal"] = serde_json::json!(refusal(&info));
+        j.to_string()
+    };
+    if let Some(cached) = db.list_info_get(id).ok().flatten() {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&cached) {
+            return with_refusal(ListInfo::from_json(&v));
+        }
+    }
+    let account = match db.message_account(id) {
+        Ok(Some(a)) => a,
+        _ => return err("unknown message"),
+    };
+    let rt = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+        Ok(rt) => rt,
+        Err(e) => return err(&format!("runtime: {}", e)),
+    };
+    let headers = match omalook::accounts::provider_of(&account) {
+        "gmail" => rt.block_on(omalook::providers::gmail::GmailProvider::new(&account, None).fetch_list_headers(id)),
+        "exchange" => rt.block_on(GraphEmailProvider::new(AuthManager::for_account(&account)).fetch_list_headers(id)),
+        _ => return err("this account type cannot tell whether a message came from a list"),
+    };
+    match headers {
+        Ok(h) => {
+            let info = ListInfo::from_headers(&h);
+            if let Err(e) = db.list_info_set(id, &info.to_json().to_string()) {
+                warn!("Could not cache list info of {}: {}", id, e);
+            }
+            with_refusal(info)
+        }
+        Err(e) => {
+            warn!("List lookup failed for {}: {}", id, e);
+            err("could not read this message's headers from the server")
+        }
+    }
+}
+
 /// Re-read the account's calendar around `date` after an invitation changed it. Returns
 /// `"refreshed"` or `"not refreshed: ..."`.
 fn refresh_calendar_note(rt: &tokio::runtime::Runtime, db_path: &str, account: &str, date: Option<chrono::NaiveDate>) -> String {
@@ -3317,6 +3368,21 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                 // ── GET /settings/signatures — every account's signature: {account_id: text} (OL-050) ──
                 // ── POST /settings/signature?account=ID with body {"text": "..."} — set or clear one (empty) ──
                 if first_line.contains("GET /settings/signatures") || first_line.contains("POST /settings/signature") {
+                // ── GET /messages/list-info?id=ID — List-Id / List-Post of a message (lazy provider fetch, cached). ──
+                if first_line.contains("GET /messages/list-info") {
+                    let id = query_param(first_line, "id").unwrap_or_default();
+                    let dir = config_dir.clone();
+                    std::thread::spawn(move || {
+                        let body = list_info_json(&dir, &id);
+                        let response = format!(
+                            "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                            body.len(), body
+                        );
+                        let _ = stream.write_all(response.as_bytes());
+                    });
+                    continue;
+                }
+
                     let settings_path = config_dir.join("settings.toml");
                     let result: std::result::Result<std::collections::BTreeMap<String, String>, String> = if first_line.contains("POST /settings/signature") {
                         let account = query_param(first_line, "account").unwrap_or_default();

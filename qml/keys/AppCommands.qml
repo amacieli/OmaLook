@@ -656,6 +656,7 @@ Item {
     { id: "mail.reply",    title: "Reply",         scope: "mail", keys: ["r"], run: function() { app.openCompose("reply") } },
     { id: "mail.replyall", title: "Reply all",     scope: "mail", keys: ["R"], run: function() { app.openCompose("replyAll") } },
     { id: "mail.forward",  title: "Forward",       scope: "mail", keys: ["f"], run: function() { app.openCompose("forward") } },
+    { id: "mail.replylist", title: "Reply to the mailing list (List-Post), not the sender", scope: "mail", keys: ["L"], ex: ["replylist", "rl"], when: function() { return onMessages && app.currentMessageId !== "" }, run: function() { app.replyToList() } },
     { id: "mail.read",     title: "Mark read / unread", scope: "mail", keys: ["z"], run: function() { app.toggleRead() } },
     { id: "copy.from", title: "Copy From address",  scope: "mail", keys: ["Y f"], ex: ["copyfrom"], when: function() { return onMessages && !!content && content.copyRecipients !== undefined }, run: function() { content.copyRecipients("from") } },
     { id: "copy.to",   title: "Copy To addresses",   scope: "mail", keys: ["Y t"], ex: ["copyto"],   when: function() { return onMessages && !!content && content.copyRecipients !== undefined }, run: function() { content.copyRecipients("to") } },

@@ -20,6 +20,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+mod extras;
 const BASE: &str = "https://gmail.googleapis.com/gmail/v1/users/me";
 const PAGE_SIZE: usize = 100;
 /// Concurrent `messages.get` calls (Gmail allows ~50/s per user; this stays far below).

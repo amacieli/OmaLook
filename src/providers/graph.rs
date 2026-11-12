@@ -13,6 +13,8 @@ use tokio::sync::Mutex;
 pub(crate) const MSG_SELECT: &str = "id,subject,from,receivedDateTime,bodyPreview,isRead,parentFolderId,\
 toRecipients,ccRecipients,bccRecipients,categories,sentDateTime,importance,hasAttachments,conversationId";
 
+mod extras;
+
 pub struct GraphEmailProvider {
     auth: Mutex<AuthManager>,
 }

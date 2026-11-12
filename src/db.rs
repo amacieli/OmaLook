@@ -95,6 +95,7 @@ pub mod local_rules;
 pub mod gmail_filters;
 pub mod tasks;
 pub mod drafts;
+pub mod mail_extras;
 
 pub struct Database {
     conn: Connection,
@@ -364,6 +365,7 @@ impl Database {
         )?;
 
         self.init_lists_schema()?;
+        self.init_mail_extras_schema()?;
         self.init_tags_schema()?;
         self.init_rules_schema()?;
         self.init_local_rules_schema()?;

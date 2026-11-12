@@ -5,6 +5,11 @@ IDs are stable (never reused). Status: `open` | `investigating` | `planned` | `i
 
 ## Issues
 
+### OL-053 — Reply to list (List-Post / List-Id) (built 2026-11-12, needs `./build.sh --live`; not run in the live UI)
+- **Finding (planned entry, 2026-11-12):** the cache keeps no List-* headers, so detection needs a lazy fetch per opened message.
+- **Built:** `L` (`mail.replylist`, `:replylist`, `:rl`) opens a reply addressed to the list's `List-Post` address, not the sender (`AppState.replyToList`). `GET /messages/list-info?id=` reads the message's List-* headers from the provider once and caches the answer for good in the `list_info` table (Graph: `$select=internetMessageHeaders` on that one message; Gmail: `format=metadata&metadataHeaders=List-Post,List-Id,Mailing-List`). Parsing (`src/list_headers.rs`): first valid `mailto:` of `List-Post` wins (query and `%xx` handled, URLs ignored), `NO` / `NO (comment)` means no posting, `Mailing-List: list x@y; contact ...` (Yahoo, ezmlm) is the fallback, `List-Unsubscribe` alone does not make a list. Refusals shown in the status line: not list mail, list does not accept posts, list mail without a posting address (use `R`).
+- **Checked:** unit tests for the parser (header forms), the header-pair shapes of both providers, the cache table; `node tests/commands.test.js` passes (`L` was unused in every scope); qmllint clean. Live read-only: Graph `internetMessageHeaders` per message answered 200 for 40 messages of the work account (none was list mail, so a real `List-Post` was never seen); the Gmail test account had no list mail either. **Not verified:** a real list message end to end; the route and the key in the running app.
+
 ### OL-048 — Drafts: save, resume, sync to the provider (PLAN-compose.md Phase B2; OL-035 phase 7 attachments kept with drafts) (in progress 2026-11-12, NOT finished)
 - **Wanted (user, 2026-11-12):** autosave local drafts; push them to Drafts on Graph and Gmail; resume from the Drafts folder; send from the provider copy (no duplicate in Drafts/Sent); crash recovery; attachments kept with the draft (spool, '!' chip when a copy is missing).
 - **Built (uncommitted at time of writing, in tree):**

@@ -24,6 +24,7 @@ pub mod sync_state;
 pub mod qt_bridge;
 pub mod email_daemon;
 pub mod compose;
+pub mod list_headers;
 pub mod addresses;
 pub mod fs_browse;
 pub mod outbox;

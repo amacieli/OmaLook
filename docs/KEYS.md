@@ -163,6 +163,17 @@ mail it starts with a `-- ` line; in HTML mail it is plain lines. Switching From
 |-----|--------|
 | `Ctrl+G` | Turn the signature off or on for this message only (also `:signature` in the palette). An edited signature is left alone, and the status line says so |
 
+## Reply to a mailing list
+
+| Key | Action |
+|-----|--------|
+| `L` | Reply to the list the open message came through (`mail.replylist`, also `:replylist`, `:rl`). The reply is addressed to the list's `List-Post` address, not the sender; Cc stays empty |
+
+OmaLook does not keep `List-*` headers, so the first `L` on a message asks the mail server for them (Exchange: `internetMessageHeaders`; Gmail:
+`List-Id`, `List-Post`, `Mailing-List`) and remembers the answer. A message that did not come through a list, a list that says
+`List-Post: NO` (announcements only), and list mail that gives no posting address are each reported in the status line and nothing opens;
+for the last one use `R`. `L` is not bound inside the compose pane.
+
 ## Attaching files while composing
 
 These keys work in the compose pane. Text fields own their keys, so they are all Ctrl-based.
