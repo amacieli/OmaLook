@@ -185,6 +185,16 @@ IDs are stable (never reused). Status: `open` | `investigating` | `planned` | `i
 - **Not built:** nothing in the signature list.
 
 
+### OL-051 — Aliases / send-as in the compose From dropdown (backlog 7) (planned 2026-11-12, NOT STARTED)
+- **Findings:** Gmail: `gmail.settings.basic` is already requested (`src/google_auth.rs`), so `users/me/settings/sendAs` can list the send-as addresses. Graph: `proxyAddresses` on `/me` (`User.Read`, believed held; not checked against the granted scopes). Whether Graph accepts an alias as `from` is NOT verified.
+- **Planned interpretation:** send-as identities (not mail aliases for receiving). The From dropdown in `ComposeHeader.qml` lists the primary address and the send-as ones; the chosen one is used as From where the provider accepts it.
+
+### OL-052 — Bounce / redirect (mutt-style resend) (planned 2026-11-12, NOT STARTED)
+- **Findings:** Graph has no bounce action (per the user), so only Gmail can do it. Gmail: `messages.send` with a raw MIME message already exists in `src/providers/gmail.rs` (the outbox path). A bounce would need the original raw source (`format=raw`, not fetched today). What the recipient sees is NOT verified: the original From is likely rewritten to the sending account unless the original headers are kept; this must be tested before it is described to users.
+
+### OL-053 — Reply to list (List-Post / List-Id) (planned 2026-11-12, NOT STARTED)
+- **Findings:** the cache keeps no List-* headers (`grep` of `src` finds none). Detection needs a lazy fetch per opened message: Gmail `format=metadata&metadataHeaders=List-Id,List-Post`; Graph `$select=internetMessageHeaders`. Key and palette entry to be chosen from the free keys in `docs/KEYS.md`.
+
 ### OL-022 — New mail takes the first signed-in account instead of the viewed or last-used one (done in tree 2026-10-30, needs `./build.sh --live`)
 - **Done (2026-10-30):** `AppState.newMailAccountId()`: the account of the folder being viewed when the list is filtered to one account, else `last_mail_account` (written to `view_state.json` when a message is queued for sending), else the first signed-in account; a stored account that is no longer signed in is skipped. Replies/forwards unchanged. Not run in the live UI.
 - **Seen:** 2026-10-25 while planning OL-021 (user asked whether mail has the same gap; confirmed by reading the code). `AppState.openCompose()` (`qml/state/AppState.qml`) sets a new message's account to the first signed-in account; the folder or account being viewed and the last account used are ignored. Replies and forwards use the message's own account (correct). The From dropdown in `ComposeHeader.qml` is the only workaround.
