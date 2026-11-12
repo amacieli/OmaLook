@@ -29,6 +29,20 @@ Renamed from "omarchylook" on 2026-10-12. **README.md is stale** (describes the 
 - QML text uses `root.normalFontSize` (no offsets); fonts are `"monospace"`; colours come from the Omarchy theme, not hardcoded.
 - Text fields own their keys; global bindings apply only when no text field has focus. Document new bindings in `docs/KEYS.md`.
 
+## Security rules (from `docs/REVIEW-2026-11-12.md`; details in the Hermes skill `omalook-secure-by-default`)
+- Every backend route goes through the router + guard (token, no Origin, exact Host). Never add a route as a
+  `first_line.contains(...)` arm, never send `Access-Control-Allow-Origin`. (Until the guard exists, OL-056: do not add new `ACAO *` responses.)
+- Never accept a filesystem path from a request. Files come from a UI pick/paste/drop registration or the spool.
+- Anything that widens what an agent can do (MCP enable, scopes, tool allow) needs a UI confirmation, not just a request.
+- Untrusted HTML goes only through the render helper or format.js. Never hand Qt Text a remote URL (including
+  style url()); open links only through openExternal() (http, https, mailto).
+- SQL: bound parameters only; LIKE with ESCAPE; FTS terms through search.rs quoting.
+- No provider/network call on the accept thread or in a UI-blocking path. Daemon loops run under the supervisor.
+- A new table with account_id goes into ACCOUNT_TABLES (a test enforces it). New dirs 0700, files 0600.
+- Never log tokens, bodies, addresses or query strings. perf.log gets method + route name only.
+- Every change ships its guard test: route auth test, sanitizer corpus case, delete-account sweep, purge cap.
+- Scratch instances: OMALOOK_PORT + Backend.qml only; never hard-code 27182.
+
 ## Git
 - Remote `origin` = github.com/amacieli/OmaLook. **No feature branches needed (user decision, 2026-10-16): lump all work together on the current branch (`main`) and commit there. Push only when the user asks.** Verify upstream is current before pushing or rebasing.
 - `build.sh` is part of the project: **commit and push it with every other change** (user decision, 2026-10-24). The working tree may still hold other uncommitted work of the user's (staged deletions of the old Python backend): **stage selectively, never `git add -A`, and leave that out unless asked.** (There is no `omalook` symlink in the project root any more; there is no `run.sh` either: run the dev build with `QML_DIR=$PWD/qml <build dir>/debug/omalook` (the build script prints the exact line), after closing the live app.) `packaging/` is tracked; include its changes when they are part of the work.

@@ -5,11 +5,124 @@ IDs are stable (never reused). Status: `open` | `investigating` | `planned` | `i
 
 ## Issues
 
-### OL-055 — HTML render helper: a mail could navigate to an attacker page that scripts the backend (SEC-008/009, security review 2026-11-12) (fixed in tree, needs `./build.sh --live`; not run in the live UI)
-- **Found (review 2026-11-12, `docs/REVIEW-2026-11-12.md` once written; notes in `/mnt/ai/omalook-review-2026-11-12/p2-findings.md`):** `omalook-render` allowed any navigation of type `OTHER`, and `<meta http-equiv=refresh content="0;url=…">` is type `OTHER`. The page it loaded had no CSP (the CSP was a `<meta>` in our own document) and JavaScript was on, so it could call `http://127.0.0.1:27182` (no auth, `Access-Control-Allow-Origin: *`) and send the answers out. Seen live in a sandbox against the real backend, images off: one rendered mail turned MCP on (`/settings/mcp` enabled false → true) and sent `/settings/mcp` to the attacker server. Zero-click for senders marked always-HTML (daemon pre-render, OL-028); one key ("view as HTML") otherwise. With "load images" on, `<img>` also reached loopback/LAN addresses (SEC-009).
+### OL-056 — Loopback backend 27182 has no auth, no Host/Origin check, `ACAO *` (SEC-001; supersedes OL-006) (open, security review 2026-11-12)
+- **Found:** High, Confirmed live (sandbox probes). Any local process/user, agent HTTP tool, or web page (after one LNA prompt) reads all cached data and drives 91 write routes. Details: `docs/REVIEW-2026-11-12.md`.
+- **Fix plan:** Roadmap R1.1–R1.4: single QML client (`Backend.qml`), request parser + timeouts, guard (reject Origin, exact Host, drop `ACAO *`), per-launch session token (0600 runtime file + env), fail-closed bind. First check that QML XHR sends no `Origin`.
+
+### OL-057 — Any readable local file can be attached via `/compose/send` and `/drafts/save` (SEC-002) (open, security review 2026-11-12)
+- **Found:** High, Confirmed up to send (`main.rs:1322-1394`, `attach_spool.rs:53-132`). Same class: contact photo (`main.rs:1548-1568`) and import (`1603-1613`) read any path. Details: `docs/REVIEW-2026-11-12.md`.
+- **Fix plan:** R1.5: UI pick/paste/drop registers paths; routes accept only registered paths or spool handles. Later `FileHandle` registry (R3.2).
+
+### OL-058 — MCP can be enabled and widened through unauthenticated `/settings/mcp/*` on 27182 (SEC-003) (open, security review 2026-11-12)
+- **Found:** High by chaining, Confirmed live: 7 cross-origin POSTs → MCP listening with calendar write tools; token regenerate/copy reachable. Details: `docs/REVIEW-2026-11-12.md`.
+- **Fix plan:** Session token (OL-056) + UI confirmation for any widening; POST + JSON body, no state change from query strings (R1.6).
+
+### OL-059 — One idle connection freezes every backend route (SEC-004) (open, security review 2026-11-12)
+- **Found:** Medium, Confirmed live (`main.rs:2894-2895` read without timeout on the only accept thread). Also the 1 KiB first-read bug that breaks long signatures. Details: `docs/REVIEW-2026-11-12.md`.
+- **Fix plan:** R1.2: header parse, Content-Length, 1 MiB cap, 5 s timeouts, bounded thread per connection.
+
+### OL-060 — Settings routes allow persistent tampering: signature, senders always_html/images, rules, lists (SEC-005) (open, security review 2026-11-12)
+- **Found:** Medium, Confirmed live (attacker link saved into a signature cross-origin). Details: `docs/REVIEW-2026-11-12.md`.
+- **Fix plan:** Closed by OL-056; add per-route refusal tests.
+
+### OL-061 — Qt HTML fallback fetches `style="…url(http…)"` despite images blocked (SEC-010) (open, security review 2026-11-12)
+- **Found:** Medium, Confirmed live (`qml/mail/format.js:240-242`; fallback forced by a 60,000-px mail; helper disabled for the session after 3 failures). Details: `docs/REVIEW-2026-11-12.md`.
+- **Fix plan:** Drop `url(` in style values; reset helper failure counter per message; sanitizer corpus tests (R2.1).
+
+### OL-062 — Qt HTML fallback opens any link scheme (`file:`, `data:`) (SEC-011) (open, security review 2026-11-12)
+- **Found:** Low, Confirmed (corpus S06/S08/S09; `MessagePreview.qml:898`, `:203`, `:756`). Details: `docs/REVIEW-2026-11-12.md`.
+- **Fix plan:** One QML `openExternal()` allow-list (http, https, mailto) for all 12 `Qt.openUrlExternally` sites (R2.2).
+
+### OL-063 — Remove account leaves 18 tables and per-account cache dirs (SEC-012) (open, security review 2026-11-12)
+- **Found:** Medium, Confirmed by failing test (`p3-review-tests.patch`, `review_sec012.rs`); contradicts `docs/privacy-policy.md:75-79`. 0 orphans today (latent). Details: `docs/REVIEW-2026-11-12.md`.
+- **Fix plan:** `ACCOUNT_TABLES` + `sqlite_master` test, delete in one transaction, remove cache dirs, secure delete (R2.3).
+
+### OL-064 — Backend bind failure only warns; UI then talks to whoever holds 27182 (SEC-015) (open, security review 2026-11-12)
+- **Found:** Medium on multi-user hosts / Low here, Likely (code, `main.rs:2877-2888`). Details: `docs/REVIEW-2026-11-12.md`.
+- **Fix plan:** Exit loudly on bind failure, UI shows 'backend unavailable' (part of R1.4).
+
+### OL-065 — Known-vulnerable dependencies: 15 RustSec advisories, no audit gate (SEC-007) (open, security review 2026-11-12)
+- **Found:** Medium as policy, Confirmed (`cargo audit` 0.23.0). Low exploitability (TLS client only, SQL bound). Details: `docs/REVIEW-2026-11-12.md`.
+- **Fix plan:** R2.11 `cargo audit` + `deny.toml` in `scripts/verify.sh`; R4.1 drop reqwest 0.11, update ureq/rustls, rusqlite ≥ fixed SQLite.
+
+### OL-066 — Any local process can abort Google sign-in with a bad callback (SEC-006) (open, security review 2026-11-12)
+- **Found:** Low, Likely (`google_auth.rs:257-268`). Details: `docs/REVIEW-2026-11-12.md`.
+- **Fix plan:** Answer 404 to mismatched `state` and keep waiting (R2.8).
+
+### OL-067 — `cache_retention_days` is parsed but never used (SEC-013) (open, security review 2026-11-12)
+- **Found:** Low, Confirmed (`models.rs:663/702`; `db.rs:1776` has no caller). Cache 286 MB. Details: `docs/REVIEW-2026-11-12.md`.
+- **Fix plan:** Wire it within purge rules or remove the setting (R4.3).
+
+### OL-068 — Spike scripts left plaintext refresh tokens in `~/.config/omalook` (SEC-014) (open, security review 2026-11-12)
+- **Found:** Low–Medium, Confirmed (`spike_token.json`, `spike_google_token.json`, 0600). Details: `docs/REVIEW-2026-11-12.md`.
+- **Fix plan:** Delete, revoke those grants, make spikes use tmpfs or the app broker (R0.2).
+
+### OL-069 — A panic in a sync thread silently stops that sync (ARCH-C1) (open, security review 2026-11-12)
+- **Found:** Medium, Confirmed (code) (`scheduler.rs:252-272`; reachable unwrap at `email_daemon.rs:801`). Details: `docs/REVIEW-2026-11-12.md`.
+- **Fix plan:** Supervisor: catch_unwind, backoff, restart, 'sync stopped' state in UI (R2.5).
+
+### OL-070 — Provider calls and DB opens run inline on the single accept thread (ARCH-H1) (open, security review 2026-11-12)
+- **Found:** Medium, Confirmed (code): `/compose/originals`, `/calendar/find`, contacts, drafts, rules GETs; 54 `Database::open` with DDL in `main.rs`. Details: `docs/REVIEW-2026-11-12.md`.
+- **Fix plan:** R1.2 thread per connection; R3.3 open-once connections; R3.4 shared runtime.
+
+### OL-071 — Gmail delete-reconcile has no sanity cap (ARCH-S1) (open, security review 2026-11-12)
+- **Found:** Low–Medium, Confirmed by failing test (`review_archs1.rs`: Ok([]) → 200 cached messages deleted). Details: `docs/REVIEW-2026-11-12.md`.
+- **Fix plan:** Reuse the Graph purge guard (R2.4).
+
+### OL-072 — Calendar updates send no If-Match (ARCH-S2) (open, security review 2026-11-12)
+- **Found:** Low–Medium, Confirmed (code): last writer wins. Details: `docs/REVIEW-2026-11-12.md`.
+- **Fix plan:** Reuse contacts etag/412-conflict pattern (R3.6).
+
+### OL-073 — 401 not retried with a forced refresh; Google ignores Retry-After (ARCH-S3) (open, security review 2026-11-12)
+- **Found:** Low, Confirmed (code) (`graph.rs:590-593`, `google_api.rs:180-215`; expiry is local-clock based, `token_store.rs:392/401`). Details: `docs/REVIEW-2026-11-12.md`.
+- **Fix plan:** On 401 drop the cached access token once and retry; honour Retry-After (R2.9).
+
+### OL-074 — Tasks and People views hard-code port 27182 (ARCH-T1) (open, security review 2026-11-12)
+- **Found:** Low (dev safety), Confirmed (code): `TasksView.qml:94/104`, `PeopleView.qml:27` (no `backendUrl` at `AppShell.qml:194`). A scratch UI writes to the live backend. Details: `docs/REVIEW-2026-11-12.md`.
+- **Fix plan:** Fixed by R1.1 (`Backend.qml`).
+
+### OL-075 — No route/auth/header tests; provider base URLs hard-coded (ARCH-Q1) (open, security review 2026-11-12)
+- **Found:** Low (debt), Confirmed: zero `#[test]` in `main.rs`; 29 Graph URL literals. Details: `docs/REVIEW-2026-11-12.md`.
+- **Fix plan:** Router tests from R1.4; typed router R3.1; injectable base URLs R3.8.
+
+### OL-076 — Config/cache dirs 0755, DB/settings/perf.log 0644 (HARD-1) (open, security review 2026-11-12)
+- **Found:** Low, Confirmed (home is 0710 here). Details: `docs/REVIEW-2026-11-12.md`.
+- **Fix plan:** Create dirs 0700 at startup in one place, daemon `umask 077` (R2.6).
+
+### OL-077 — perf.log records full request lines (paths, search terms) (HARD-2) (open, security review 2026-11-12)
+- **Found:** Low, Confirmed. Details: `docs/REVIEW-2026-11-12.md`.
+- **Fix plan:** Log method + route name only (R2.7).
+
+### OL-078 — MCP server has no connection cap (HARD-3) (open, security review 2026-11-12)
+- **Found:** Low, Confirmed (code) (`mcp/server.rs:142`). Details: `docs/REVIEW-2026-11-12.md`.
+- **Fix plan:** Add a cap (R2.13).
+
+### OL-079 — Backend routing by substring match on the request line (HARD-4) (open, security review 2026-11-12)
+- **Found:** Low, Confirmed (code) (`main.rs:2900-4177`, method-less arms 3006/3700/3965). Details: `docs/REVIEW-2026-11-12.md`.
+- **Fix plan:** Typed router; move route groups out of `main.rs` (R3.1).
+
+### OL-080 — Raw In-Reply-To/References; `Cf` chars (U+202E) kept in saved names (HARD-5) (open, security review 2026-11-12)
+- **Found:** Low, Confirmed (code) (`compose.rs:797-801`, `attachments.rs:105-127`). Details: `docs/REVIEW-2026-11-12.md`.
+- **Fix plan:** Strip CR/LF and `Cf` characters (R2.10).
+
+### OL-081 — LIKE without ESCAPE in contacts category filter and rule preview (open, security review 2026-11-12)
+- **Found:** Low (correctness, not injection) (`db.rs:2236-2237`, `db/rules.rs:153-157`). Details: `docs/REVIEW-2026-11-12.md`.
+- **Fix plan:** Escape `\ % _` with ESCAPE (R4.5).
+
+### OL-082 — No DB integrity check or recovery path (open, security review 2026-11-12)
+- **Found:** Low, Confirmed (code): no `quick_check`/`integrity_check` in `src/`; behavior on a corrupt DB unverified. Details: `docs/REVIEW-2026-11-12.md`.
+- **Fix plan:** `PRAGMA quick_check` at startup with a 'rebuild cache' path (R3.9).
+
+### OL-083 — Privacy policy and docs drift (open, security review 2026-11-12)
+- **Found:** Info, Confirmed: policy misses `openidconnect.googleapis.com`, scopes `gmail.settings.basic`, `MailboxSettings.ReadWrite`, `Mail.Send`, on-click hosts, disk-encryption note; README stale; stale comment `main.rs:2873-2874`. Details: `docs/REVIEW-2026-11-12.md`.
+- **Fix plan:** Update `docs/privacy-policy.md` (R2.12), README, comment.
+
+### OL-055 — HTML render helper: a mail could navigate to an attacker page that scripts the backend (SEC-008/009, security review 2026-11-12) (fixed, deployed 2026-11-12 with `./build.sh --live`; not exercised in the live UI)
+- **Found (review 2026-11-12, `docs/REVIEW-2026-11-12.md`; notes in `/mnt/ai/omalook-review-2026-11-12/p2-findings.md`):** `omalook-render` allowed any navigation of type `OTHER`, and `<meta http-equiv=refresh content="0;url=…">` is type `OTHER`. The page it loaded had no CSP (the CSP was a `<meta>` in our own document) and JavaScript was on, so it could call `http://127.0.0.1:27182` (no auth, `Access-Control-Allow-Origin: *`) and send the answers out. Seen live in a sandbox against the real backend, images off: one rendered mail turned MCP on (`/settings/mcp` enabled false → true) and sent `/settings/mcp` to the attacker server. Zero-click for senders marked always-HTML (daemon pre-render, OL-028); one key ("view as HTML") otherwise. With "load images" on, `<img>` also reached loopback/LAN addresses (SEC-009).
 - **Fixed (`tools/render/omalook-render.c`):** (1) only our own `about:blank` document may load; every other navigation is ignored whatever its type (also `data:` refresh). (2) `enable-javascript-markup` off: mail scripts are off by setting, not only by CSP; our `evaluate_javascript` link query still works. (3) WebKit content blocker compiled before the page loads: loopback, `0.`, `10.`, `172.16–31.`, `192.168.`, `169.254.`, `localhost`, IPv6 literals and `ws(s):` are never fetched; without `--images` no `http(s)`/`ftp` request at all. Fails closed (exit 4, UI falls back) if the rules cannot be compiled; rules live in a private temp dir (`$TMPDIR`, else `$XDG_RUNTIME_DIR`), removed before exit.
 - **Checked:** gcc `-Wall` clean. Review corpus (20 cases × images off/on, sandboxed, no network, fake attacker server + inotify canary): 0 requests and 0 file accesses for every attack case (meta refresh http/file/data/delayed, iframe, script, objects, prefetch, `<base>`, srcset, loopback `<img>`, forms, CSP override); a normal mail still renders with its link box; `--images` still loads an image from a named host. End-to-end against the real backend with the fixed helper: no request, MCP stayed off. No filter dirs left behind.
-- **Not checked / remaining:** the live app (helper at `/opt/omalook/bin` is the old one until `./build.sh --live`); a host NAME that resolves to loopback/LAN still loads with `--images` (URL rules cannot see DNS; seen with `img.test` → 127.0.0.1) — closed only by the 27182 session token (SEC-001, review roadmap). The Qt fallback renderer's `style="background:url()"` fetch (SEC-010) and unchecked link schemes (SEC-011) are separate, not fixed here.
+- **Deployed 2026-11-12:** `/opt/omalook/bin/omalook-render` is byte-identical to `bin/omalook-render` and to the binary the review corpus was rerun against (`cmp`); backend answered `/sync/serial` 200 after restart.
+- **Not checked / remaining:** a hostile mail opened in the live UI (not attempted on the real account); a host NAME that resolves to loopback/LAN still loads with `--images` (URL rules cannot see DNS; seen with `img.test` → 127.0.0.1) — closed only by the 27182 session token (SEC-001, review roadmap). The Qt fallback renderer's `style="background:url()"` fetch (SEC-010) and unchecked link schemes (SEC-011) are separate, not fixed here.
 
 ### OL-052 — Bounce / redirect (mutt-style resend) (built 2026-11-12, needs `./build.sh --live`; not run in the live UI, never sent)
 - **Finding:** neither provider can bounce for real. Gmail `messages.send` and Exchange `sendMail` both take the recipients from the To / Cc / Bcc headers (there is no separate envelope) and send as the signed-in mailbox, so a resend can never keep the original From. Exchange has no resend action either (`forward` / `createForward` add the `FW:` subject, a header block and the user's text).
