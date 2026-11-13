@@ -1,8 +1,9 @@
 import QtQuick
 import QtQuick.Layouts
+import "../state"
 
 // TasksView — To-do list with filters, omarchy aesthetic
-// Data source: http://127.0.0.1:27182/tasks
+// Data source: GET /tasks (through Backend)
 Rectangle {
     id: root
     color: "#000000"
@@ -79,9 +80,7 @@ Rectangle {
     property string _lastJson: ""
     function loadTasks() {
         if (root.tasks.length === 0) loading = true
-        var xhr = new XMLHttpRequest()
-        xhr.onreadystatechange = function() {
-            if (xhr.readyState !== XMLHttpRequest.DONE) return
+        Backend.request("GET", "/tasks", function(xhr) {
             loading = false
             if (xhr.status === 200) {
                 // Unchanged answers must not rebuild the list (it would collapse the open row).
@@ -90,20 +89,16 @@ Rectangle {
                     catch(e) { root.tasks = [] }
                 }
             }
-        }
-        xhr.open("GET", "http://127.0.0.1:27182/tasks")
-        xhr.send()
+        })
     }
 
     function toggleTask(taskIndex) {
         var ft = root.filteredTasks()
         if (taskIndex < 0 || taskIndex >= ft.length) return
         var task = ft[taskIndex]
-        var xhr = new XMLHttpRequest()
         var newDone = !task.completed
-        xhr.open("POST", "http://127.0.0.1:27182/tasks/" + encodeURIComponent(task.id) + "/complete")
-        xhr.setRequestHeader("Content-Type", "application/json")
-        xhr.send(JSON.stringify({ completed: newDone }))
+        Backend.request("POST", "/tasks/" + encodeURIComponent(task.id) + "/complete", null,
+                        JSON.stringify({ completed: newDone }), { "Content-Type": "application/json" })
         // optimistic update
         task.completed = newDone
         root.tasks = root.tasks.slice()

@@ -8,6 +8,7 @@ IDs are stable (never reused). Status: `open` | `investigating` | `planned` | `i
 ### OL-056 — Loopback backend 27182 has no auth, no Host/Origin check, `ACAO *` (SEC-001; supersedes OL-006) (open, security review 2026-11-12)
 - **Found:** High, Confirmed live (sandbox probes). Any local process/user, agent HTTP tool, or web page (after one LNA prompt) reads all cached data and drives 91 write routes. Details: `docs/REVIEW-2026-11-12.md`.
 - **Fix plan:** Roadmap R1.1–R1.4: single QML client (`Backend.qml`), request parser + timeouts, guard (reject Origin, exact Host, drop `ACAO *`), per-launch session token (0600 runtime file + env), fail-closed bind. First check that QML XHR sends no `Origin`.
+- **Progress (2026-11-12):** R1.1 done in tree (OL-074): every UI request goes through `qml/state/Backend.qml`. Checked for R1.3: in a sandboxed run of the whole UI (122 requests, GET and POST, async and the sync draft save) QML XHR sent **no `Origin` header**, and `Host` was always `127.0.0.1:<port>`. R1.2–R1.4 open.
 
 ### OL-057 — Any readable local file can be attached via `/compose/send` and `/drafts/save` (SEC-002) (open, security review 2026-11-12)
 - **Found:** High, Confirmed up to send (`main.rs:1322-1394`, `attach_spool.rs:53-132`). Same class: contact photo (`main.rs:1548-1568`) and import (`1603-1613`) read any path. Details: `docs/REVIEW-2026-11-12.md`.
@@ -77,9 +78,10 @@ IDs are stable (never reused). Status: `open` | `investigating` | `planned` | `i
 - **Found:** Low, Confirmed (code) (`graph.rs:590-593`, `google_api.rs:180-215`; expiry is local-clock based, `token_store.rs:392/401`). Details: `docs/REVIEW-2026-11-12.md`.
 - **Fix plan:** On 401 drop the cached access token once and retry; honour Retry-After (R2.9).
 
-### OL-074 — Tasks and People views hard-code port 27182 (ARCH-T1) (open, security review 2026-11-12)
+### OL-074 — Tasks and People views hard-code port 27182 (ARCH-T1) (fixed in tree 2026-11-12 by R1.1, needs `./build.sh --live`; not run live)
 - **Found:** Low (dev safety), Confirmed (code): `TasksView.qml:94/104`, `PeopleView.qml:27` (no `backendUrl` at `AppShell.qml:194`). A scratch UI writes to the live backend. Details: `docs/REVIEW-2026-11-12.md`.
-- **Fix plan:** Fixed by R1.1 (`Backend.qml`).
+- **Fix (R1.1):** `qml/state/Backend.qml` (singleton, registered in `qml/state/qmldir`) is the only backend client: `request()` (async) and `requestSync()` (draft save on quit), port from `OMALOOK_PORT`. All 26 `XMLHttpRequest` sites in AppState, AuthController, Calendar, FreeTimeFinder, MessagePreview, People and Tasks moved onto it; the per-view `backendUrl` properties are gone (AppState keeps `backendUrl` only for Settings > About). Guard test `tests/backend_client.test.js` fails on any `XMLHttpRequest`, `27182` or loopback URL outside Backend.qml.
+- **Verified:** sandbox (bwrap, own network namespace, theme from the real kit, offscreen): the real UI plus a harness that drives Tasks (load, complete), People (load, folders, new contact, post, postJson), Calendar (events, outbox, find a time), auth (login, Gmail login, confirm, cancel, logout, remove, account login), mail (folders, messages, body, `/render/get`) and the sync draft save, with `OMALOOK_PORT=27999` and a trap listener on 27182: **0 requests reached 27182**, 122 reached 27999. Same harness on the previous commit: 16 requests hit 27182 (Tasks GET + complete, People ×9, find a time ×3). Not covered by the run: `/render/adopt` (helper cannot render offscreen), People directory search / photo / edit, meeting options (same mechanical conversion).
 
 ### OL-075 — No route/auth/header tests; provider base URLs hard-coded (ARCH-Q1) (open, security review 2026-11-12)
 - **Found:** Low (debt), Confirmed: zero `#[test]` in `main.rs`; 29 Graph URL literals. Details: `docs/REVIEW-2026-11-12.md`.

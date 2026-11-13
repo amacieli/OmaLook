@@ -8,12 +8,13 @@ import qs.Ui
 import "../common"
 import "../people"
 import "../people/fields.js" as PF
+import "../state"
 
 // PeopleView: the address book (docs/PLAN-contacts.md). A keyboard cursor walks the contact list, Enter
 // opens a detail pane with every field, `/` filters by any word of any field, Space marks, and the keys
 // that act on a contact (`w` mail, `S` text, `O` open, `y` copy) live in the registry (AppCommands) and
 // call the functions below. Colours and fonts come from the Omarchy theme; nothing here is a literal.
-// Data: http://127.0.0.1:27182/contacts?view=&sort=&account=&q=  and  /contacts/get?id=
+// Data (through Backend): GET /contacts?view=&sort=&account=&q=  and  /contacts/get?id=
 Item {
     id: root
 
@@ -23,8 +24,6 @@ Item {
     readonly property color  textColor:    Commons.Color.foreground
     readonly property color  dimColor:     Qt.darker(Commons.Color.foreground, 1.4)
     readonly property color  veryDimColor: Qt.rgba(Commons.Color.foreground.r, Commons.Color.foreground.g, Commons.Color.foreground.b, 0.3)
-
-    property string backendUrl: "http://127.0.0.1:27182"
 
     // "all" | "favorites" | "lists"   and   "first" | "last" | "company" | "recent"
     // (AppShell keeps both across tab switches)
@@ -97,7 +96,7 @@ Item {
 
     // ── data ───────────────────────────────────────────────────────
     function _url() {
-        var u = backendUrl + "/contacts?view=" + viewMode + "&sort=" + sortKey
+        var u = "/contacts?view=" + viewMode + "&sort=" + sortKey
         if (accountFilter !== "") u += "&account=" + encodeURIComponent(accountFilter)
         if (searchText.trim() !== "") u += "&q=" + encodeURIComponent(searchText.trim())
         return u
@@ -105,9 +104,8 @@ Item {
     function load() {
         var serial = ++_serial
         loading = true
-        var xhr = new XMLHttpRequest()
-        xhr.onreadystatechange = function() {
-            if (xhr.readyState !== XMLHttpRequest.DONE || serial !== root._serial) return
+        Backend.request("GET", _url(), function(xhr) {
+            if (serial !== root._serial) return
             root.loading = false
             if (xhr.status === 200) {
                 try {
@@ -127,9 +125,7 @@ Item {
                     if (root.detailOpen) root.loadDetail()
                 } catch (e) { console.log("[People] parse error:", e) }
             }
-        }
-        xhr.open("GET", _url())
-        xhr.send()
+        })
     }
 
     function loadDetail() {
@@ -137,9 +133,8 @@ Item {
         if (id === "") { detail = null; return }
         var serial = ++_detailSerial
         detailLoading = detail === null || (detail.id !== id)
-        var xhr = new XMLHttpRequest()
-        xhr.onreadystatechange = function() {
-            if (xhr.readyState !== XMLHttpRequest.DONE || serial !== root._detailSerial) return
+        Backend.request("GET", "/contacts/get?id=" + encodeURIComponent(id), function(xhr) {
+            if (serial !== root._detailSerial) return
             root.detailLoading = false
             try {
                 var d = JSON.parse(xhr.responseText)
@@ -147,31 +142,21 @@ Item {
                 if (d && d.ok === true && (!d.contact || typeof d.contact !== "object") && root.selected && root.selected.id === d.id) { d.contact = PF.fromRow(root.selected); d.cached_only = true }
                 root.detail = d
             } catch (e) { root.detail = { ok: false, error: "unreadable answer" } }
-        }
-        xhr.open("GET", backendUrl + "/contacts/get?id=" + encodeURIComponent(id))
-        xhr.send()
+        })
     }
 
     function _post(path, cb) {
-        var xhr = new XMLHttpRequest()
-        xhr.onreadystatechange = function() {
-            if (xhr.readyState !== XMLHttpRequest.DONE) return
+        Backend.request("POST", path, function(xhr) {
             if (cb) cb(xhr)
-        }
-        xhr.open("POST", backendUrl + path)
-        xhr.send()
+        })
     }
 
     function _postJson(path, body, cb) {
-        var xhr = new XMLHttpRequest()
-        xhr.onreadystatechange = function() {
-            if (xhr.readyState !== XMLHttpRequest.DONE) return
+        Backend.request("POST", path, function(xhr) {
             var r = null
             try { r = JSON.parse(xhr.responseText) } catch (e) {}
             cb(r || { ok: false, error: "the backend did not answer" })
-        }
-        xhr.open("POST", backendUrl + path)
-        xhr.send(JSON.stringify(body))
+        }, JSON.stringify(body))
     }
 
     // ── create / edit / delete / undo (instant saves; docs/PLAN-contacts.md decision 4) ──
@@ -183,9 +168,7 @@ Item {
         return false
     }
     function newContact() {
-        var xhr = new XMLHttpRequest()
-        xhr.onreadystatechange = function() {
-            if (xhr.readyState !== XMLHttpRequest.DONE) return
+        Backend.request("GET", "/contacts/folders", function(xhr) {
             var list = []
             try { list = JSON.parse(xhr.responseText).folders || [] } catch (e) {}
             var t = list.filter(function(f) { return root._writableAccount(f.account_id) })
@@ -197,9 +180,7 @@ Item {
             root.editorRaw = null
             root.editorStatus = ""
             root.editorOpen = true
-        }
-        xhr.open("GET", backendUrl + "/contacts/folders")
-        xhr.send()
+        })
         return ""
     }
     function editContact() {
@@ -207,9 +188,7 @@ Item {
         if (!_writableAccount(selected.account_id)) return "That account's contacts are read-only here (Gmail editing is a later phase)"
         var id = selected.id
         // live=1: the backend also reads the extra properties (fax, pager, anniversary, ...) from the server
-        var xhr = new XMLHttpRequest()
-        xhr.onreadystatechange = function() {
-            if (xhr.readyState !== XMLHttpRequest.DONE) return
+        Backend.request("GET", "/contacts/get?id=" + encodeURIComponent(id) + "&live=1", function(xhr) {
             var d = null
             try { d = JSON.parse(xhr.responseText) } catch (e) {}
             if (!d || d.ok !== true) { root.notice("Could not read that contact"); return }
@@ -217,9 +196,7 @@ Item {
             root.editorRaw = d.contact
             root.editorStatus = ""
             root.editorOpen = true
-        }
-        xhr.open("GET", backendUrl + "/contacts/get?id=" + encodeURIComponent(id) + "&live=1")
-        xhr.send()
+        })
         return ""
     }
     function saveFromEditor(body) {
@@ -261,13 +238,9 @@ Item {
     // ── organise: tags, move, lists, folders, permanent delete (phase 4) ──
     property var folderList: []                // [{id, name, parent_id, account_id, account_email, count}]
     function loadFolders() {
-        var xhr = new XMLHttpRequest()
-        xhr.onreadystatechange = function() {
-            if (xhr.readyState !== XMLHttpRequest.DONE) return
+        Backend.request("GET", "/contacts/folders", function(xhr) {
             try { var f = JSON.parse(xhr.responseText).folders; if (Array.isArray(f)) root.folderList = f } catch (e) {}
-        }
-        xhr.open("GET", backendUrl + "/contacts/folders")
-        xhr.send()
+        })
     }
     function targetRows() {
         var ids = {}
@@ -373,18 +346,14 @@ Item {
     function directorySearch(q, done) {
         var acct = _directoryAccount()
         if (acct === "") { notice("No account can search a directory"); return }
-        var xhr = new XMLHttpRequest()
-        xhr.onreadystatechange = function() {
-            if (xhr.readyState !== XMLHttpRequest.DONE) return
+        Backend.request("GET", "/contacts/directory?account=" + encodeURIComponent(acct) + "&q=" + encodeURIComponent(q), function(xhr) {
             var r = {}
             try { r = JSON.parse(xhr.responseText) } catch (e) {}
             if (r.ok !== true) { root.notice(r.error || "directory search failed"); return }
             root.dirResults = r.people || []
             root.dirAccount = acct
             done(root.dirResults.length)
-        }
-        xhr.open("GET", backendUrl + "/contacts/directory?account=" + encodeURIComponent(acct) + "&q=" + encodeURIComponent(q))
-        xhr.send()
+        })
     }
     function addDirectoryPerson(p) {
         _postJson("/contacts/quick", { account_id: dirAccount, name: p.name, address: p.email }, function(r) {
@@ -400,16 +369,13 @@ Item {
         if (id === "" || id.indexOf("local-") === 0) { photoPath = ""; return }
         if (id !== _photoId) photoPath = ""
         _photoId = id
-        var xhr = new XMLHttpRequest()
-        xhr.onreadystatechange = function() {
-            if (xhr.readyState !== XMLHttpRequest.DONE || id !== root.selectedId) return
+        Backend.request("GET", "/contacts/photo?id=" + encodeURIComponent(id), function(xhr) {
+            if (id !== root.selectedId) return
             var r = {}
             try { r = JSON.parse(xhr.responseText) } catch (e) {}
             root.photoPath = r.path || ""
             if (r.pending === true && retry !== false) photoRetry.restart()
-        }
-        xhr.open("GET", backendUrl + "/contacts/photo?id=" + encodeURIComponent(id))
-        xhr.send()
+        })
     }
     Timer { id: photoRetry; interval: 2500; onTriggered: root.loadPhoto(false) }
     function setPhoto(path) {
@@ -523,16 +489,12 @@ Item {
         if (!selected) { cb(false); return }
         if (detail && detail.ok === true && detail.id === selected.id) { cb(true); return }
         var serial = ++_detailSerial
-        var xhr = new XMLHttpRequest()
-        xhr.onreadystatechange = function() {
-            if (xhr.readyState !== XMLHttpRequest.DONE) return
+        Backend.request("GET", "/contacts/get?id=" + encodeURIComponent(selected.id), function(xhr) {
             var d = null
             try { d = JSON.parse(xhr.responseText) } catch (e) {}
             if (serial === root._detailSerial && d) root.detail = d
             cb(!!d && d.ok === true)
-        }
-        xhr.open("GET", backendUrl + "/contacts/get?id=" + encodeURIComponent(selected.id))
-        xhr.send()
+        })
     }
     // What the keys can act on in the contact under the cursor: [{kind, label, value, shown}] (after ensureDetail).
     function currentTargets(kinds) {

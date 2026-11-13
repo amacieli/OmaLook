@@ -8,7 +8,6 @@ import Quickshell.Io
 Item {
   id: root
 
-  property string backendUrl: ""
   property string configDir: ""
 
   property bool isAuthenticated: false
@@ -36,13 +35,9 @@ Item {
     var prompt = root.reauthPrompt
     if (!prompt) return
     root.reauthPrompt = null
-    var xhr = new XMLHttpRequest()
-    xhr.onreadystatechange = function() {
-      if (xhr.readyState === XMLHttpRequest.DONE) root.accountsChanged()
-    }
-    xhr.open("POST", root.backendUrl + "/auth/confirm?pending=" + encodeURIComponent(prompt.pending_id)
-                     + "&decision=" + decision)
-    xhr.send()
+    Backend.request("POST", "/auth/confirm?pending=" + encodeURIComponent(prompt.pending_id)
+                            + "&decision=" + decision,
+                    function(xhr) { root.accountsChanged() })
   }
   signal accountsChanged()
 
@@ -62,14 +57,10 @@ Item {
     }
     needsEmail = false
 
-    var xhr = new XMLHttpRequest()
-    xhr.onreadystatechange = function() {
-      if (xhr.readyState !== XMLHttpRequest.DONE) return
+    Backend.request("POST", "/auth/login?provider=" + encodeURIComponent(provider || "exchange"), function(xhr) {
       if (xhr.status === 200) codeFile.reload()
       else root.errorMessage = "Failed to start authentication (backend not ready?)"
-    }
-    xhr.open("POST", root.backendUrl + "/auth/login?provider=" + encodeURIComponent(provider || "exchange"))
-    xhr.send()
+    })
   }
 
   // Gmail step 2: the address was entered. The backend opens Google's sign-in page in the
@@ -82,29 +73,21 @@ Item {
     googleUrl = ""
     secondsRemaining = 300
     countdown.restart()
-    var xhr = new XMLHttpRequest()
-    xhr.onreadystatechange = function() {
-      if (xhr.readyState !== XMLHttpRequest.DONE) return
+    Backend.request("POST", "/auth/login?provider=gmail&email=" + encodeURIComponent(addr), function(xhr) {
       if (xhr.status === 200) googleFile.reload()
       else root.errorMessage = "Failed to start authentication (backend not ready?)"
-    }
-    xhr.open("POST", root.backendUrl + "/auth/login?provider=gmail&email=" + encodeURIComponent(addr))
-    xhr.send()
+    })
   }
 
   // Log in an existing account: the backend reuses its kept token, or says a device
   // flow is needed (then we run the normal login for that provider).
   function loginAccount(accountId, provider) {
-    var xhr = new XMLHttpRequest()
-    xhr.onreadystatechange = function() {
-      if (xhr.readyState !== XMLHttpRequest.DONE) return
+    Backend.request("POST", "/accounts/login?account=" + encodeURIComponent(accountId), function(xhr) {
       var res = {}
       try { res = JSON.parse(xhr.responseText) } catch (e) {}
       if (res.result === "login_required") root.startLogin(res.provider || provider)
       else root.accountsChanged()
-    }
-    xhr.open("POST", root.backendUrl + "/accounts/login?account=" + encodeURIComponent(accountId))
-    xhr.send()
+    })
   }
 
   // Log one account out (sync stops; its token and cached data are kept).
@@ -118,21 +101,15 @@ Item {
   }
 
   function postAccountAction(path, accountId) {
-    var xhr = new XMLHttpRequest()
-    xhr.onreadystatechange = function() {
-      if (xhr.readyState === XMLHttpRequest.DONE) root.accountsChanged()
-    }
-    xhr.open("POST", root.backendUrl + path + "?account=" + encodeURIComponent(accountId))
-    xhr.send()
+    Backend.request("POST", path + "?account=" + encodeURIComponent(accountId),
+                    function(xhr) { root.accountsChanged() })
     // authFile watcher picks up the resulting state change.
   }
 
   function cancel() {
     if (loginProvider === "gmail" && !needsEmail) {
       // Frees the backend's one-shot loopback listener.
-      var xhr = new XMLHttpRequest()
-      xhr.open("POST", root.backendUrl + "/auth/cancel")
-      xhr.send()
+      Backend.request("POST", "/auth/cancel")
     }
     showModal = false
     needsEmail = false

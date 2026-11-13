@@ -8,13 +8,14 @@ import qs.Ui
 import "../common"
 import "CalendarUtil.js" as CU
 import "../calendar"
+import "../state"
 import "../calendar/draft.js" as Draft
 import "../calendar/frommail.js" as FromMail
 import "../calendar/when.js" as When
 
 // CalendarView — header (view dropdown, navigation, title) above one of four
 // separate views: DayView, WorkWeekView, FullWeekView, MonthView.
-// Data source: http://127.0.0.1:27182/calendar/events?month=YYYY-MM
+// Data source: GET /calendar/events?month=YYYY-MM (through Backend)
 Item {
     id: root
 
@@ -31,8 +32,6 @@ Item {
     property date   anchorDate: new Date()
     property date   today: new Date()
 
-    // OMALOOK_PORT lets a scratch instance's UI talk to its own backend (same rule as AppState.backendUrl)
-    readonly property string backendUrl: "http://127.0.0.1:" + (Quickshell.env("OMALOOK_PORT") || "27182")
     property var  rawEvents: []
     // keyboard cursor: anchorDate is the cursor day; cursorMin the 30-minute slot in the grids
     property int    cursorMin: CU.defaultMin(new Date(), new Date())
@@ -247,16 +246,11 @@ Item {
     }
 
     function _post(method, path, body, cb) {
-        var xhr = new XMLHttpRequest()
-        xhr.onreadystatechange = function() {
-            if (xhr.readyState !== XMLHttpRequest.DONE) return
+        Backend.request(method, path, function(xhr) {
             var r = {}
             try { r = JSON.parse(xhr.responseText) } catch (e) { r = { ok: false, error: xhr.status === 0 ? "the backend is not answering" : "unreadable answer" } }
             cb(r)
-        }
-        xhr.open(method, backendUrl + path)
-        if (body !== null) xhr.setRequestHeader("Content-Type", "application/json")
-        xhr.send(body)
+        }, body, body !== null ? { "Content-Type": "application/json" } : null)
     }
 
     function loadMeetingOptions() {
@@ -551,16 +545,12 @@ Item {
         months.forEach(function(m) {
             if (_cache[m] !== undefined) return
             pending++
-            var xhr = new XMLHttpRequest()
-            xhr.onreadystatechange = function() {
-                if (xhr.readyState !== XMLHttpRequest.DONE) return
+            Backend.request("GET", "/calendar/events?month=" + m + (root.tagFilter !== "" ? "&tag=" + encodeURIComponent(root.tagFilter) : ""), function(xhr) {
                 var res = []
                 if (xhr.status === 200) { try { res = JSON.parse(xhr.responseText) } catch (e) { res = [] } }
                 var c = root._cache; c[m] = res; root._cache = c
                 if (--pending === 0 && serial === root._reqSerial) { root.loading = false; root._merge() }
-            }
-            xhr.open("GET", root.backendUrl + "/calendar/events?month=" + m + (root.tagFilter !== "" ? "&tag=" + encodeURIComponent(root.tagFilter) : ""))
-            xhr.send()
+            })
         })
         if (pending === 0) { loading = false; _merge() } else loading = true
     }
@@ -678,7 +668,6 @@ Item {
                 active: root.finderOpen
                 sourceComponent: Component {
                     FreeTimeFinder {
-                        backendUrl: root.backendUrl
                         accountId: root.finderState.accountId
                         accountLabel: root.finderState.accountLabel
                         requiredEmails: root.finderState.required

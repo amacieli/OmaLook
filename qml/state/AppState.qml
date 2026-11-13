@@ -11,8 +11,9 @@ Item {
   id: root
 
   // ------------------------------------------------------------- backend
-  // OMALOOK_PORT lets a second (test) instance's UI talk to its own backend; the default is the real one.
-  readonly property string backendUrl: "http://127.0.0.1:" + (Quickshell.env("OMALOOK_PORT") || "27182")
+  // Shown in Settings > About. Requests go through the Backend singleton (state/Backend.qml), which
+  // honours OMALOOK_PORT so a second (test) instance's UI talks to its own backend.
+  readonly property string backendUrl: Backend.baseUrl
   readonly property string configDir: {
     var d = Quickshell.env("CONFIG_DIR")
     return (d && d.length > 0) ? d : Quickshell.env("HOME") + "/.config/omalook"
@@ -32,11 +33,8 @@ Item {
     if (!backendOnline && label !== "backend first answered") { _perfQueue.push(text); return }
     var q = _perfQueue; _perfQueue = []
     q.push(text)
-    for (var i = 0; i < q.length; i++) {
-      var xhr = new XMLHttpRequest()
-      xhr.open("POST", backendUrl + "/perf?m=" + encodeURIComponent(q[i]), true)
-      xhr.send()
-    }
+    for (var i = 0; i < q.length; i++)
+      Backend.request("POST", "/perf?m=" + encodeURIComponent(q[i]))
   }
   Component.onCompleted: { perfMark("AppState created"); root.checkRecovery(); recoverTimer.start() }
   // Calendar view chosen in the calendar dropdown: day | workweek | week | month
@@ -648,7 +646,6 @@ Item {
 
   AuthController {
     id: authController
-    backendUrl: root.backendUrl
     configDir: root.configDir
     onAccountsChanged: root.loadAccounts()
     onIsAuthenticatedChanged: {
@@ -747,15 +744,12 @@ Item {
   }
 
   // --------------------------------------------------------- backend calls
+  // AppState's own calls also track whether the backend answers (backendOnline).
   function request(method, path, onDone, body) {
-    var xhr = new XMLHttpRequest()
-    xhr.onreadystatechange = function() {
-      if (xhr.readyState !== XMLHttpRequest.DONE) return
+    return Backend.request(method, path, function(xhr) {
       root.backendOnline = xhr.status !== 0
       if (onDone) onDone(xhr)
-    }
-    xhr.open(method, root.backendUrl + path, true)
-    xhr.send(body)
+    }, body)
   }
 
   // Refresh (button, F5): ask the backend to poll the provider now. Show the cache at once;
@@ -1415,9 +1409,7 @@ Item {
     try {
       var msg = composeFlush()
       if (!msg) return
-      var xhr = new XMLHttpRequest()
-      xhr.open("POST", root.backendUrl + "/drafts/save?state=saved", false)
-      xhr.send(JSON.stringify(msg))
+      Backend.requestSync("POST", "/drafts/save?state=saved", JSON.stringify(msg))
     } catch (e) {}
   }
   // The draft row as the backend holds it (remote_id set and dirty false = the provider has the copy).

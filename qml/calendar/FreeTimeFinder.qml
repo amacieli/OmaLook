@@ -5,6 +5,7 @@ import qs.Commons as Commons
 import qs.Ui
 import "../common"
 import "../views/CalendarUtil.js" as CU
+import "../state"
 
 // Free-time finder (docs/PLAN-calendar-events.md 5.6, track A). A panel over the calendar, opened from the event
 // editor (its attendees and length) or from the calendar (the selected event's attendees). Asks GET /calendar/find
@@ -19,7 +20,6 @@ FocusScope {
     id: root
 
     // ---- inputs from the owner
-    property string backendUrl: "http://127.0.0.1:27182"
     property string accountId: ""            // the calendar account the answer is for (Exchange)
     property string accountLabel: ""         // its address, shown in the header
     property var    requiredEmails: []       // [string]
@@ -80,16 +80,13 @@ FocusScope {
               + "&from=" + _ymd(fromDay) + "&to=" + _ymd(to) + "&duration=" + minutes + "&limit=5"
         var serial = ++_serial
         loading = true
-        var xhr = new XMLHttpRequest()
-        xhr.onreadystatechange = function() {
-            if (xhr.readyState !== XMLHttpRequest.DONE || serial !== root._serial) return
+        Backend.request("GET", "/calendar/find?" + q, function(xhr) {
+            if (serial !== root._serial) return
             loading = false
             var r = {}
             try { r = JSON.parse(xhr.responseText) } catch (e) { r = { ok: false, error: xhr.status === 0 ? "the backend is not answering" : "unreadable answer" } }
             _apply(r)
-        }
-        xhr.open("GET", backendUrl + "/calendar/find?" + q)
-        xhr.send()
+        })
     }
 
     function _apply(r) {

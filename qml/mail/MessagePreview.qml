@@ -8,6 +8,7 @@ import qs.Commons as Commons
 import qs.Ui
 import "../common"
 import "format.js" as Fmt
+import "../state"
 
 // Reading pane. `message` is the model row (or null for the empty state).
 Item {
@@ -322,9 +323,7 @@ Item {
           root.shotSource = "file://" + proc.outFile
           root.shotPending = false
           if (proc.adoptQuery !== "") {
-            var ad = new XMLHttpRequest()
-            ad.open("POST", root._backend + "/render/adopt?" + proc.adoptQuery + "&file=" + encodeURIComponent(proc.outFile))
-            ad.send()
+            Backend.request("POST", "/render/adopt?" + proc.adoptQuery + "&file=" + encodeURIComponent(proc.outFile))
           }
         }
       }
@@ -345,7 +344,6 @@ Item {
 
   // The render cache (OL-028, backend `GET /render/get`): a message already drawn at this width is shown from the cache;
   // otherwise the helper runs here as before and the result is handed to the backend to keep (`POST /render/adopt`).
-  readonly property string _backend: "http://127.0.0.1:" + (Quickshell.env("OMALOOK_PORT") || "27182")
   function _shotQuery(w, sc, imgs) {
     return "id=" + encodeURIComponent(String(root.message ? root.message.id : "")) + "&width=" + w + "&scale=" + sc + "&images=" + (imgs ? 1 : 0)
   }
@@ -354,9 +352,7 @@ Item {
     var w = Math.max(300, Math.floor(htmlScroll.availableWidth)), sc = Math.max(1, Screen.devicePixelRatio), imgs = imagesAllowed
     var seq = _seq
     if (!root.message || !root.message.id) { _runHelper(w, sc, imgs); return }
-    var xhr = new XMLHttpRequest()
-    xhr.onreadystatechange = function() {
-      if (xhr.readyState !== XMLHttpRequest.DONE) return
+    Backend.request("GET", "/render/get?" + _shotQuery(w, sc, imgs), function(xhr) {
       if (seq !== root._seq) return          // moved on while asking
       var r = null
       try { r = JSON.parse(xhr.responseText) } catch (e) { r = null }
@@ -371,9 +367,7 @@ Item {
       } else {
         root._runHelper(w, sc, imgs)
       }
-    }
-    xhr.open("GET", _backend + "/render/get?" + _shotQuery(w, sc, imgs))
-    xhr.send()
+    })
   }
   function _runHelper(w, sc, imgs) {
     var run = Quickshell.env("XDG_RUNTIME_DIR") || "/tmp"

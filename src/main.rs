@@ -2862,22 +2862,17 @@ fn messages_response(config_dir: &PathBuf, first_line: &str, req_t: std::time::I
                     response
 }
 
-/// Minimal HTTP trigger server — listens on localhost:27182
-/// QML uses XMLHttpRequest to POST to this endpoint to trigger auth/logout.
-/// This avoids the limitation of QML not being able to write files directly.
-///
-/// Endpoints:
-///   POST /auth/login   → triggers device flow
-///   POST /auth/logout  → triggers logout
+/// The UI's backend HTTP server on 127.0.0.1:27182 (`OMALOOK_PORT` overrides).
+/// Every UI request comes from the one QML client, `qml/state/Backend.qml`.
 fn start_http_trigger_server(config_dir: &PathBuf) {
-    // OMALOOK_PORT is for tests that run a second instance beside the real one; the UI always
-    // talks to the default port.
+    // OMALOOK_PORT is for tests that run a second instance beside the real one; the UI's
+    // Backend.qml reads the same variable, so a scratch UI talks only to its own backend.
     let addr = format!("127.0.0.1:{}", env::var("OMALOOK_PORT").ok().and_then(|p| p.parse::<u16>().ok()).unwrap_or(27182));
     eprintln!("[HTTP] Attempting to bind {}", addr);
     let listener = match TcpListener::bind(&addr) {
         Ok(l) => {
             eprintln!("[HTTP] ✅ Bound OK");
-            info!("🌐 HTTP trigger server listening on http://127.0.0.1:27182");
+            info!("🌐 HTTP trigger server listening on http://{}", addr);
             omalook::perf::mark("http server bound");
             l
         }
