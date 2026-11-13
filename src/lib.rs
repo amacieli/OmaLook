@@ -10,6 +10,7 @@
 
 pub mod auth;
 pub mod google_auth;
+pub mod http;
 pub mod db;
 pub mod settings;
 pub mod keyring_mgr;

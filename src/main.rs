@@ -2883,12 +2883,56 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
         }
     };
 
+    // One thread per connection (at most http::MAX_CONNECTIONS at once): the request is read there,
+    // with timeouts and size caps, so an idle or slow client no longer freezes the other routes (SEC-004).
+    let config_dir = Arc::new(config_dir.clone());
     for stream in listener.incoming() {
         match stream {
             Ok(mut stream) => {
-                let mut buf = [0u8; 1024];
-                let n = stream.read(&mut buf).unwrap_or(0);
-                let request = String::from_utf8_lossy(&buf[..n]);
+                let Some(slot) = omalook::http::Slot::try_take() else {
+                    let _ = stream.set_write_timeout(Some(std::time::Duration::from_secs(1)));
+                    let _ = stream.write_all(omalook::http::error_response("503 Service Unavailable").as_bytes());
+                    continue;
+                };
+                let config_dir = Arc::clone(&config_dir);
+                let spawned = std::thread::Builder::new().name("http-conn".into()).spawn(move || {
+                    let _slot = slot;
+                    handle_http_connection(&config_dir, stream);
+                });
+                if let Err(e) = spawned { warn!("HTTP: could not start a connection thread: {}", e); }
+            }
+            Err(e) => warn!("HTTP trigger server accept error: {}", e),
+        }
+    }
+}
+
+/// Read one request from a UI connection and route it. Requests that cannot be read get an error
+/// status (or nothing, when the client sent nothing) and the connection is closed.
+fn handle_http_connection(config_dir: &PathBuf, mut stream: std::net::TcpStream) {
+    let _ = stream.set_write_timeout(Some(std::time::Duration::from_secs(10)));
+    let limits = omalook::http::request::Limits::default();
+    let req = match omalook::http::request::read_request(&mut stream, &limits) {
+        Ok(r) => r,
+        Err(e) => {
+            if let Some(status) = e.status() {
+                debug!("HTTP: request refused ({:?})", e);
+                let _ = stream.write_all(omalook::http::error_response(status).as_bytes());
+            }
+            return;
+        }
+    };
+    let _guard = omalook::http::dispatch_guard(&req.method, req.path());
+    route_http_request(config_dir, stream, &req.raw);
+}
+
+/// The route chain (substring matches on the request line, as before R1.2). `raw` is the whole
+/// request, head and body, so `read_post_body` and the inline body parsers find everything in it.
+/// Replaced by the typed router in R3.1.
+fn route_http_request(config_dir: &PathBuf, mut stream: std::net::TcpStream, raw: &[u8]) {
+    {
+        {
+            {
+                let request = String::from_utf8_lossy(raw);
                 let first_line = request.lines().next().unwrap_or("");
                 let req_t = std::time::Instant::now();
                 // ── GET /sync/serial — cheap change counter the UI polls (no DB access)
@@ -2899,7 +2943,7 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                         body.len(), body
                     );
                     let _ = stream.write_all(response.as_bytes());
-                    continue;
+                    return;
                 }
                 if !first_line.contains("POST /perf") {
                     omalook::perf::mark(&format!("http <- {}", first_line.split(" HTTP").next().unwrap_or("").chars().take(60).collect::<String>()));
@@ -2911,7 +2955,7 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                         omalook::perf::mark(&format!("UI: {}", m));
                     }
                     let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: 2\r\n\r\nok");
-                    continue;
+                    return;
                 }
 
                 // ── GET /folders — return cached folder list as JSON ──────────────
@@ -2980,7 +3024,7 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                         body.len(), body
                     );
                     let _ = stream.write_all(response.as_bytes());
-                    continue;
+                    return;
                 }
 
                 // ── GET /accounts — configured accounts and whether each is signed in ──
@@ -2991,7 +3035,7 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                         body.len(), body
                     );
                     let _ = stream.write_all(response.as_bytes());
-                    continue;
+                    return;
                 }
 
                 // ── SMS cache (KDE Connect). Reads: GET /sms/threads?device=&limit=,
@@ -2999,14 +3043,14 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                 // Writes: POST /sms/read?thread=&read=true|false[&uid=&device=] (local state only:
                 // KDE Connect cannot mark messages read on the phone), POST /sms/sync (full re-pull). ──
                 if first_line.contains(" /sms/") {
-                    let body = if first_line.contains("POST /sms/send") { sms_send_response(config_dir, &mut stream, &buf[..n]) }
+                    let body = if first_line.contains("POST /sms/send") { sms_send_response(config_dir, &mut stream, raw) }
                                else { sms_route(config_dir, first_line) };
                     let response = format!(
                         "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                         body.len(), body
                     );
                     let _ = stream.write_all(response.as_bytes());
-                    continue;
+                    return;
                 }
 
                 // ── GET /tasks[?account=ID] — cached To Do tasks of every account (JSON array). ──
@@ -3023,17 +3067,17 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                         body.len(), body
                     );
                     let _ = stream.write_all(response.as_bytes());
-                    continue;
+                    return;
                 }
 
                 // ── /contacts/get, /contacts/folders (and the write routes of phase 2 onward): see `contacts_route` ──
-                if let Some(body) = contacts_route(config_dir, &mut stream, &buf[..n], first_line) {
+                if let Some(body) = contacts_route(config_dir, &mut stream, raw, first_line) {
                     let response = format!(
                         "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                         body.len(), body
                     );
                     let _ = stream.write_all(response.as_bytes());
-                    continue;
+                    return;
                 }
 
                 // ── GET /contacts?view=all|favorites|lists&sort=first|last|company|recent&q=&folder=&category= ──
@@ -3066,7 +3110,7 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                         body.len(), body
                     );
                     let _ = stream.write_all(response.as_bytes());
-                    continue;
+                    return;
                 }
 
                 // ── POST /contacts/favorite?id=ID&value=true|false — local favorite flag ──
@@ -3082,7 +3126,7 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                         body.len(), body
                     );
                     let _ = stream.write_all(response.as_bytes());
-                    continue;
+                    return;
                 }
 
                 // ── POST /mail/sync — the Refresh button / F5: poll the provider now, not at the next interval.
@@ -3095,7 +3139,7 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                         body.len(), body
                     );
                     let _ = stream.write_all(response.as_bytes());
-                    continue;
+                    return;
                 }
 
                 // ── POST /messages/read?id=ID&read=true|false — mark a message read/unread.
@@ -3114,7 +3158,7 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                         body.len(), body
                     );
                     let _ = stream.write_all(response.as_bytes());
-                    continue;
+                    return;
                 }
 
                 // ── GET /categories?account=ID — the account's categories (Exchange) / user labels
@@ -3149,7 +3193,7 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                         body.len(), body
                     );
                     let _ = stream.write_all(response.as_bytes());
-                    continue;
+                    return;
                 }
 
                 // ── POST /categories/create?account=ID&name=X&color=KEY — a new category / label.
@@ -3177,7 +3221,7 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                         body.len(), body
                     );
                     let _ = stream.write_all(response.as_bytes());
-                    continue;
+                    return;
                 }
 
                 // ── POST /messages/category?ids=a,b&op=add|remove&name=X — set / clear a category on
@@ -3207,7 +3251,7 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                         body.len(), body
                     );
                     let _ = stream.write_all(response.as_bytes());
-                    continue;
+                    return;
                 }
 
                 // ── GET /messages/meta_progress — {"active":bool,"remaining":N}: the one-time
@@ -3222,7 +3266,7 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                         body.len(), body
                     );
                     let _ = stream.write_all(response.as_bytes());
-                    continue;
+                    return;
                 }
 
                 // ── POST /messages/action?ids=a,b&op=archive|trash|delete|move[&dest=FOLDER] —
@@ -3272,7 +3316,7 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                         body.len(), body
                     );
                     let _ = stream.write_all(response.as_bytes());
-                    continue;
+                    return;
                 }
 
                 // ── GET /fs/list?path=DIR[&hidden=1] — one directory for the compose file picker ──
@@ -3288,19 +3332,19 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                         body.len(), body
                     );
                     let _ = stream.write_all(response.as_bytes());
-                    continue;
+                    return;
                 }
 
                 // ── POST /compose/send (JSON body) — queue a message; POST /compose/cancel?id= —
                 // take it back while it is still inside its delay; GET /compose/status?id= ──
                 if first_line.contains("POST /compose/send") {
-                    let body = compose_send_response(config_dir, &mut stream, &buf[..n]);
+                    let body = compose_send_response(config_dir, &mut stream, raw);
                     let response = format!(
                         "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                         body.len(), body
                     );
                     let _ = stream.write_all(response.as_bytes());
-                    continue;
+                    return;
                 }
                 if first_line.contains("POST /compose/cancel") || first_line.contains("GET /compose/status") {
                     let body = compose_outbox_response(config_dir, first_line);
@@ -3309,7 +3353,7 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                         body.len(), body
                     );
                     let _ = stream.write_all(response.as_bytes());
-                    continue;
+                    return;
                 }
                 // ── GET /compose/originals?id=MESSAGE — the attachments of the message being forwarded ──
                 if first_line.contains("GET /compose/originals") {
@@ -3319,7 +3363,7 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                         body.len(), body
                     );
                     let _ = stream.write_all(response.as_bytes());
-                    continue;
+                    return;
                 }
                 // ── GET /attach/limits?account=ID — what the account's provider accepts on one message ──
                 if first_line.contains("GET /attach/limits") {
@@ -3332,7 +3376,7 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                         body.len(), body
                     );
                     let _ = stream.write_all(response.as_bytes());
-                    continue;
+                    return;
                 }
 
                 // ── Drafts (docs/PLAN-compose.md Phase B2). GET /drafts?account=ID (every account without it;
@@ -3340,7 +3384,7 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                 // POST /drafts/save?state=editing|saved (JSON body: the compose message), POST /drafts/discard?id= ──
                 if first_line.contains("GET /drafts") || first_line.contains("POST /drafts/") {
                     let body = if first_line.contains("POST /drafts/save") {
-                        drafts_save_response(config_dir, &mut stream, &buf[..n], first_line)
+                        drafts_save_response(config_dir, &mut stream, raw, first_line)
                     } else {
                         drafts_route(config_dir, first_line)
                     };
@@ -3349,7 +3393,7 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                         body.len(), body
                     );
                     let _ = stream.write_all(response.as_bytes());
-                    continue;
+                    return;
                 }
 
                 // ── POST /calendar/event (JSON body; ?dry_run=1) — queue a new event; POST /calendar/event/undo?id= —
@@ -3361,18 +3405,18 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                         body.len(), body
                     );
                     let _ = stream.write_all(response.as_bytes());
-                    continue;
+                    return;
                 }
                 // ── GET /calendar/meeting-options?account=ID — the editor's Online meeting rows (OL-021 track B);
                 // GET|POST /settings/meetings — the [meetings] block of Settings -> Accounts ──
                 if first_line.contains("GET /calendar/meeting-options") || first_line.contains("GET /settings/meetings") || first_line.contains("POST /settings/meetings") {
-                    let body = meetings_response(config_dir, &mut stream, &buf[..n], first_line);
+                    let body = meetings_response(config_dir, &mut stream, raw, first_line);
                     let response = format!(
                         "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                         body.len(), body
                     );
                     let _ = stream.write_all(response.as_bytes());
-                    continue;
+                    return;
                 }
                 if first_line.contains("POST /calendar/tags") {
                     let body = calendar_tags_response(config_dir, first_line);
@@ -3381,26 +3425,26 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                         body.len(), body
                     );
                     let _ = stream.write_all(response.as_bytes());
-                    continue;
+                    return;
                 }
                 // ── PATCH /calendar/event (edit) and POST /calendar/event/cancel?kind= (cancel, decline, delete) — phase 3 ──
                 if first_line.starts_with("PATCH /calendar/event") || first_line.contains("POST /calendar/event/cancel") {
-                    let body = calendar_change_response(config_dir, &mut stream, &buf[..n], first_line);
+                    let body = calendar_change_response(config_dir, &mut stream, raw, first_line);
                     let response = format!(
                         "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                         body.len(), body
                     );
                     let _ = stream.write_all(response.as_bytes());
-                    continue;
+                    return;
                 }
                 if first_line.contains("POST /calendar/event") {
-                    let body = calendar_event_response(config_dir, &mut stream, &buf[..n], first_line);
+                    let body = calendar_event_response(config_dir, &mut stream, raw, first_line);
                     let response = format!(
                         "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                         body.len(), body
                     );
                     let _ = stream.write_all(response.as_bytes());
-                    continue;
+                    return;
                 }
 
                 // ── GET|POST /settings/mail?send_delay=N&large_audience=N — seconds a sent message waits before it goes; recipient count above which Send asks to confirm (0 = never) ──
@@ -3434,7 +3478,7 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                         body.len(), body
                     );
                     let _ = stream.write_all(response.as_bytes());
-                    continue;
+                    return;
                 }
 
                 // ── GET|POST /settings/render?cache_mb=N — size cap of the rendered-HTML cache; lowering it trims the cache at once ──
@@ -3460,7 +3504,7 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                         body.len(), body
                     );
                     let _ = stream.write_all(response.as_bytes());
-                    continue;
+                    return;
                 }
 
                 // ── POST /auth/confirm?pending=ID&decision=replace|cancel — answer the
@@ -3479,7 +3523,7 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                         body.len(), body
                     );
                     let _ = stream.write_all(response.as_bytes());
-                    continue;
+                    return;
                 }
 
                 // ── POST /accounts/login?account=ID — log in an existing account ──
@@ -3504,7 +3548,7 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                         body.len(), body
                     );
                     let _ = stream.write_all(response.as_bytes());
-                    continue;
+                    return;
                 }
 
                 // ── GET /calendar/find — free-time finder (OL-021 track A): ranked free slots, read-only ──
@@ -3515,7 +3559,7 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                         body.len(), body
                     );
                     let _ = stream.write_all(response.as_bytes());
-                    continue;
+                    return;
                 }
                 // ── GET /calendar/events?month=YYYY-MM — cached calendar events ──
                 if first_line.contains("GET /calendar/events") {
@@ -3577,7 +3621,7 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                         body.len(), body
                     );
                     let _ = stream.write_all(response.as_bytes());
-                    continue;
+                    return;
                 }
 
                 // ── Distribution lists (Settings → Lists; chips in the compose pane) ──────
@@ -3597,7 +3641,7 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                         body.len(), body
                     );
                     let _ = stream.write_all(response.as_bytes());
-                    continue;
+                    return;
                 }
 
                 // ── Local rules (Settings -> Rules, "Rules OmaLook runs"; OL-040 phase 4d) ───
@@ -3620,7 +3664,7 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                             );
                             let _ = stream.write_all(response.as_bytes());
                         });
-                        continue;
+                        return;
                     }
                     let body = local_rules_response(config_dir, first_line);
                     let response = format!(
@@ -3628,7 +3672,7 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                         body.len(), body
                     );
                     let _ = stream.write_all(response.as_bytes());
-                    continue;
+                    return;
                 }
 
                 // ── Mailbox rules (Settings -> Rules; OL-040 phase 2, read-only) ─────────────
@@ -3660,7 +3704,7 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                             );
                             let _ = stream.write_all(response.as_bytes());
                         });
-                        continue;
+                        return;
                     }
                     let body = rules_response(config_dir, first_line);
                     let response = format!(
@@ -3668,7 +3712,7 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                         body.len(), body
                     );
                     let _ = stream.write_all(response.as_bytes());
-                    continue;
+                    return;
                 }
 
                 // ── Tags page (Settings → Tags; OL-040 phase 1) ──────────────────────────
@@ -3684,7 +3728,7 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                         body.len(), body
                     );
                     let _ = stream.write_all(response.as_bytes());
-                    continue;
+                    return;
                 }
 
                 // ── Sender preferences (Settings → Senders) ─────────────────────────────
@@ -3699,7 +3743,7 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                         body.len(), body
                     );
                     let _ = stream.write_all(response.as_bytes());
-                    continue;
+                    return;
                 }
 
                 // ── GET /compose/identities?account=ID, POST /compose/identity_default?account=ID&email= — send-as addresses (OL-051). Slow (provider call), own thread. ──
@@ -3714,7 +3758,7 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                         );
                         let _ = stream.write_all(response.as_bytes());
                     });
-                    continue;
+                    return;
                 }
 
                 // ── GET /messages/list-info?id=ID — List-Id / List-Post of a message (lazy provider fetch, cached). ──
@@ -3729,7 +3773,7 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                         );
                         let _ = stream.write_all(response.as_bytes());
                     });
-                    continue;
+                    return;
                 }
 
                 // ── GET /messages/invite?id=ID — meeting type of a message and whether it can be
@@ -3745,7 +3789,7 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                         );
                         let _ = stream.write_all(response.as_bytes());
                     });
-                    continue;
+                    return;
                 }
 
                 // ── POST /messages/invite?id=ID&choice=accept|tentative|decline|remove — answer an invitation (remove: drop a cancelled meeting from the calendar)
@@ -3763,7 +3807,7 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                         );
                         let _ = stream.write_all(response.as_bytes());
                     });
-                    continue;
+                    return;
                 }
 
                 // ── GET /messages/attachments?id=ID — the message's attachments (cached after the
@@ -3782,7 +3826,7 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                         );
                         let _ = stream.write_all(response.as_bytes());
                     });
-                    continue;
+                    return;
                 }
 
                 // ── Render cache (OL-028): GET /render/get?id&width&scale&images · POST /render/adopt?id&width&scale&images&file ──
@@ -3796,7 +3840,7 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                         );
                         let _ = stream.write_all(response.as_bytes());
                     });
-                    continue;
+                    return;
                 }
 
                 // ── GET /messages/body?id=ID — full body of one message: {"type","content"}.
@@ -3813,7 +3857,7 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                         );
                         let _ = stream.write_all(response.as_bytes());
                     });
-                    continue;
+                    return;
                 }
 
                 // ── GET /messages — return messages as JSON (optional ?folder_id=) ──────────────
@@ -3824,7 +3868,7 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                         let response = messages_response(&dir, &line, req_t);
                         let _ = stream.write_all(response.as_bytes());
                     });
-                    continue;
+                    return;
                 }
 
                 // ── GET /settings/keys — the `[keys]` table of settings.toml:
@@ -3856,7 +3900,7 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                         body.len(), body
                     );
                     let _ = stream.write_all(response.as_bytes());
-                    continue;
+                    return;
                 }
 
                 // ── GET /search/history — recent search patterns, newest first (JSON array);
@@ -3877,7 +3921,7 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                         body.len(), body
                     );
                     let _ = stream.write_all(response.as_bytes());
-                    continue;
+                    return;
                 }
 
                 // ── GET/POST /settings/view_state — where the user last was (see view_state.rs) ──
@@ -3895,7 +3939,7 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                         status, body.len(), body
                     );
                     let _ = stream.write_all(response.as_bytes());
-                    continue;
+                    return;
                 }
 
                 // ── GET /settings/signatures — every account's signature: {account_id: text} (OL-050) ──
@@ -3925,7 +3969,7 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                         status, body.len(), body
                     );
                     let _ = stream.write_all(response.as_bytes());
-                    continue;
+                    return;
                 }
 
                 // ── GET /settings/ui — return UI settings as JSON ─────────────
@@ -3953,7 +3997,7 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                         body.len(), body
                     );
                     let _ = stream.write_all(response.as_bytes());
-                    continue;
+                    return;
                 }
 
                 // ── /settings/mcp… — Settings → MCP (state + changes); see src/mcp/admin.rs ──
@@ -3972,7 +4016,7 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                         );
                         let _ = stream.write_all(response.as_bytes());
                     });
-                    continue;
+                    return;
                 }
 
                 // ── GET|POST /settings/background?enabled=true|false — keep the backend running
@@ -3998,7 +4042,7 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                         body.len(), body
                     );
                     let _ = stream.write_all(response.as_bytes());
-                    continue;
+                    return;
                 }
 
                 // ── POST /settings/calendar_pane_offset (body: integer, characters) — calendar sidebar width.
@@ -4018,7 +4062,7 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                     debug!("POST /settings/calendar_pane_offset {} → {}", cols, ok);
                     let response = "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\nok";
                     let _ = stream.write_all(response.as_bytes());
-                    continue;
+                    return;
                 }
 
                 // ── GET|POST /settings/calendar — recurring-meeting window (years back / ahead) ──
@@ -4060,7 +4104,7 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                         body.len(), body
                     );
                     let _ = stream.write_all(response.as_bytes());
-                    continue;
+                    return;
                 }
 
                 // ── POST /settings/scale_factor?value=1.1 — UI scale, clamped, stored in [font] ──
@@ -4078,7 +4122,7 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                         body.len(), body
                     );
                     let _ = stream.write_all(response.as_bytes());
-                    continue;
+                    return;
                 }
 
                 // ── POST /settings/message_rendering?value=html|system|system_sender ──
@@ -4096,7 +4140,7 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                         body.len(), body
                     );
                     let _ = stream.write_all(response.as_bytes());
-                    continue;
+                    return;
                 }
 
                 // ── POST /settings/sidebar_expanded — persist sidebar state ────
@@ -4121,7 +4165,7 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
 
                     let response = "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\nok";
                     let _ = stream.write_all(response.as_bytes());
-                    continue;
+                    return;
                 }
 
                 // ── POST /settings/folder_pane (body "true"|"false") — show/hide the folder pane ──
@@ -4140,7 +4184,7 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                     debug!("POST /settings/folder_pane {} → {}", shown, ok);
                     let response = "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\nok";
                     let _ = stream.write_all(response.as_bytes());
-                    continue;
+                    return;
                 }
 
                 // ── POST /settings/list_width_offset (body: integer, characters) — message list width ──
@@ -4159,7 +4203,7 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                     debug!("POST /settings/list_width_offset {} → {}", cols, ok);
                     let response = "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\nok";
                     let _ = stream.write_all(response.as_bytes());
-                    continue;
+                    return;
                 }
 
                 // ── POST trigger routes ────────────────────────────────────
@@ -4223,7 +4267,6 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                     _ => {}
                 }
             }
-            Err(e) => warn!("HTTP trigger server accept error: {}", e),
         }
     }
 }
