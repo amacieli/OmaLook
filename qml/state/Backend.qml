@@ -5,7 +5,7 @@ import Quickshell
 // The one HTTP client for the OmaLook backend (roadmap R1.1, ARCH-T1).
 //
 // Every request from the UI to the backend goes through request() or requestSync() here, so the
-// port override (OMALOOK_PORT) and, from R1.4, the per-launch session token live in one place.
+// port override (OMALOOK_PORT) and the per-launch session token (OMALOOK_TOKEN, R1.4) live in one place.
 // Never construct an XMLHttpRequest anywhere else in qml/ (`rg XMLHttpRequest qml/` must list only
 // this file); a request built elsewhere silently skips the token and can reach the live backend
 // from a scratch instance.
@@ -15,9 +15,12 @@ QtObject {
   // OMALOOK_PORT lets a scratch instance's UI talk to its own backend; the default is the real one.
   readonly property string port: Quickshell.env("OMALOOK_PORT") || "27182"
   readonly property string baseUrl: "http://127.0.0.1:" + port
+  // The backend refuses (401) every request without it. Set by the launcher; never logged or shown.
+  readonly property string _token: Quickshell.env("OMALOOK_TOKEN") || ""
 
-  // Headers every request carries. Kept in one function so R1.4 can add the session token here.
+  // Headers every request carries: the session token, then the caller's own.
   function _prepare(xhr, headers) {
+    if (_token !== "") xhr.setRequestHeader("Authorization", "Bearer " + _token)
     if (!headers) return
     for (var name in headers)
       if (headers.hasOwnProperty(name)) xhr.setRequestHeader(name, headers[name])

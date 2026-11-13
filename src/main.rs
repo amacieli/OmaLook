@@ -63,12 +63,36 @@ fn main() {
     let config_dir = get_config_dir();
 
     // A backend left running in the background (Settings → General) already serves the UI:
-    // just open a window against it instead of starting a second backend.
-    if omalook::background::backend_listening(omalook::background::http_port()) {
+    // just open a window against it instead of starting a second backend. Its session token is in
+    // the runtime file it wrote at start (http::session).
+    let port = omalook::background::http_port();
+    let running_token = omalook::http::session::read(&config_dir, port);
+    if omalook::background::backend_listening(port, running_token.as_deref()) {
         info!("OmaLook backend already running; opening the UI only");
-        launch_qml_app(&config_dir);
+        launch_qml_app(&config_dir, running_token.as_deref().unwrap_or_default());
         return;
     }
+
+    // Fail closed (SEC-015): without our own port there is no backend, and a UI must never talk to
+    // whatever else holds it. Bound here, before anything starts, so a refusal changes nothing.
+    let listener = match TcpListener::bind(("127.0.0.1", port)) {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("❌ OmaLook cannot start: port 127.0.0.1:{} is not available ({}).", port, e);
+            eprintln!("   Another program holds it, or an OmaLook backend that this launch cannot verify.");
+            error!("HTTP: bind 127.0.0.1:{} failed: {}; exiting", port, e);
+            std::process::exit(2);
+        }
+    };
+    // Per-launch session token (R1.4): the UI gets it in its environment; every request must carry it.
+    let token = match omalook::http::session::create(&config_dir, port) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("❌ OmaLook cannot start: could not write its session token ({}).", e);
+            error!("HTTP: session token not written: {}; exiting", e);
+            std::process::exit(1);
+        }
+    };
 
     omalook::perf::init(&config_dir);
     info!("OmaLook starting");
@@ -80,12 +104,12 @@ fn main() {
     info!("Database: {}", db_path.display());
     
     // Initialize core backend components
-    match initialize_app(&config_dir, db_path.to_str().unwrap(), settings_path.to_str().unwrap()) {
+    match initialize_app(&config_dir, db_path.to_str().unwrap(), settings_path.to_str().unwrap(), listener, port, token.clone()) {
         Ok(_) => {
             info!("Application backend initialized successfully");
             
             // Launch Qt/QML runtime (returns when the window closes)
-            launch_qml_app(&config_dir);
+            launch_qml_app(&config_dir, &token);
 
             // With "Keep running in background" on, the backend outlives the window.
             omalook::background::stay_while_enabled(
@@ -162,7 +186,7 @@ fn ensure_omarchy_kit(qml_dir: &PathBuf) -> std::io::Result<()> {
 }
 
 /// Launch the QML application window (Quickshell used as a standalone Qt Quick host).
-fn launch_qml_app(config_dir: &PathBuf) {
+fn launch_qml_app(config_dir: &PathBuf, token: &str) {
     use std::process::{Command, Stdio};
 
     info!("Launching Quickshell UI...");
@@ -202,6 +226,8 @@ fn launch_qml_app(config_dir: &PathBuf) {
     cmd.arg("-p").arg(&qml_dir)
         .env("QML_DIR", &qml_dir)
         .env("CONFIG_DIR", config_dir.to_str().unwrap())
+        // The backend's session token: Backend.qml sends it on every request (http::guard).
+        .env(omalook::http::session::ENV, token)
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
 
@@ -220,7 +246,7 @@ fn launch_qml_app(config_dir: &PathBuf) {
     }
 }
 
-fn initialize_app(config_dir: &PathBuf, db_path: &str, settings_path: &str) -> omalook::errors::Result<()> {
+fn initialize_app(config_dir: &PathBuf, db_path: &str, settings_path: &str, listener: TcpListener, port: u16, token: String) -> omalook::errors::Result<()> {
     // Initialize database
     let db = {
         let _t = omalook::perf::span("Database::open (schema init)");
@@ -259,7 +285,7 @@ fn initialize_app(config_dir: &PathBuf, db_path: &str, settings_path: &str) -> o
     // Start HTTP trigger server (QML posts to this to trigger auth/logout)
     let config_dir_http = config_dir.clone();
     std::thread::spawn(move || {
-        start_http_trigger_server(&config_dir_http);
+        start_http_trigger_server(&config_dir_http, listener, port, token);
     });
     
     // Pre-render: mail from "always HTML" senders is drawn ahead of time into the render cache (OL-028).
@@ -2864,25 +2890,13 @@ fn messages_response(config_dir: &PathBuf, first_line: &str, req_t: std::time::I
 
 /// The UI's backend HTTP server on 127.0.0.1:27182 (`OMALOOK_PORT` overrides).
 /// Every UI request comes from the one QML client, `qml/state/Backend.qml`.
-fn start_http_trigger_server(config_dir: &PathBuf) {
+/// `listener` was bound by `main` (which exits when it cannot bind); `token` is this start's session token.
+fn start_http_trigger_server(config_dir: &PathBuf, listener: TcpListener, port: u16, token: String) {
     // OMALOOK_PORT is for tests that run a second instance beside the real one; the UI's
     // Backend.qml reads the same variable, so a scratch UI talks only to its own backend.
-    let port = omalook::background::http_port();
-    let addr = format!("127.0.0.1:{}", port);
-    eprintln!("[HTTP] Attempting to bind {}", addr);
-    let listener = match TcpListener::bind(&addr) {
-        Ok(l) => {
-            eprintln!("[HTTP] ✅ Bound OK");
-            info!("🌐 HTTP trigger server listening on http://{}", addr);
-            omalook::perf::mark("http server bound");
-            l
-        }
-        Err(e) => {
-            eprintln!("[HTTP] ❌ BIND FAILED: {}", e);
-            warn!("HTTP trigger server failed to bind: {} (falling back to file triggers)", e);
-            return;
-        }
-    };
+    info!("🌐 HTTP server listening on http://127.0.0.1:{}", port);
+    omalook::perf::mark("http server bound");
+    let token = Arc::new(token);
 
     // One thread per connection (at most http::MAX_CONNECTIONS at once): the request is read there,
     // with timeouts and size caps, so an idle or slow client no longer freezes the other routes (SEC-004).
@@ -2896,9 +2910,10 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                     continue;
                 };
                 let config_dir = Arc::clone(&config_dir);
+                let token = Arc::clone(&token);
                 let spawned = std::thread::Builder::new().name("http-conn".into()).spawn(move || {
                     let _slot = slot;
-                    handle_http_connection(&config_dir, port, stream);
+                    handle_http_connection(&config_dir, port, &token, stream);
                 });
                 if let Err(e) = spawned { warn!("HTTP: could not start a connection thread: {}", e); }
             }
@@ -2909,8 +2924,9 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
 
 /// Read one request from a UI connection, check who sent it, and route it. Requests that cannot be
 /// read get an error status (or nothing, when the client sent nothing); requests from a browser or
-/// to another host name get 403 (`http::guard`, R1.3). Either way the connection is then closed.
-fn handle_http_connection(config_dir: &PathBuf, port: u16, mut stream: std::net::TcpStream) {
+/// to another host name get 403 (`http::guard`, R1.3), requests without the session token 401 (R1.4).
+/// Either way the connection is then closed.
+fn handle_http_connection(config_dir: &PathBuf, port: u16, token: &str, mut stream: std::net::TcpStream) {
     let _ = stream.set_write_timeout(Some(std::time::Duration::from_secs(10)));
     let limits = omalook::http::request::Limits::default();
     let req = match omalook::http::request::read_request(&mut stream, &limits) {
@@ -2923,7 +2939,7 @@ fn handle_http_connection(config_dir: &PathBuf, port: u16, mut stream: std::net:
             return;
         }
     };
-    if let Err(why) = omalook::http::guard::check(&req, port) {
+    if let Err(why) = omalook::http::guard::check(&req, port, token) {
         // Method + route only: query strings may hold addresses or search terms.
         warn!("HTTP: refused {} {} ({:?})", req.method, req.path(), why);
         let _ = stream.write_all(omalook::http::error_response(why.status()).as_bytes());

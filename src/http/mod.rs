@@ -3,6 +3,7 @@
 
 pub mod guard;
 pub mod request;
+pub mod session;
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, MutexGuard};

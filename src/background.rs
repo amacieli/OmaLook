@@ -18,15 +18,21 @@ pub fn http_port() -> u16 {
     std::env::var("OMALOOK_PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(DEFAULT_PORT)
 }
 
-/// True when an OmaLook backend answers on `port`. Checks the reply, not just the connection,
-/// so some other program holding the port is not mistaken for a backend.
-pub fn backend_listening(port: u16) -> bool {
+/// True when an OmaLook backend answers on `port` with `token` (its session token, from
+/// `http::session::read`). Checks the reply, not just the connection, so some other program holding the
+/// port is not mistaken for a backend; without the right token the backend answers 401, which is "no".
+pub fn backend_listening(port: u16, token: Option<&str>) -> bool {
+    let Some(token) = token else { return false };
     let addr: SocketAddr = ([127, 0, 0, 1], port).into();
     let Ok(mut s) = TcpStream::connect_timeout(&addr, Duration::from_millis(300)) else { return false };
     let _ = s.set_read_timeout(Some(Duration::from_millis(800)));
     let _ = s.set_write_timeout(Some(Duration::from_millis(800)));
     // The backend only answers requests addressed to exactly 127.0.0.1:<port> (http::guard).
-    let probe = format!("GET /sync/serial HTTP/1.1\r\nHost: {}\r\n\r\n", crate::http::guard::expected_host(port));
+    let probe = format!(
+        "GET /sync/serial HTTP/1.1\r\nHost: {}\r\nAuthorization: {}\r\n\r\n",
+        crate::http::guard::expected_host(port),
+        crate::http::session::bearer(token)
+    );
     if s.write_all(probe.as_bytes()).is_err() { return false; }
     let mut buf = [0u8; 256];
     let n = s.read(&mut buf).unwrap_or(0);
@@ -89,7 +95,7 @@ mod tests {
         let free = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = free.local_addr().unwrap().port();
         drop(free);
-        assert!(!backend_listening(port));
+        assert!(!backend_listening(port, Some("t")));
         // a listener that answers like the backend
         let l = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = l.local_addr().unwrap().port();
@@ -102,7 +108,9 @@ mod tests {
                 let _ = s.write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{}", body.len(), body).as_bytes());
             }
         });
-        assert!(backend_listening(port));
+        assert!(backend_listening(port, Some("t")));
+        // no token known: never "running" (the backend would answer 401)
+        assert!(!backend_listening(port, None));
     }
 
     #[test]

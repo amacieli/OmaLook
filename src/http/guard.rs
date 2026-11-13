@@ -4,8 +4,9 @@
 //! sends no `Origin` and no `Sec-Fetch-*` headers and always addresses `127.0.0.1:<port>` (checked in a
 //! sandboxed run of the whole UI, 2026-11-12). Browsers and browser engines (including the WebKit render
 //! helper) add `Origin` to cross-site requests and `Sec-Fetch-*` to every request, and a DNS-rebinding page
-//! sends its own host name. All of those are refused before any route runs. Local processes that send
-//! none of these are stopped by the session token (R1.4), not here.
+//! sends its own host name. All of those are refused (403) before any route runs. Then every request must
+//! carry the per-launch session token (`http::session`, R1.4) as `Authorization: Bearer <token>`, which
+//! stops local processes that send none of the browser headers (401).
 
 use super::request::Request;
 
@@ -18,11 +19,16 @@ pub enum Refusal {
     FetchMetadata,
     /// No `Host`, more than one, or not exactly `127.0.0.1:<port>`.
     Host,
+    /// No `Authorization: Bearer <session token>`, or the wrong token.
+    Token,
 }
 
 impl Refusal {
     pub fn status(&self) -> &'static str {
-        "403 Forbidden"
+        match self {
+            Refusal::Token => "401 Unauthorized",
+            _ => "403 Forbidden",
+        }
     }
 }
 
@@ -31,8 +37,8 @@ pub fn expected_host(port: u16) -> String {
     format!("127.0.0.1:{}", port)
 }
 
-/// Check one request against the rules above.
-pub fn check(req: &Request, port: u16) -> Result<(), Refusal> {
+/// Check one request against the rules above. `token` is this backend's session token.
+pub fn check(req: &Request, port: u16, token: &str) -> Result<(), Refusal> {
     let named = |n: &'static str| req.headers.iter().filter(move |(k, _)| k.eq_ignore_ascii_case(n));
     if named("origin").next().is_some() {
         return Err(Refusal::Origin);
@@ -43,6 +49,14 @@ pub fn check(req: &Request, port: u16) -> Result<(), Refusal> {
     let hosts: Vec<&str> = named("host").map(|(_, v)| v.as_str()).collect();
     if hosts.len() != 1 || hosts[0] != expected_host(port) {
         return Err(Refusal::Host);
+    }
+    let auth: Vec<&str> = named("authorization").map(|(_, v)| v.as_str()).collect();
+    let presented = match auth.as_slice() {
+        [v] => v.strip_prefix("Bearer ").unwrap_or(""),
+        _ => "",
+    };
+    if token.len() < 32 || !crate::mcp::token::matches(presented, token) {
+        return Err(Refusal::Token);
     }
     Ok(())
 }
@@ -65,25 +79,26 @@ mod tests {
     }
 
     // The exact header set the UI's QML XMLHttpRequest sends (sandbox capture, R1.1/R1.3).
-    const UI_GET: &str = "GET /accounts HTTP/1.1\r\nHost: 127.0.0.1:27182\r\nConnection: Keep-Alive\r\nAccept-Encoding: gzip, deflate\r\nAccept-Language: en-US,*\r\nUser-Agent: Mozilla/5.0\r\n\r\n";
-    const UI_POST: &str = "POST /settings/signature?account=a HTTP/1.1\r\nHost: 127.0.0.1:27182\r\nContent-Type: text/plain;charset=UTF-8\r\nContent-Length: 2\r\nConnection: Keep-Alive\r\nAccept-Encoding: gzip, deflate\r\nAccept-Language: en-US,*\r\nUser-Agent: Mozilla/5.0\r\n\r\n{}";
+    const TOK: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    const UI_GET: &str = "GET /accounts HTTP/1.1\r\nHost: 127.0.0.1:27182\r\nAuthorization: Bearer 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\r\nConnection: Keep-Alive\r\nAccept-Encoding: gzip, deflate\r\nAccept-Language: en-US,*\r\nUser-Agent: Mozilla/5.0\r\n\r\n";
+    const UI_POST: &str = "POST /settings/signature?account=a HTTP/1.1\r\nHost: 127.0.0.1:27182\r\nAuthorization: Bearer 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\r\nContent-Type: text/plain;charset=UTF-8\r\nContent-Length: 2\r\nConnection: Keep-Alive\r\nAccept-Encoding: gzip, deflate\r\nAccept-Language: en-US,*\r\nUser-Agent: Mozilla/5.0\r\n\r\n{}";
 
     #[test]
     fn the_ui_gets_through() {
-        assert_eq!(check(&parse(UI_GET), 27182), Ok(()));
-        assert_eq!(check(&parse(UI_POST), 27182), Ok(()));
+        assert_eq!(check(&parse(UI_GET), 27182, TOK), Ok(()));
+        assert_eq!(check(&parse(UI_POST), 27182, TOK), Ok(()));
         // a scratch instance on its own port
-        assert_eq!(check(&parse(&UI_GET.replace("27182", "27999")), 27999), Ok(()));
+        assert_eq!(check(&parse(&UI_GET.replace("27182", "27999")), 27999, TOK), Ok(()));
     }
 
     #[test]
     fn any_origin_is_refused() {
         for o in ["https://evil.example", "null", "http://127.0.0.1:27182", "file://", ""] {
             let raw = UI_POST.replace("Connection:", &format!("Origin: {}\r\nConnection:", o));
-            assert_eq!(check(&parse(&raw), 27182), Err(Refusal::Origin), "origin {:?}", o);
+            assert_eq!(check(&parse(&raw), 27182, TOK), Err(Refusal::Origin), "origin {:?}", o);
         }
         let raw = UI_GET.replace("Connection:", "oRiGiN: https://evil.example\r\nConnection:");
-        assert_eq!(check(&parse(&raw), 27182), Err(Refusal::Origin));
+        assert_eq!(check(&parse(&raw), 27182, TOK), Err(Refusal::Origin));
     }
 
     #[test]
@@ -91,7 +106,7 @@ mod tests {
         // a no-cors GET from a web page (<img src>, fetch mode no-cors) carries no Origin but these
         for h in ["Sec-Fetch-Site: cross-site", "Sec-Fetch-Mode: no-cors", "Sec-Fetch-Dest: image", "sec-fetch-user: ?1"] {
             let raw = UI_GET.replace("Connection:", &format!("{}\r\nConnection:", h));
-            assert_eq!(check(&parse(&raw), 27182), Err(Refusal::FetchMetadata), "{}", h);
+            assert_eq!(check(&parse(&raw), 27182, TOK), Err(Refusal::FetchMetadata), "{}", h);
         }
     }
 
@@ -99,14 +114,35 @@ mod tests {
     fn host_must_be_exactly_loopback_and_port() {
         for host in ["attacker.example", "attacker.example:27182", "localhost:27182", "127.0.0.1", "127.0.0.1:27183", "[::1]:27182", "127.0.0.2:27182", "127.0.0.1:27182.evil"] {
             let raw = UI_GET.replace("Host: 127.0.0.1:27182", &format!("Host: {}", host));
-            assert_eq!(check(&parse(&raw), 27182), Err(Refusal::Host), "host {:?}", host);
+            assert_eq!(check(&parse(&raw), 27182, TOK), Err(Refusal::Host), "host {:?}", host);
         }
         // the header value is trimmed by the parser, so a trailing space is the same host
-        assert_eq!(check(&parse(&UI_GET.replace("Host: 127.0.0.1:27182", "Host: 127.0.0.1:27182 ")), 27182), Ok(()));
+        assert_eq!(check(&parse(&UI_GET.replace("Host: 127.0.0.1:27182", "Host: 127.0.0.1:27182 ")), 27182, TOK), Ok(()));
         // missing, or sent twice
-        assert_eq!(check(&parse(&UI_GET.replace("Host: 127.0.0.1:27182\r\n", "")), 27182), Err(Refusal::Host));
-        assert_eq!(check(&parse(&UI_GET.replace("Host: 127.0.0.1:27182\r\n", "Host: 127.0.0.1:27182\r\nHost: evil\r\n")), 27182), Err(Refusal::Host));
+        assert_eq!(check(&parse(&UI_GET.replace("Host: 127.0.0.1:27182\r\n", "")), 27182, TOK), Err(Refusal::Host));
+        assert_eq!(check(&parse(&UI_GET.replace("Host: 127.0.0.1:27182\r\n", "Host: 127.0.0.1:27182\r\nHost: evil\r\n")), 27182, TOK), Err(Refusal::Host));
         // right host, wrong port for this instance
-        assert_eq!(check(&parse(UI_GET), 27999), Err(Refusal::Host));
+        assert_eq!(check(&parse(UI_GET), 27999, TOK), Err(Refusal::Host));
+    }
+
+    #[test]
+    fn the_session_token_is_required() {
+        // no token, wrong token, wrong scheme, sent twice, empty: all 401
+        let no_auth = UI_GET.replace(&format!("Authorization: Bearer {}\r\n", TOK), "");
+        assert_eq!(check(&parse(&no_auth), 27182, TOK), Err(Refusal::Token));
+        assert_eq!(Refusal::Token.status(), "401 Unauthorized");
+        let other = "f".repeat(64);
+        for auth in [format!("Bearer {}", other), format!("Basic {}", TOK), format!("bearer{}", TOK), TOK.to_string(), "Bearer ".to_string(), format!("Bearer {}x", TOK)] {
+            let raw = no_auth.replace("Connection:", &format!("Authorization: {}\r\nConnection:", auth));
+            assert_eq!(check(&parse(&raw), 27182, TOK), Err(Refusal::Token), "auth {:?}", auth);
+        }
+        let twice = UI_GET.replace("Connection:", &format!("Authorization: Bearer {}\r\nConnection:", TOK));
+        assert_eq!(check(&parse(&twice), 27182, TOK), Err(Refusal::Token));
+        // the right token passes; a backend without a usable token refuses everything
+        assert_eq!(check(&parse(UI_GET), 27182, TOK), Ok(()));
+        assert_eq!(check(&parse(&no_auth.replace("Connection:", "Authorization: Bearer \r\nConnection:")), 27182, ""), Err(Refusal::Token));
+        // browser and host checks come first (403), so a browser never learns whether a token exists
+        let evil = no_auth.replace("Connection:", "Origin: https://evil.example\r\nConnection:");
+        assert_eq!(check(&parse(&evil), 27182, TOK), Err(Refusal::Origin));
     }
 }
