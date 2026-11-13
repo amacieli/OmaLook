@@ -2599,7 +2599,7 @@ fn addresses_json(config_dir: &PathBuf) -> String {
 fn json_error_response(status: &str, msg: &str) -> String {
     let body = serde_json::json!({ "error": msg }).to_string();
     format!(
-        "HTTP/1.1 {}\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+        "HTTP/1.1 {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
         status, body.len(), body
     )
 }
@@ -2697,7 +2697,7 @@ fn messages_response(config_dir: &PathBuf, first_line: &str, req_t: std::time::I
                         Err(e) => {
                             let body = serde_json::json!({ "error": e }).to_string();
                             let response = format!(
-                                "HTTP/1.1 400 Bad Request\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                                "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                                 body.len(), body
                             );
                             return response;
@@ -2855,7 +2855,7 @@ fn messages_response(config_dir: &PathBuf, first_line: &str, req_t: std::time::I
                         }
                     };
                     let response = format!(
-                        "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Expose-Headers: X-Search-Truncated\r\n{}Content-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                        "HTTP/1.1 200 OK\r\n{}Content-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                         if truncated { "X-Search-Truncated: 1\r\n" } else { "" }, body.len(), body
                     );
                     omalook::perf::mark(&format!("http -> GET /messages answered ({} bytes, handler {:.1}ms)", body.len(), req_t.elapsed().as_secs_f64() * 1000.0));
@@ -2867,7 +2867,8 @@ fn messages_response(config_dir: &PathBuf, first_line: &str, req_t: std::time::I
 fn start_http_trigger_server(config_dir: &PathBuf) {
     // OMALOOK_PORT is for tests that run a second instance beside the real one; the UI's
     // Backend.qml reads the same variable, so a scratch UI talks only to its own backend.
-    let addr = format!("127.0.0.1:{}", env::var("OMALOOK_PORT").ok().and_then(|p| p.parse::<u16>().ok()).unwrap_or(27182));
+    let port = omalook::background::http_port();
+    let addr = format!("127.0.0.1:{}", port);
     eprintln!("[HTTP] Attempting to bind {}", addr);
     let listener = match TcpListener::bind(&addr) {
         Ok(l) => {
@@ -2897,7 +2898,7 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
                 let config_dir = Arc::clone(&config_dir);
                 let spawned = std::thread::Builder::new().name("http-conn".into()).spawn(move || {
                     let _slot = slot;
-                    handle_http_connection(&config_dir, stream);
+                    handle_http_connection(&config_dir, port, stream);
                 });
                 if let Err(e) = spawned { warn!("HTTP: could not start a connection thread: {}", e); }
             }
@@ -2906,9 +2907,10 @@ fn start_http_trigger_server(config_dir: &PathBuf) {
     }
 }
 
-/// Read one request from a UI connection and route it. Requests that cannot be read get an error
-/// status (or nothing, when the client sent nothing) and the connection is closed.
-fn handle_http_connection(config_dir: &PathBuf, mut stream: std::net::TcpStream) {
+/// Read one request from a UI connection, check who sent it, and route it. Requests that cannot be
+/// read get an error status (or nothing, when the client sent nothing); requests from a browser or
+/// to another host name get 403 (`http::guard`, R1.3). Either way the connection is then closed.
+fn handle_http_connection(config_dir: &PathBuf, port: u16, mut stream: std::net::TcpStream) {
     let _ = stream.set_write_timeout(Some(std::time::Duration::from_secs(10)));
     let limits = omalook::http::request::Limits::default();
     let req = match omalook::http::request::read_request(&mut stream, &limits) {
@@ -2921,6 +2923,12 @@ fn handle_http_connection(config_dir: &PathBuf, mut stream: std::net::TcpStream)
             return;
         }
     };
+    if let Err(why) = omalook::http::guard::check(&req, port) {
+        // Method + route only: query strings may hold addresses or search terms.
+        warn!("HTTP: refused {} {} ({:?})", req.method, req.path(), why);
+        let _ = stream.write_all(omalook::http::error_response(why.status()).as_bytes());
+        return;
+    }
     let _guard = omalook::http::dispatch_guard(&req.method, req.path());
     route_http_request(config_dir, stream, &req.raw);
 }
@@ -2939,7 +2947,7 @@ fn route_http_request(config_dir: &PathBuf, mut stream: std::net::TcpStream, raw
                 if first_line.contains("GET /sync/serial") {
                     let body = format!("{{\"mail\":{},\"sms\":{}}}", omalook::sync_state::mail_serial(), omalook::sync_state::sms_serial());
                     let response = format!(
-                        "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                         body.len(), body
                     );
                     let _ = stream.write_all(response.as_bytes());
@@ -2954,7 +2962,7 @@ fn route_http_request(config_dir: &PathBuf, mut stream: std::net::TcpStream, raw
                     if let Some(m) = query_param(first_line, "m") {
                         omalook::perf::mark(&format!("UI: {}", m));
                     }
-                    let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: 2\r\n\r\nok");
+                    let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
                     return;
                 }
 
@@ -3020,7 +3028,7 @@ fn route_http_request(config_dir: &PathBuf, mut stream: std::net::TcpStream, raw
                         }
                     };
                     let response = format!(
-                        "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                         body.len(), body
                     );
                     let _ = stream.write_all(response.as_bytes());
@@ -3031,7 +3039,7 @@ fn route_http_request(config_dir: &PathBuf, mut stream: std::net::TcpStream, raw
                 if first_line.contains("GET /accounts") {
                     let body = omalook::account_ops::accounts_json(config_dir);
                     let response = format!(
-                        "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                         body.len(), body
                     );
                     let _ = stream.write_all(response.as_bytes());
@@ -3046,7 +3054,7 @@ fn route_http_request(config_dir: &PathBuf, mut stream: std::net::TcpStream, raw
                     let body = if first_line.contains("POST /sms/send") { sms_send_response(config_dir, &mut stream, raw) }
                                else { sms_route(config_dir, first_line) };
                     let response = format!(
-                        "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                         body.len(), body
                     );
                     let _ = stream.write_all(response.as_bytes());
@@ -3063,7 +3071,7 @@ fn route_http_request(config_dir: &PathBuf, mut stream: std::net::TcpStream, raw
                         Err(e) => { warn!("GET /tasks: DB open failed: {}", e); "[]".to_string() }
                     };
                     let response = format!(
-                        "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                         body.len(), body
                     );
                     let _ = stream.write_all(response.as_bytes());
@@ -3073,7 +3081,7 @@ fn route_http_request(config_dir: &PathBuf, mut stream: std::net::TcpStream, raw
                 // ── /contacts/get, /contacts/folders (and the write routes of phase 2 onward): see `contacts_route` ──
                 if let Some(body) = contacts_route(config_dir, &mut stream, raw, first_line) {
                     let response = format!(
-                        "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                         body.len(), body
                     );
                     let _ = stream.write_all(response.as_bytes());
@@ -3106,7 +3114,7 @@ fn route_http_request(config_dir: &PathBuf, mut stream: std::net::TcpStream, raw
                         }
                     };
                     let response = format!(
-                        "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                         body.len(), body
                     );
                     let _ = stream.write_all(response.as_bytes());
@@ -3122,7 +3130,7 @@ fn route_http_request(config_dir: &PathBuf, mut stream: std::net::TcpStream, raw
                         .is_ok();
                     let body = if ok { "ok" } else { "error" };
                     let response = format!(
-                        "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                         body.len(), body
                     );
                     let _ = stream.write_all(response.as_bytes());
@@ -3135,7 +3143,7 @@ fn route_http_request(config_dir: &PathBuf, mut stream: std::net::TcpStream, raw
                     omalook::sync_state::request_mail_sync();
                     let body = "ok";
                     let response = format!(
-                        "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                         body.len(), body
                     );
                     let _ = stream.write_all(response.as_bytes());
@@ -3154,7 +3162,7 @@ fn route_http_request(config_dir: &PathBuf, mut stream: std::net::TcpStream, raw
                             .is_ok();
                     let body = if ok { "ok" } else { "error" };
                     let response = format!(
-                        "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                         body.len(), body
                     );
                     let _ = stream.write_all(response.as_bytes());
@@ -3189,7 +3197,7 @@ fn route_http_request(config_dir: &PathBuf, mut stream: std::net::TcpStream, raw
                         Err(_) => serde_json::json!({ "categories": [], "master_list": true, "palette": [] }).to_string(),
                     };
                     let response = format!(
-                        "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                         body.len(), body
                     );
                     let _ = stream.write_all(response.as_bytes());
@@ -3217,7 +3225,7 @@ fn route_http_request(config_dir: &PathBuf, mut stream: std::net::TcpStream, raw
                         _ => serde_json::json!({ "error": "need account, a name (max 64 chars, no ; or ,) and a palette colour" }).to_string(),
                     };
                     let response = format!(
-                        "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                         body.len(), body
                     );
                     let _ = stream.write_all(response.as_bytes());
@@ -3247,7 +3255,7 @@ fn route_http_request(config_dir: &PathBuf, mut stream: std::net::TcpStream, raw
                         _ => serde_json::json!({ "error": "need ids, name and op=add|remove" }).to_string(),
                     };
                     let response = format!(
-                        "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                         body.len(), body
                     );
                     let _ = stream.write_all(response.as_bytes());
@@ -3262,7 +3270,7 @@ fn route_http_request(config_dir: &PathBuf, mut stream: std::net::TcpStream, raw
                         .unwrap_or(0);
                     let body = serde_json::json!({ "active": omalook::sync_state::meta_active(), "remaining": remaining }).to_string();
                     let response = format!(
-                        "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                         body.len(), body
                     );
                     let _ = stream.write_all(response.as_bytes());
@@ -3312,7 +3320,7 @@ fn route_http_request(config_dir: &PathBuf, mut stream: std::net::TcpStream, raw
                         Err(e) => serde_json::json!({ "error": format!("database: {}", e) }).to_string(),
                     };
                     let response = format!(
-                        "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                         body.len(), body
                     );
                     let _ = stream.write_all(response.as_bytes());
@@ -3328,7 +3336,7 @@ fn route_http_request(config_dir: &PathBuf, mut stream: std::net::TcpStream, raw
                         Err(e) => serde_json::json!({ "error": e }).to_string(),
                     };
                     let response = format!(
-                        "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                         body.len(), body
                     );
                     let _ = stream.write_all(response.as_bytes());
@@ -3340,7 +3348,7 @@ fn route_http_request(config_dir: &PathBuf, mut stream: std::net::TcpStream, raw
                 if first_line.contains("POST /compose/send") {
                     let body = compose_send_response(config_dir, &mut stream, raw);
                     let response = format!(
-                        "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                         body.len(), body
                     );
                     let _ = stream.write_all(response.as_bytes());
@@ -3349,7 +3357,7 @@ fn route_http_request(config_dir: &PathBuf, mut stream: std::net::TcpStream, raw
                 if first_line.contains("POST /compose/cancel") || first_line.contains("GET /compose/status") {
                     let body = compose_outbox_response(config_dir, first_line);
                     let response = format!(
-                        "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                         body.len(), body
                     );
                     let _ = stream.write_all(response.as_bytes());
@@ -3359,7 +3367,7 @@ fn route_http_request(config_dir: &PathBuf, mut stream: std::net::TcpStream, raw
                 if first_line.contains("GET /compose/originals") {
                     let body = compose_originals_json(config_dir, &query_param(first_line, "id").unwrap_or_default());
                     let response = format!(
-                        "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                         body.len(), body
                     );
                     let _ = stream.write_all(response.as_bytes());
@@ -3372,7 +3380,7 @@ fn route_http_request(config_dir: &PathBuf, mut stream: std::net::TcpStream, raw
                         .unwrap_or_default();
                     let body = serde_json::to_string(&omalook::compose::attachment_limits(&provider)).unwrap_or_else(|_| "{}".into());
                     let response = format!(
-                        "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                         body.len(), body
                     );
                     let _ = stream.write_all(response.as_bytes());
@@ -3389,7 +3397,7 @@ fn route_http_request(config_dir: &PathBuf, mut stream: std::net::TcpStream, raw
                         drafts_route(config_dir, first_line)
                     };
                     let response = format!(
-                        "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                         body.len(), body
                     );
                     let _ = stream.write_all(response.as_bytes());
@@ -3401,7 +3409,7 @@ fn route_http_request(config_dir: &PathBuf, mut stream: std::net::TcpStream, raw
                 if first_line.contains("POST /calendar/event/undo") || first_line.contains("GET /calendar/outbox") || first_line.contains("GET /calendar/event/status") {
                     let body = calendar_outbox_response(config_dir, first_line);
                     let response = format!(
-                        "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                         body.len(), body
                     );
                     let _ = stream.write_all(response.as_bytes());
@@ -3412,7 +3420,7 @@ fn route_http_request(config_dir: &PathBuf, mut stream: std::net::TcpStream, raw
                 if first_line.contains("GET /calendar/meeting-options") || first_line.contains("GET /settings/meetings") || first_line.contains("POST /settings/meetings") {
                     let body = meetings_response(config_dir, &mut stream, raw, first_line);
                     let response = format!(
-                        "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                         body.len(), body
                     );
                     let _ = stream.write_all(response.as_bytes());
@@ -3421,7 +3429,7 @@ fn route_http_request(config_dir: &PathBuf, mut stream: std::net::TcpStream, raw
                 if first_line.contains("POST /calendar/tags") {
                     let body = calendar_tags_response(config_dir, first_line);
                     let response = format!(
-                        "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                         body.len(), body
                     );
                     let _ = stream.write_all(response.as_bytes());
@@ -3431,7 +3439,7 @@ fn route_http_request(config_dir: &PathBuf, mut stream: std::net::TcpStream, raw
                 if first_line.starts_with("PATCH /calendar/event") || first_line.contains("POST /calendar/event/cancel") {
                     let body = calendar_change_response(config_dir, &mut stream, raw, first_line);
                     let response = format!(
-                        "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                         body.len(), body
                     );
                     let _ = stream.write_all(response.as_bytes());
@@ -3440,7 +3448,7 @@ fn route_http_request(config_dir: &PathBuf, mut stream: std::net::TcpStream, raw
                 if first_line.contains("POST /calendar/event") {
                     let body = calendar_event_response(config_dir, &mut stream, raw, first_line);
                     let response = format!(
-                        "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                         body.len(), body
                     );
                     let _ = stream.write_all(response.as_bytes());
@@ -3474,7 +3482,7 @@ fn route_http_request(config_dir: &PathBuf, mut stream: std::net::TcpStream, raw
                         "max_large_audience_confirm": MailSettings::MAX_LARGE_AUDIENCE,
                     }).to_string();
                     let response = format!(
-                        "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                         body.len(), body
                     );
                     let _ = stream.write_all(response.as_bytes());
@@ -3500,7 +3508,7 @@ fn route_http_request(config_dir: &PathBuf, mut stream: std::net::TcpStream, raw
                         "used_bytes": cache.total_bytes(),
                     }).to_string();
                     let response = format!(
-                        "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                         body.len(), body
                     );
                     let _ = stream.write_all(response.as_bytes());
@@ -3519,7 +3527,7 @@ fn route_http_request(config_dir: &PathBuf, mut stream: std::net::TcpStream, raw
                         .unwrap_or(false);
                     let body = if ok { "ok" } else { "error" };
                     let response = format!(
-                        "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                         body.len(), body
                     );
                     let _ = stream.write_all(response.as_bytes());
@@ -3544,7 +3552,7 @@ fn route_http_request(config_dir: &PathBuf, mut stream: std::net::TcpStream, raw
                         None => "{\"result\":\"error\"}".to_string(),
                     };
                     let response = format!(
-                        "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                         body.len(), body
                     );
                     let _ = stream.write_all(response.as_bytes());
@@ -3555,7 +3563,7 @@ fn route_http_request(config_dir: &PathBuf, mut stream: std::net::TcpStream, raw
                 if first_line.contains("GET /calendar/find") {
                     let body = calendar_find_response(config_dir, first_line);
                     let response = format!(
-                        "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                         body.len(), body
                     );
                     let _ = stream.write_all(response.as_bytes());
@@ -3617,7 +3625,7 @@ fn route_http_request(config_dir: &PathBuf, mut stream: std::net::TcpStream, raw
                         }
                     };
                     let response = format!(
-                        "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                         body.len(), body
                     );
                     let _ = stream.write_all(response.as_bytes());
@@ -3637,7 +3645,7 @@ fn route_http_request(config_dir: &PathBuf, mut stream: std::net::TcpStream, raw
                 if first_line.starts_with("GET /lists") || first_line.starts_with("POST /lists/") || first_line.starts_with("GET /addresses") {
                     let body = if first_line.starts_with("GET /addresses") { addresses_json(config_dir) } else { lists_response(config_dir, first_line) };
                     let response = format!(
-                        "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                         body.len(), body
                     );
                     let _ = stream.write_all(response.as_bytes());
@@ -3659,7 +3667,7 @@ fn route_http_request(config_dir: &PathBuf, mut stream: std::net::TcpStream, raw
                         std::thread::spawn(move || {
                             let body = local_rules_response(&dir, &line);
                             let response = format!(
-                                "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                                 body.len(), body
                             );
                             let _ = stream.write_all(response.as_bytes());
@@ -3668,7 +3676,7 @@ fn route_http_request(config_dir: &PathBuf, mut stream: std::net::TcpStream, raw
                     }
                     let body = local_rules_response(config_dir, first_line);
                     let response = format!(
-                        "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                         body.len(), body
                     );
                     let _ = stream.write_all(response.as_bytes());
@@ -3699,7 +3707,7 @@ fn route_http_request(config_dir: &PathBuf, mut stream: std::net::TcpStream, raw
                         std::thread::spawn(move || {
                             let body = rules_response(&dir, &line);
                             let response = format!(
-                                "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                                 body.len(), body
                             );
                             let _ = stream.write_all(response.as_bytes());
@@ -3708,7 +3716,7 @@ fn route_http_request(config_dir: &PathBuf, mut stream: std::net::TcpStream, raw
                     }
                     let body = rules_response(config_dir, first_line);
                     let response = format!(
-                        "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                         body.len(), body
                     );
                     let _ = stream.write_all(response.as_bytes());
@@ -3724,7 +3732,7 @@ fn route_http_request(config_dir: &PathBuf, mut stream: std::net::TcpStream, raw
                 if first_line.starts_with("GET /tags") || first_line.starts_with("POST /tags/") {
                     let body = tags_response(config_dir, first_line);
                     let response = format!(
-                        "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                         body.len(), body
                     );
                     let _ = stream.write_all(response.as_bytes());
@@ -3739,7 +3747,7 @@ fn route_http_request(config_dir: &PathBuf, mut stream: std::net::TcpStream, raw
                 if first_line.contains("/settings/senders") {
                     let body = sender_prefs_response(config_dir, first_line);
                     let response = format!(
-                        "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                         body.len(), body
                     );
                     let _ = stream.write_all(response.as_bytes());
@@ -3753,7 +3761,7 @@ fn route_http_request(config_dir: &PathBuf, mut stream: std::net::TcpStream, raw
                     std::thread::spawn(move || {
                         let body = identities_response(&dir, &first);
                         let response = format!(
-                            "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                             body.len(), body
                         );
                         let _ = stream.write_all(response.as_bytes());
@@ -3768,7 +3776,7 @@ fn route_http_request(config_dir: &PathBuf, mut stream: std::net::TcpStream, raw
                     std::thread::spawn(move || {
                         let body = list_info_json(&dir, &id);
                         let response = format!(
-                            "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                             body.len(), body
                         );
                         let _ = stream.write_all(response.as_bytes());
@@ -3784,7 +3792,7 @@ fn route_http_request(config_dir: &PathBuf, mut stream: std::net::TcpStream, raw
                     std::thread::spawn(move || {
                         let body = invite_info_json(&dir, &id);
                         let response = format!(
-                            "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                             body.len(), body
                         );
                         let _ = stream.write_all(response.as_bytes());
@@ -3802,7 +3810,7 @@ fn route_http_request(config_dir: &PathBuf, mut stream: std::net::TcpStream, raw
                     std::thread::spawn(move || {
                         let body = respond_invite_json(&dir, &id, &choice);
                         let response = format!(
-                            "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                             body.len(), body
                         );
                         let _ = stream.write_all(response.as_bytes());
@@ -3821,7 +3829,7 @@ fn route_http_request(config_dir: &PathBuf, mut stream: std::net::TcpStream, raw
                     std::thread::spawn(move || {
                         let body = if saving { save_attachments_json(&dir, &id, att.as_deref()) } else { message_attachments_json(&dir, &id) };
                         let response = format!(
-                            "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                             body.len(), body
                         );
                         let _ = stream.write_all(response.as_bytes());
@@ -3835,7 +3843,7 @@ fn route_http_request(config_dir: &PathBuf, mut stream: std::net::TcpStream, raw
                     std::thread::spawn(move || {
                         let body = if line.contains("GET /render/get") { render_get_json(&dir, &line) } else { render_adopt_json(&dir, &line) };
                         let response = format!(
-                            "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                             body.len(), body
                         );
                         let _ = stream.write_all(response.as_bytes());
@@ -3852,7 +3860,7 @@ fn route_http_request(config_dir: &PathBuf, mut stream: std::net::TcpStream, raw
                     std::thread::spawn(move || {
                         let body = message_body_json(&dir, &id);
                         let response = format!(
-                            "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                             body.len(), body
                         );
                         let _ = stream.write_all(response.as_bytes());
@@ -3896,7 +3904,7 @@ fn route_http_request(config_dir: &PathBuf, mut stream: std::net::TcpStream, raw
                         Err(_) => serde_json::json!({ "serial": serial.to_string(), "preset": "", "bindings": {}, "error": "" }),
                     }.to_string();
                     let response = format!(
-                        "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                         body.len(), body
                     );
                     let _ = stream.write_all(response.as_bytes());
@@ -3917,7 +3925,7 @@ fn route_http_request(config_dir: &PathBuf, mut stream: std::net::TcpStream, raw
                     };
                     let body = serde_json::to_string(&list).unwrap_or_else(|_| "[]".to_string());
                     let response = format!(
-                        "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                         body.len(), body
                     );
                     let _ = stream.write_all(response.as_bytes());
@@ -3935,7 +3943,7 @@ fn route_http_request(config_dir: &PathBuf, mut stream: std::net::TcpStream, raw
                         ("200 OK", omalook::view_state::load(&path))
                     };
                     let response = format!(
-                        "HTTP/1.1 {}\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                        "HTTP/1.1 {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                         status, body.len(), body
                     );
                     let _ = stream.write_all(response.as_bytes());
@@ -3965,7 +3973,7 @@ fn route_http_request(config_dir: &PathBuf, mut stream: std::net::TcpStream, raw
                         Err(e) => ("400 Bad Request", serde_json::json!({ "error": e }).to_string()),
                     };
                     let response = format!(
-                        "HTTP/1.1 {}\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                        "HTTP/1.1 {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                         status, body.len(), body
                     );
                     let _ = stream.write_all(response.as_bytes());
@@ -3993,7 +4001,7 @@ fn route_http_request(config_dir: &PathBuf, mut stream: std::net::TcpStream, raw
                         None => "{\"sidebar_expanded\":true,\"window_width\":1280,\"window_height\":800,\"message_rendering\":\"system_sender\",\"folder_pane\":false,\"list_width_offset\":0,\"calendar_pane_offset\":0,\"scale_factor\":1.0}".to_string(),
                     };
                     let response = format!(
-                        "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                         body.len(), body
                     );
                     let _ = stream.write_all(response.as_bytes());
@@ -4011,7 +4019,7 @@ fn route_http_request(config_dir: &PathBuf, mut stream: std::net::TcpStream, raw
                         let body = omalook::mcp::admin::handle(&dir, method, &path, &|k| query_param(&line, k))
                             .unwrap_or_else(|| "{\"error\":\"unknown route\"}".to_string());
                         let response = format!(
-                            "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                             body.len(), body
                         );
                         let _ = stream.write_all(response.as_bytes());
@@ -4038,7 +4046,7 @@ fn route_http_request(config_dir: &PathBuf, mut stream: std::net::TcpStream, raw
                     };
                     let body = serde_json::json!({ "run_in_background": enabled }).to_string();
                     let response = format!(
-                        "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                         body.len(), body
                     );
                     let _ = stream.write_all(response.as_bytes());
@@ -4060,7 +4068,7 @@ fn route_http_request(config_dir: &PathBuf, mut stream: std::net::TcpStream, raw
                         })
                         .is_some();
                     debug!("POST /settings/calendar_pane_offset {} → {}", cols, ok);
-                    let response = "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\nok";
+                    let response = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\nok";
                     let _ = stream.write_all(response.as_bytes());
                     return;
                 }
@@ -4100,7 +4108,7 @@ fn route_http_request(config_dir: &PathBuf, mut stream: std::net::TcpStream, raw
                         "max_years_ahead": CalendarSettings::MAX_YEARS_AHEAD,
                     }).to_string();
                     let response = format!(
-                        "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                         body.len(), body
                     );
                     let _ = stream.write_all(response.as_bytes());
@@ -4118,7 +4126,7 @@ fn route_http_request(config_dir: &PathBuf, mut stream: std::net::TcpStream, raw
                         }
                     };
                     let response = format!(
-                        "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                         body.len(), body
                     );
                     let _ = stream.write_all(response.as_bytes());
@@ -4136,7 +4144,7 @@ fn route_http_request(config_dir: &PathBuf, mut stream: std::net::TcpStream, raw
                         }
                     };
                     let response = format!(
-                        "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                         body.len(), body
                     );
                     let _ = stream.write_all(response.as_bytes());
@@ -4163,7 +4171,7 @@ fn route_http_request(config_dir: &PathBuf, mut stream: std::net::TcpStream, raw
                     let ok = result.is_some();
                     debug!("POST /settings/sidebar_expanded {} → {}", expanded, ok);
 
-                    let response = "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\nok";
+                    let response = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\nok";
                     let _ = stream.write_all(response.as_bytes());
                     return;
                 }
@@ -4182,7 +4190,7 @@ fn route_http_request(config_dir: &PathBuf, mut stream: std::net::TcpStream, raw
                         })
                         .is_some();
                     debug!("POST /settings/folder_pane {} → {}", shown, ok);
-                    let response = "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\nok";
+                    let response = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\nok";
                     let _ = stream.write_all(response.as_bytes());
                     return;
                 }
@@ -4201,7 +4209,7 @@ fn route_http_request(config_dir: &PathBuf, mut stream: std::net::TcpStream, raw
                         })
                         .is_some();
                     debug!("POST /settings/list_width_offset {} → {}", cols, ok);
-                    let response = "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\nok";
+                    let response = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\nok";
                     let _ = stream.write_all(response.as_bytes());
                     return;
                 }
@@ -4221,9 +4229,8 @@ fn route_http_request(config_dir: &PathBuf, mut stream: std::net::TcpStream, raw
 
                 let status = if action.is_empty() { "404 Not Found" } else { "200 OK" };
 
-                // Always respond with CORS headers so QML XHR doesn't block
                 let response = format!(
-                    "HTTP/1.1 {}\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\nok",
+                    "HTTP/1.1 {}\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\nok",
                     status
                 );
                 let _ = stream.write_all(response.as_bytes());

@@ -25,7 +25,9 @@ pub fn backend_listening(port: u16) -> bool {
     let Ok(mut s) = TcpStream::connect_timeout(&addr, Duration::from_millis(300)) else { return false };
     let _ = s.set_read_timeout(Some(Duration::from_millis(800)));
     let _ = s.set_write_timeout(Some(Duration::from_millis(800)));
-    if s.write_all(b"GET /sync/serial HTTP/1.1\r\nHost: localhost\r\n\r\n").is_err() { return false; }
+    // The backend only answers requests addressed to exactly 127.0.0.1:<port> (http::guard).
+    let probe = format!("GET /sync/serial HTTP/1.1\r\nHost: {}\r\n\r\n", crate::http::guard::expected_host(port));
+    if s.write_all(probe.as_bytes()).is_err() { return false; }
     let mut buf = [0u8; 256];
     let n = s.read(&mut buf).unwrap_or(0);
     let reply = String::from_utf8_lossy(&buf[..n]);

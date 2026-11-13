@@ -1,6 +1,7 @@
 //! The UI's loopback HTTP server plumbing (roadmap R1): request reading (`request`), the
 //! connection cap and the dispatch policy. Routes still live in `main.rs` until the typed router (R3.1).
 
+pub mod guard;
 pub mod request;
 
 use std::sync::atomic::{AtomicUsize, Ordering};

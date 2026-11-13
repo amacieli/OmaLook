@@ -31,7 +31,8 @@ Renamed from "omarchylook" on 2026-10-12. **README.md is stale** (describes the 
 
 ## Security rules (from `docs/REVIEW-2026-11-12.md`; details in the Hermes skill `omalook-secure-by-default`)
 - Every backend route goes through the router + guard (token, no Origin, exact Host). Never add a route as a
-  `first_line.contains(...)` arm, never send `Access-Control-Allow-Origin`. (Until the guard exists, OL-056: do not add new `ACAO *` responses.)
+  `first_line.contains(...)` arm, never send `Access-Control-Allow-Origin`. The guard (`src/http/guard.rs`, R1.3) refuses Origin,
+  Sec-Fetch-* and any Host but `127.0.0.1:<port>`; internal clients of the port must send that exact Host.
 - Never accept a filesystem path from a request. Files come from a UI pick/paste/drop registration or the spool.
 - Anything that widens what an agent can do (MCP enable, scopes, tool allow) needs a UI confirmation, not just a request.
 - Untrusted HTML goes only through the render helper or format.js. Never hand Qt Text a remote URL (including
