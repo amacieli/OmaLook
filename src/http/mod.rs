@@ -1,6 +1,6 @@
 //! The UI's loopback HTTP server plumbing (roadmap R1): request reading (`request`), the
-//! connection cap, the guard, and the typed router (`router`, `routes`, R3.1). Routes not yet in
-//! the table still run through the old chain in `main.rs` under `dispatch_guard`.
+//! connection cap, the guard, and the typed router (`router`, `routes`, R3.1). Every route is in
+//! the table; each says whether it takes the dispatch lock (`router::Lock`).
 
 pub mod guard;
 pub mod request;
@@ -9,7 +9,6 @@ pub mod routes;
 pub mod session;
 
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::MutexGuard;
 
 /// Most connections handled at once. Beyond this a new connection gets `503` straight away instead
 /// of waiting, so a pile of stuck clients cannot hold the accept loop.
@@ -44,42 +43,6 @@ impl Drop for Slot {
     }
 }
 
-/// Routes run one at a time, as they did on the old single accept thread, so read-modify-write of
-/// settings.toml and similar keep their old guarantees. Reading the request happens before this
-/// lock (a slow or idle client blocks nobody), and the read-only routes in `runs_unlocked` skip it.
-
-/// Read-only routes that may run beside anything else: the UI's poll, perf marks, and the routes that
-/// wait on a provider or scan the cache inline (ARCH-H1), which used to hold up every other request.
-pub fn runs_unlocked(method: &str, path: &str) -> bool {
-    match method {
-        "GET" => matches!(
-            path,
-            "/sync/serial"
-                | "/sync/health"
-                | "/calendar/find"
-                | "/compose/originals"
-                | "/drafts"
-                | "/drafts/get"
-                | "/rules"
-                | "/rules/preview"
-                | "/rules/filter-preview"
-                | "/local-rules"
-        ),
-        "POST" => path == "/perf",
-        _ => false,
-    }
-}
-
-/// Take the dispatch lock unless the route may run unlocked. A handler that panicked earlier leaves
-/// the lock poisoned; the data it guards is the files and DB, not the `()`, so carry on.
-pub fn dispatch_guard(method: &str, path: &str) -> Option<MutexGuard<'static, ()>> {
-    if runs_unlocked(method, path) {
-        None
-    } else {
-        Some(router::exclusive())
-    }
-}
-
 /// A complete error answer (no body) for a request that could not be read.
 pub fn error_response(status: &str) -> String {
     format!("HTTP/1.1 {}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", status)
@@ -102,21 +65,5 @@ mod tests {
         assert!(Slot::try_take().is_some());
         drop(held);
         assert_eq!(Slot::active(), before);
-    }
-
-    #[test]
-    fn only_listed_reads_skip_the_lock() {
-        assert!(runs_unlocked("GET", "/sync/serial"));
-        assert!(runs_unlocked("GET", "/calendar/find"));
-        assert!(runs_unlocked("POST", "/perf"));
-        assert!(!runs_unlocked("POST", "/rules/add"));
-        assert!(!runs_unlocked("POST", "/calendar/find"));
-        assert!(!runs_unlocked("GET", "/settings/mcp"));
-        assert!(!runs_unlocked("GET", "/contacts/photo"));
-        // moved to the table with Lock::None (routes/contacts.rs)
-        assert!(!runs_unlocked("GET", "/contacts/get"));
-        assert!(!runs_unlocked("GET", "/contacts/directory"));
-        assert!(dispatch_guard("GET", "/sync/serial").is_none());
-        assert!(dispatch_guard("POST", "/settings/mail").is_some());
     }
 }
