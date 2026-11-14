@@ -24,7 +24,7 @@ keyring = "2.1"
 toml = "0.8"
 
 # SQLite with FTS5
-rusqlite = { version = "0.30", features = ["bundled", "chrono"] }
+rusqlite = { version = "0.42", features = ["bundled", "chrono"] }
 chrono = { version = "0.4", features = ["serde"] }
 
 # File watching (for settings file)
