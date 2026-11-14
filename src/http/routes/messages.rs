@@ -669,6 +669,7 @@ fn local_draft_rows(conn: &rusqlite::Connection, account: Option<&str>, folder: 
     }
     sql.push_str(" ORDER BY d.updated_at DESC");
     let Ok(mut stmt) = conn.prepare(&sql) else { return Vec::new() };
+    #[allow(clippy::type_complexity)] // one-off row tuple for a single query_map
     let found: Vec<(String, String, String, Option<String>, String, i64, bool)> = stmt
         .query_map(rusqlite::params_from_iter(args.iter()), |r| {
             Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get::<_, i64>(6)? != 0))
@@ -717,6 +718,7 @@ const REMOTE_SEARCH_CAP: usize = 1000;
 
 /// Provider search results are reused for a few minutes: the list re-asks on every page and
 /// refresh, and each ask would otherwise be a round trip to Graph / Gmail.
+#[allow(clippy::type_complexity)] // single process-wide cache; an alias would only be used here
 static REMOTE_SEARCH_CACHE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, (std::time::Instant, Vec<String>, bool)>>> = std::sync::OnceLock::new();
 
 const REMOTE_SEARCH_TTL: std::time::Duration = std::time::Duration::from_secs(300);

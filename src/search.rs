@@ -548,6 +548,7 @@ mod tests {
         let db = Database::open(path.to_str().unwrap()).unwrap();
         drop(db);
         let conn = Connection::open(&path).unwrap();
+        #[allow(clippy::type_complexity)] // test fixture rows
         let rows: &[(&str, &str, &str, &str, &str, &str, bool, &str, &str, i32, &str)] = &[
             // id, subject, from_email, from_name, body, received_at, is_read, to, categories, attach, importance
             ("1", "Your Stripe receipt", "receipts@stripe.com", "Stripe", "Thanks for your payment of $20", "2026-10-10T12:00:00Z", false, "Adam <adam@x.net>", "[\"Billing\"]", 1, "normal"),

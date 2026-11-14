@@ -12,6 +12,9 @@ use super::request::Request;
 use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
+/// Deferred work run after the response is written.
+pub type AfterSend = Box<dyn FnOnce() + Send>;
+
 /// How a route's path is matched.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Pattern {
@@ -279,7 +282,7 @@ impl Response {
         self
     }
     /// Hand over the bytes and the deferred work.
-    pub fn into_parts(self) -> (Vec<u8>, Option<Box<dyn FnOnce() + Send>>) {
+    pub fn into_parts(self) -> (Vec<u8>, Option<AfterSend>) {
         (self.bytes, self.after)
     }
     pub fn as_bytes(&self) -> &[u8] {

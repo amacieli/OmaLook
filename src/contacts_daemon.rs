@@ -365,6 +365,7 @@ mod tests {
 
     /// A provider with a delta feed: `script` holds the answers in order; a stored link is `"link-N"`.
     struct DeltaProvider {
+        #[allow(clippy::type_complexity)] // test fake: scripted replies
         script: Mutex<Vec<std::result::Result<(Vec<ContactDeltaPage>, String), String>>>,
         seen_links: Mutex<Vec<Option<String>>>,
     }

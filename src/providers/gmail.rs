@@ -24,6 +24,9 @@ mod extras;
 mod history;
 const BASE: &str = "https://gmail.googleapis.com/gmail/v1/users/me";
 const PAGE_SIZE: usize = 100;
+/// Per-label `(total, unread)` lookup.
+type LabelCounts<'a> = dyn Fn(&str) -> (Option<i32>, Option<i32>) + 'a;
+
 /// Concurrent `messages.get` calls (Gmail allows ~50/s per user; this stays far below).
 const FETCH_CONCURRENCY: usize = 10;
 
@@ -137,7 +140,7 @@ pub(crate) fn parse_message(account_id: &str, folder_id: &str, msg: &serde_json:
 }
 
 /// Folders from `labels.list` (`counts` supplies per-label totals from `labels.get`).
-pub(crate) fn parse_labels(account_id: &str, labels: &serde_json::Value, counts: &dyn Fn(&str) -> (Option<i32>, Option<i32>)) -> Vec<MailFolder> {
+pub(crate) fn parse_labels(account_id: &str, labels: &serde_json::Value, counts: &LabelCounts<'_>) -> Vec<MailFolder> {
     let mut out = Vec::new();
     for l in labels["labels"].as_array().cloned().unwrap_or_default() {
         let (Some(id), Some(name)) = (l["id"].as_str(), l["name"].as_str()) else { continue };

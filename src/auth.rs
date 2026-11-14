@@ -26,6 +26,11 @@ const DEVICE_AUTH_URL: &str = "https://login.microsoftonline.com/common/oauth2/v
 // registration that does not list it) fall back to the full / base tiers without losing anything.
 const MAILBOX_SCOPE: &str = "https://graph.microsoft.com/MailboxSettings.ReadWrite";
 
+/// Shows the user the device-flow code: `(verification url, user code)`.
+pub type DeviceCodeCallback<'a> = dyn Fn(&str, &str) + 'a;
+/// Runs once with the new token after a successful sign-in.
+pub type OnSuccess = Box<dyn FnOnce(&str) + Send>;
+
 fn plus_scope() -> String {
     format!("{} {}", GRAPH_SCOPE, MAILBOX_SCOPE)
 }
@@ -233,7 +238,7 @@ impl AuthManager {
     }
     
     /// Initiate Device Flow login (user sees code on screen)
-    pub fn login(&mut self, device_code_callback: Option<&dyn Fn(&str, &str)>) -> Result<bool> {
+    pub fn login(&mut self, device_code_callback: Option<&DeviceCodeCallback<'_>>) -> Result<bool> {
         info!("Starting Device Flow login...");
         
         // Request device code from Microsoft
@@ -535,7 +540,7 @@ impl AuthManager {
     pub fn start_device_flow_with_callback(
         &mut self,
         config_dir: &std::path::Path,
-        on_success: Option<Box<dyn FnOnce(&str) + Send>>,
+        on_success: Option<OnSuccess>,
     ) -> Result<bool> {
         info!("Starting Device Flow login...");
         

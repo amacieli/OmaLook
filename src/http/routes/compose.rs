@@ -346,6 +346,7 @@ fn drafts_adopt_answer(config_dir: &std::path::Path, mid: Option<String>) -> Str
         Ok(c) => c,
         Err(e) => return err(&format!("database: {}", e)),
     };
+    #[allow(clippy::type_complexity)] // one-off row tuple for a single query_row
     let row: rusqlite::Result<(String, String, String, String, String, String, String, String)> = conn.query_row(
         "SELECT COALESCE(m.account_id, ''), COALESCE(m.subject, ''), COALESCE(m.from_email, ''), COALESCE(m.to_text, ''), \
                 COALESCE(m.cc_text, ''), COALESCE(m.bcc_text, ''), COALESCE(m.body_preview, ''), COALESCE(a.email, '') \

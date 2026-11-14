@@ -3,6 +3,9 @@
 use super::*;
 
 
+/// `(id, wanted names, names the provider last had)`.
+pub type CategoryPush = (String, Vec<String>, Vec<String>);
+
 /// `["A","B"]` as stored in `messages.categories`; `None` stays NULL (not fetched).
 pub fn categories_json(c: &Option<Vec<String>>) -> Option<String> {
     c.as_ref().map(|v| serde_json::to_string(v).unwrap_or_else(|_| "[]".into()))
@@ -45,7 +48,7 @@ impl Database {
 
 
     /// Category changes not yet pushed: (id, wanted names, names the provider last had).
-    pub fn pending_category_pushes(&self) -> Result<Vec<(String, Vec<String>, Vec<String>)>> {
+    pub fn pending_category_pushes(&self) -> Result<Vec<CategoryPush>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, categories, categories_synced FROM messages WHERE cat_pending = 1 AND account_id = ?1",
         )?;
