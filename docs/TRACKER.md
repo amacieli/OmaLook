@@ -5,6 +5,11 @@ IDs are stable (never reused). Status: `open` | `investigating` | `planned` | `i
 
 ## Issues
 
+### OL-090 — Ctrl+V in the compose body ignored clipboard pictures and copied files (fixed in tree 2026-11-14; needs `./build.sh --live`)
+- **Found:** Adam, live after R3: pasting a picture into the body did nothing in HTML or system-font mode. `~/.cache/omalook/paste/` had never been created, so the paste script never ran. Cause: the body `TextEdit` handles Ctrl+V itself (text only), so the pane's `Keys.onPressed` (which calls `startPaste`) never saw the key from the body. Present since OL-035 phase 5, not an R3.2 regression.
+- **Fix:** an attached `Keys.onPressed` on the editor (runs before the item's own handling) sends Ctrl+V to `startPaste`; plain text still pastes through `_pasteText`.
+- **Verified:** offscreen Quickshell harness + QtTest `keyClick` with a real `image/png` clipboard: HTML mode "Inserted 1 picture." (attachment with inline cid), system-font mode attaches it as a file; the previous ComposeView (control) does nothing.
+
 ### OL-085 — Schema DDL ran on every database open; concurrent first opens raced (fixed in tree 2026-11-14 by R3.3; needs `./build.sh --live`; not run live)
 - **Found:** `Database::open_for_account` ran `init_schema` + CREATE INDEX/TABLE on each of ~200 per-request opens; `db::calendar_tests::concurrent_first_opens_of_an_old_database_all_succeed` failed intermittently under the full suite (8 threads migrating one old file).
 - **Fix (R3.3):** `db.rs` split into `src/db/{schema,accounts,messages,outbox,cal_outbox,actions,categories,reconcile,folders,contact_store,calendar}.rs` + `db/tests_*.rs` (pure move, API unchanged). DDL runs once per file identity (canonical path + dev + inode) per process under one mutex; a replaced file (db_health rebuild, recreated temp file) gets its schema again; `:memory:` always. Handles open at the same time on one thread share a connection (thread-local `Weak` cache); `Database` is now `!Send` (holds `Rc<Connection>`).
