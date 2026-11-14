@@ -30,10 +30,6 @@ chrono = { version = "0.4", features = ["serde"] }
 # File watching (for settings file)
 notify = "6.1"
 
-# Qt bindings (cxx-qt) - Phase 2 integration
-cxx-qt = { version = "0.10" }
-cxx = "1.0"
-
 # D-Bus (KDE Connect SMS); already in the tree via keyring
 zbus = "3.15"
 
@@ -55,9 +51,6 @@ dirs = "7.0.0"
 
 [build-dependencies]
 serde_json = "1.0"
-# Qt build integration - Phase 2
-cxx-qt-build = { version = "0.10" }
-cxx-build = "1.0"
 
 [[bin]]
 name = "omalook"
