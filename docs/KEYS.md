@@ -308,5 +308,5 @@ In the finder: `j`/`k` (or arrows) move, `Enter` uses the slot (the editor's Whe
 ## People (contacts)
 
 Cursor `j k gg G`, `/` filter, `Enter` detail, `Space`/`v` mark. `c`/`n` new, `e` edit, `x` delete (`Ctrl-Z` reverts; saves are instant), `t` tags, `Ctrl-Shift-V` move to a folder, `A` cycle account, `M` merge marked duplicates (the first is kept), `E` export (vCard or CSV), `w` mail, `S` text, `O` open, `y` copy.
-Editor: `Tab`/`Shift-Tab` field, `Ctrl-K` add a field (fax, pager, anniversary, gender, ...), `Ctrl-Enter` save, `Esc` close, `Ctrl-T` account/folder, `Ctrl-D` drop empty extra fields.
+Editor: `Tab`/`Shift-Tab` field, `Ctrl-K` add a field (fax, pager, anniversary, gender, ...), `Ctrl-Enter` save, `Esc` close, `Ctrl-T` account/folder, `Ctrl-D` drop empty extra fields, `Ctrl-O` choose the photo (a `.jpg` file in the file browser, one pick; the Photo row can be clicked too; a new or not-yet-synced contact shows why it has no photo yet). The palette `:photo PATH.jpg` does the same for the selected contact.
 Palette: `:import PATH` (.vcf/.csv), `:export`, `:photo PATH.jpg`, `:dir NAME` then pick (organisation directory), `:addcontact` (in mail: add the sender). View "Possible duplicates" groups likely repeats.

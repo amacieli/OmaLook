@@ -36,6 +36,10 @@ Item {
     // registerFiles(purpose, paths, cb(files, refused, error)) from the app (R1.5, OL-057; R3.2): a path goes to
     // the backend only to be registered; the request then carries the handle it returns, never the path.
     property var    registerFiles: null
+    // listDir(picker, path, hidden, cb) and openPicker(purpose, cb) from the app: the picture browser of the
+    // contact editor (Ctrl-O) lists folders the same way the attachment browser does (R3.2)
+    property var    listDir: null
+    property var    openPicker: null
     property string accountFilter: ""
 
     // ── list state ─────────────────────────────────────────────────
@@ -61,6 +65,7 @@ Item {
     property var  editorRaw: null              // the contact it edits (null = a new one)
     property var  editorTargets: []            // where a new contact may be saved
     property string editorStatus: ""
+    property string editorPhotoStatus: ""    // the last photo result, shown on the editor's Photo row
     readonly property bool editing: searching || editorOpen   // AppShell hands every key to the field / editor meanwhile
 
     signal notice(string text)
@@ -183,6 +188,7 @@ Item {
             root.editorTargets = t
             root.editorRaw = null
             root.editorStatus = ""
+            root.editorPhotoStatus = ""
             root.editorOpen = true
         })
         return ""
@@ -199,7 +205,9 @@ Item {
             if (d.sync_state === "deleted") { root.notice("That contact is being deleted"); return }
             root.editorRaw = d.contact
             root.editorStatus = ""
+            root.editorPhotoStatus = ""
             root.editorOpen = true
+            root.loadPhoto(false)
         })
         return ""
     }
@@ -329,11 +337,12 @@ Item {
     }
     // Registers one local path for `purpose` ("import" | "photo") and calls go(handle). On refusal or
     // error it shows the reason and does not call go: the request then carries a handle or nothing (R3.2).
-    function _registerOne(purpose, path, failText, go) {
-        if (!registerFiles) { root.notice(failText + ": file access is not available"); return }
+    function _registerOne(purpose, path, failText, go, fail) {
+        function say(m) { root.notice(m); if (fail) fail(m) }
+        if (!registerFiles) { say(failText + ": file access is not available"); return }
         registerFiles(purpose, [path], function(files, refused, err) {
-            if (err !== "") { root.notice(failText + ": " + err); return }
-            if (files.length !== 1) { root.notice(failText + ": " + (refused.length > 0 ? refused[0].error : "not registered")); return }
+            if (err !== "") { say(failText + ": " + err); return }
+            if (files.length !== 1) { say(failText + ": " + (refused.length > 0 ? refused[0].error : "not registered")); return }
             go(files[0].handle)
         })
     }
@@ -394,15 +403,22 @@ Item {
         })
     }
     Timer { id: photoRetry; interval: 2500; onTriggered: root.loadPhoto(false) }
+    // The palette (`:photo PATH`) sets the selected contact's photo.
     function setPhoto(path) {
         if (!selected) return
-        var id = selected.id
+        setPhotoFor(selected.id, path)
+    }
+    // Sets contact `id`'s photo from a local .jpg `path` (the palette, or the editor's Photo row). The path is
+    // registered first; the request carries only the handle. The result is shown as a notice and on the editor.
+    function setPhotoFor(id, path) {
+        function done(m) { root.notice(m); root.editorPhotoStatus = m }
+        root.editorPhotoStatus = "setting the photo\u2026"
         _registerOne("photo", path, "Photo not set", function(handle) {
             _postJson("/contacts/photo/set", { id: id, handle: handle }, function(r) {
-                root.notice(r.ok === true ? "Photo set" : (r.error || "photo not set"))
-                if (r.ok === true) root.loadPhoto(false)
+                if (r.ok === true) { done("Photo set"); root.loadPhoto(false); return }
+                done(r.error || "photo not set")
             })
-        })
+        }, done)
     }
 
     function setFavorite(id, value) {
@@ -817,6 +833,11 @@ Item {
             targets: root.editorTargets
             accounts: root.appAccounts
             status: root.editorStatus
+            hasPhoto: root.photoPath !== ""
+            photoStatus: root.editorPhotoStatus
+            photoListDir: root.listDir
+            photoOpenPicker: root.openPicker
+            onPhotoPicked: function(path) { if (root.editorRaw) root.setPhotoFor(root.editorRaw.id, path) }
             onSaveRequested: function(body) { root.saveFromEditor(body) }
             onCancelRequested: { root.editorOpen = false; root.editorStatus = "" }
         }

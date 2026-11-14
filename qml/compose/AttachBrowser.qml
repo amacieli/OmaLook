@@ -33,6 +33,8 @@ FocusScope {
   property real capacity: 0               // bytes of files the From account takes (0 = unknown)
   property real baseBytes: 0              // bytes already on the message
   property var recentDirs: []             // folders visited before, newest first
+  property string purpose: "attach"       // the picker's purpose: "attach" (many files) or "photo" (one JPEG)
+  property bool jpegOnly: false           // list only folders and .jpg/.jpeg files (contact photo)
 
   signal picked(var files)                // [{ path, name, size }]
   property string title: "Attach files"   // "Insert pictures" when the pick goes into the text (OL-054)
@@ -72,7 +74,7 @@ FocusScope {
     if (!pathMode) {
       var list = Pick.sorted(entries, sortKey)
       for (var i = 0; i < list.length; i++)
-        if (Pick.matches(filter, list[i].name)) out.push(list[i])
+        if (Pick.matches(filter, list[i].name) && (!jpegOnly || list[i].dir || Pick.isJpeg(list[i].name))) out.push(list[i])
     }
     return out
   }
@@ -98,7 +100,7 @@ FocusScope {
   // expired (30 minutes idle) is reopened once and the same folder is asked again.
   function _openPicker(then) {
     if (!openPicker) { error = "no file access"; return }
-    openPicker("attach", function(id) {
+    openPicker(purpose, function(id) {
       pickerId = id
       if (id === "") { error = "could not open the folder browser"; return }
       then()
@@ -143,6 +145,7 @@ FocusScope {
     var p = _join(path, row.name)
     if (_isAttached(p)) { error = row.name + " is already attached"; return }
     error = ""
+    if (purpose === "photo") { var one = {}; one[p] = { path: p, name: row.name, size: row.size }; marked = one; return }   // one picture only
     var m = {}
     for (var k in marked) m[k] = marked[k]
     if (m[p]) delete m[p]; else m[p] = { path: p, name: row.name, size: row.size }
@@ -150,6 +153,7 @@ FocusScope {
   }
 
   function _setMarks(add) {
+    if (purpose === "photo") { error = "pick one picture: Enter takes the one under the cursor"; return }
     var m = {}
     for (var k in marked) m[k] = marked[k]
     var n = 0
@@ -188,6 +192,7 @@ FocusScope {
   function _finish() {
     var files = []
     for (var k in marked) files.push(marked[k])
+    if (purpose === "photo") files = files.slice(0, 1)
     opened = false
     picked(files)
   }
@@ -374,9 +379,10 @@ FocusScope {
         dim: !root.overLimit
         text: (root.markedCount > 0
             ? root.markedCount + " ticked · " + Fmt.bytes(root.ticked.bytes) + (root.capacity > 0 ? " of " + Fmt.bytes(Math.max(root.capacity - root.baseBytes, 0)) + " free" : "")
-              + (root.overLimit ? " · TOO BIG, Send will refuse" : "") + " · Enter attaches them · "
+              + (root.overLimit ? " · TOO BIG, Send will refuse" : "") + " · " + (root.purpose === "photo" ? "Enter picks it" : "Enter attaches them") + " · "
             : "")
-          + "v tick · / filter · g path · l open · Enter done · Ctrl+T tick shown · Ctrl+U clear · Ctrl+S sort · Ctrl+B places · Esc close"
+          + (root.purpose === "photo" ? "Enter picks it · l open folder · / filter · g path · Ctrl+H hidden · Esc close"
+             : "v tick · / filter · g path · l open · Enter done · Ctrl+T tick shown · Ctrl+U clear · Ctrl+S sort · Ctrl+B places · Esc close")
       }
     }
   }
