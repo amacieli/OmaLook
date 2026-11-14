@@ -384,8 +384,12 @@ pub fn draft_json(row: &DraftRow) -> serde_json::Value {
             crate::attach_spool::missing_copies(&m.attachments)
         }
         Err(_) => {
+            // An unreadable payload names no file to the UI; the key stays (an empty list, as the
+            // UI and the pre-R3.2 answer expect) so the draft still opens.
             if let Some(obj) = payload.as_object_mut() {
-                obj.remove("attachments");
+                if obj.contains_key("attachments") {
+                    obj.insert("attachments".into(), serde_json::Value::Array(Vec::new()));
+                }
             }
             Vec::new()
         }
