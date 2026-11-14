@@ -999,29 +999,16 @@ impl EmailDaemon {
         }
     }
 
-    /// Drop cached messages of a folder that were deleted/moved on another client.
-    /// The listing is vetted by `deletion_is_believable` (same rule as the Graph purge) first.
+    /// Drop cached messages of a folder that were deleted/moved on another client. The DB decides
+    /// (`Database::reconcile_deleted`: the purge rule, and only rows cached before this listing
+    /// started).
     async fn reconcile_deleted(&self, folder_id: &str, folder_name: &str) {
+        let started = chrono::Utc::now();
         let live = match self.provider.fetch_all_ids(folder_id).await {
             Ok(l) => l,
             Err(e) => { warn!("Could not list ids for {}: {}", folder_name, e); return; }
         };
-        let cached: Vec<String> = match self.db.get_messages_for_folder(folder_id, i32::MAX as usize) {
-            Ok(c) => c.into_iter().map(|m| m.id).collect(),
-            Err(e) => { error!("Delete reconcile failed for {}: {}", folder_name, e); return; }
-        };
-        let live_set: std::collections::HashSet<&String> = live.iter().collect();
-        let candidates = cached.iter().filter(|id| !live_set.contains(id)).count();
-        if candidates == 0 { return; }
-        let server_total = self.db.get_folders().ok()
-            .and_then(|f| f.into_iter().find(|f| f.id == folder_id))
-            .and_then(|f| f.total_item_count);
-        if !deletion_is_believable(cached.len(), candidates, live.len(), server_total.map(i64::from)) {
-            warn!("Not removing {} of {} cached rows in {}: the listing ({} ids) is not trustworthy (provider count {:?})",
-                  candidates, cached.len(), folder_name, live.len(), server_total);
-            return;
-        }
-        match self.db.reconcile_deleted(folder_id, &live) {
+        match self.db.reconcile_deleted(folder_id, &live, started) {
             Ok(0) => {}
             Ok(n) => {
                 debug!("Deleted elsewhere: {} message(s) removed from {}", n, folder_name);
@@ -1122,19 +1109,6 @@ pub async fn trigger_sync(daemon: &EmailDaemon) {
     }
 }
 
-/// Provider-neutral sanity check before deleting cached rows the server no longer lists
-/// (same rule as `Database::purge_unseen`): an empty listing never deletes; with a provider
-/// count the listing must match it (within 2%, min 3); without one, at most 20% may go.
-pub(crate) fn deletion_is_believable(cached: usize, candidates: usize, listed: usize, server_total: Option<i64>) -> bool {
-    if listed == 0 {
-        return false;
-    }
-    match server_total {
-        Some(t) => (listed as i64 - t).abs() <= (t / 50).max(3),
-        None => candidates * 5 <= cached,
-    }
-}
-
 #[cfg(test)]
 mod delta_tests {
     use super::*;
@@ -1199,6 +1173,8 @@ mod delta_tests {
     fn reconcile_setup(n: usize, listing: Vec<String>) -> EmailDaemon {
         let db = Arc::new(Database::open_for_account(":memory:", "gmail-t1").unwrap());
         for i in 0..n { db.insert_email(&msg(&format!("m{i}"), false)).unwrap(); }
+        // Rows must be cached before the listing starts (the reconcile never removes newer rows).
+        std::thread::sleep(std::time::Duration::from_millis(5));
         EmailDaemon::new(DaemonConfig::default(), db, Arc::new(Listing(listing)))
     }
     fn cached(d: &EmailDaemon) -> usize { d.db.get_messages_for_folder("F", 10_000).unwrap().len() }
