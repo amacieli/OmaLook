@@ -178,6 +178,8 @@ FocusScope {
         pendingText: keyCatcher.pendingText
         pendingOptions: keyCatcher.pendingOptions
         notice: commands.notice
+        syncWarning: appState.syncWarning
+        syncWarningDetail: appState.syncWarningDetail
         markCount: appState.markCount
         metaActive: appState.metaActive
         metaRemaining: appState.metaRemaining

@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Layouts
+import QtQuick.Controls
 import qs.Commons
 import qs.Commons as Commons
 import qs.Ui
@@ -27,6 +28,8 @@ Item {
   property string pendingText: ""
   property var pendingOptions: []
   property string notice: ""
+  property string syncWarning: ""         // "" = all sync threads healthy
+  property string syncWarningDetail: ""   // every unhealthy thread, one per line (tooltip)
   property int markCount: 0
   // Keyboard links in the reading pane (mail): how many, which is current, where it goes.
   property int linkCount: 0
@@ -114,6 +117,20 @@ Item {
       text: root.fmt(root.messageCount) + (root.messageCount === 1 ? " message · " : " messages · ") + root.fmt(root.unreadCount) + " unread"
       dim: true
       font.pixelSize: Style.font.caption
+    }
+
+    UiText {
+      id: syncWarn
+      visible: root.syncWarning !== ""
+      text: "\u26a0 " + root.syncWarning
+      color: root.syncWarning.indexOf("stopped") >= 0 ? Hues.red : Hues.yellow
+      font.pixelSize: Style.font.caption
+      font.bold: true
+      elide: Text.ElideRight
+      Layout.maximumWidth: root.width / 3
+      HoverHandler { id: syncHover }
+      ToolTip.visible: syncHover.hovered && root.syncWarningDetail !== ""
+      ToolTip.text: root.syncWarningDetail
     }
 
     Item { Layout.fillWidth: true }

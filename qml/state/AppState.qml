@@ -3,6 +3,7 @@ import Quickshell
 import "../mail/format.js" as Fmt
 import "../compose/identity.js" as Ident
 import "../mail/bounce.js" as Bn
+import "../common/synchealth.js" as SyncHealth
 
 // All non-visual state: navigation + focus model, folder/message data, and the
 // backend (Rust daemon, local HTTP) calls. Components read properties and call
@@ -2026,6 +2027,17 @@ Item {
   // stored. Fast (500 ms) for the first 90 s after launch while the stages land, then 3 s.
   property int _syncSerial: -1
   property int _mcpPendingSerial: -1   // last mcp_pending the sync serial reported
+  // Sync threads that are not running (GET /sync/health), refreshed when sync_health moves.
+  property var syncProblems: []
+  property string syncWarning: SyncHealth.warning(syncProblems, accounts)
+  property string syncWarningDetail: SyncHealth.detail(syncProblems, accounts)
+  property real _syncHealthSerial: -1
+  function loadSyncHealth() {
+    request("GET", "/sync/health", function(xhr) {
+      if (xhr.status !== 200) return
+      try { root.syncProblems = SyncHealth.problems(JSON.parse(xhr.responseText).threads) } catch (e) {}
+    })
+  }
   // SMS: bumped when the backend's sms serial moves; the SMS view reloads on it.
   property int smsRev: 0
   property int _smsSerial: -1
@@ -2042,12 +2054,18 @@ Item {
   function checkSyncSerial() {
     request("GET", "/sync/serial", function(xhr) {
       if (xhr.status !== 200) return
-      var n = -1, sms = -1, mp = -1
+      var n = -1, sms = -1, mp = -1, sh = -1
       try {
         var j = JSON.parse(xhr.responseText)
         n = j.mail; sms = (j.sms === undefined ? -1 : j.sms)
         mp = (j.mcp_pending === undefined ? -1 : j.mcp_pending)
+        sh = (j.sync_health === undefined ? -1 : j.sync_health)
       } catch (e) { return }
+      if (sh !== root._syncHealthSerial) {
+        var first = root._syncHealthSerial === -1
+        root._syncHealthSerial = sh
+        if (sh !== -1 || first) root.loadSyncHealth()
+      }
       // A wider MCP permission started anywhere (an AI client, another window) shows up here.
       if (mp !== root._mcpPendingSerial) {
         root._mcpPendingSerial = mp
