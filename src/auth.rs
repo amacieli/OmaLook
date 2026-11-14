@@ -3,7 +3,7 @@
 use crate::errors::{OmarchyError, Result};
 use crate::models::{DeviceFlowResponse, TokenResponse};
 use crate::keyring_mgr;
-use crate::token_store::{self, KeyringStore, RefreshOutcome, Refresher, TokenBroker, DEFAULT_ACCOUNT};
+use crate::token_store::{self, RefreshOutcome, Refresher, TokenBroker, DEFAULT_ACCOUNT};
 use log::{info, debug, warn, error};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -25,6 +25,11 @@ const DEVICE_AUTH_URL: &str = "https://login.microsoftonline.com/common/oauth2/v
 // the category list (names + colours) needs. Accounts that have not consented to it (or an app
 // registration that does not list it) fall back to the full / base tiers without losing anything.
 const MAILBOX_SCOPE: &str = "https://graph.microsoft.com/MailboxSettings.ReadWrite";
+
+/// Shows the user the device-flow code: `(verification url, user code)`.
+pub type DeviceCodeCallback<'a> = dyn Fn(&str, &str) + 'a;
+/// Runs once with the new token after a successful sign-in.
+pub type OnSuccess = Box<dyn FnOnce(&str) + Send>;
 
 fn plus_scope() -> String {
     format!("{} {}", GRAPH_SCOPE, MAILBOX_SCOPE)
@@ -49,6 +54,7 @@ struct MsRefresher {
 }
 
 impl MsRefresher {
+    #[cfg(not(test))]
     fn new(account_id: &str) -> Self {
         Self::with_marker(crate::google_auth::default_config_dir().join(format!("token_scope_{}", account_id)))
     }
@@ -180,7 +186,7 @@ pub fn broker_for(account_id: &str) -> Arc<TokenBroker> {
         (Arc::new(token_store::MemoryStore::default()), Arc::new(OfflineRefresher));
     #[cfg(not(test))]
     let (store, refresher): (Arc<dyn token_store::TokenStore>, Arc<dyn Refresher>) = (
-        Arc::new(KeyringStore),
+        Arc::new(token_store::KeyringStore),
         if crate::accounts::provider_of(account_id) == "gmail" {
             Arc::new(crate::google_auth::GoogleRefresher::new())
         } else {
@@ -232,7 +238,7 @@ impl AuthManager {
     }
     
     /// Initiate Device Flow login (user sees code on screen)
-    pub fn login(&mut self, device_code_callback: Option<&dyn Fn(&str, &str)>) -> Result<bool> {
+    pub fn login(&mut self, device_code_callback: Option<&DeviceCodeCallback<'_>>) -> Result<bool> {
         info!("Starting Device Flow login...");
         
         // Request device code from Microsoft
@@ -495,7 +501,7 @@ impl AuthManager {
         
         let state_file = config_dir.join("auth_state.json");
         let json_str = serde_json::to_string_pretty(&state)
-            .map_err(|e| OmarchyError::JsonError(e))?;
+            .map_err(OmarchyError::JsonError)?;
         
         fs::write(&state_file, json_str)
             .map_err(OmarchyError::from)?;
@@ -515,7 +521,7 @@ impl AuthManager {
         
         let state_file = config_dir.join("auth_state.json");
         let json_str = serde_json::to_string_pretty(&error_state)
-            .map_err(|e| OmarchyError::JsonError(e))?;
+            .map_err(OmarchyError::JsonError)?;
         
         fs::write(&state_file, json_str)
             .map_err(OmarchyError::from)?;
@@ -534,7 +540,7 @@ impl AuthManager {
     pub fn start_device_flow_with_callback(
         &mut self,
         config_dir: &std::path::Path,
-        on_success: Option<Box<dyn FnOnce(&str) + Send>>,
+        on_success: Option<OnSuccess>,
     ) -> Result<bool> {
         info!("Starting Device Flow login...");
         
@@ -559,7 +565,7 @@ impl AuthManager {
         });
         
         let json_str = serde_json::to_string_pretty(&device_code_data)
-            .map_err(|e| OmarchyError::JsonError(e))?;
+            .map_err(OmarchyError::JsonError)?;
         std::fs::write(&device_code_file, json_str).map_err(OmarchyError::from)?;
         
         info!("Device code written to {}", device_code_file.display());

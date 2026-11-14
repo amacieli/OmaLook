@@ -618,7 +618,7 @@ mod tests {
         assert_eq!(r["deleted"], 1);
         assert_eq!(db.get_contact_record("c1").unwrap().unwrap().sync_state, "deleted");
         let local = save(&db, &json!({"fields": {"givenName":"Bob"}, "folder_id": "f1"}), 5)["id"].as_str().unwrap().to_string();
-        assert_eq!(delete(&db, &[local.clone()], 6)["deleted"], 1);
+        assert_eq!(delete(&db, std::slice::from_ref(&local), 6)["deleted"], 1);
         assert!(db.get_contact_record(&local).unwrap().is_none());
     }
 

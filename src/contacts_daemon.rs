@@ -11,6 +11,7 @@
 //! - Independent of the mail and calendar daemons: own provider, own DB handle, own loop
 //!   (they only share the account's token broker)
 
+use std::rc::Rc;
 use crate::db::Database;
 use crate::errors::Result;
 use crate::models::{Contact, ContactDeltaPage, ContactFolder};
@@ -40,12 +41,12 @@ impl Default for ContactsDaemonConfig {
 
 pub struct ContactsDaemon {
     config: ContactsDaemonConfig,
-    db: Arc<Database>,
+    db: Rc<Database>,
     provider: Arc<dyn ContactsProvider>,
 }
 
 impl ContactsDaemon {
-    pub fn new(config: ContactsDaemonConfig, db: Arc<Database>, provider: Arc<dyn ContactsProvider>) -> Self {
+    pub fn new(config: ContactsDaemonConfig, db: Rc<Database>, provider: Arc<dyn ContactsProvider>) -> Self {
         Self { config, db, provider }
     }
 
@@ -308,7 +309,7 @@ mod tests {
 
     fn daemon() -> (ContactsDaemon, Arc<FakeProvider>) {
         let p = Arc::new(FakeProvider { calls: Mutex::new(vec![]) });
-        let db = Arc::new(Database::open_for_account(":memory:", "exchange-aaaaaa").unwrap());
+        let db = Rc::new(Database::open_for_account(":memory:", "exchange-aaaaaa").unwrap());
         (ContactsDaemon::new(ContactsDaemonConfig::default(), db, p.clone()), p)
     }
 
@@ -364,6 +365,7 @@ mod tests {
 
     /// A provider with a delta feed: `script` holds the answers in order; a stored link is `"link-N"`.
     struct DeltaProvider {
+        #[allow(clippy::type_complexity)] // test fake: scripted replies
         script: Mutex<Vec<std::result::Result<(Vec<ContactDeltaPage>, String), String>>>,
         seen_links: Mutex<Vec<Option<String>>>,
     }
@@ -396,7 +398,7 @@ mod tests {
     }
     fn delta_daemon(script: Vec<std::result::Result<(Vec<ContactDeltaPage>, String), String>>) -> (ContactsDaemon, Arc<DeltaProvider>) {
         let p = Arc::new(DeltaProvider { script: Mutex::new(script), seen_links: Mutex::new(vec![]) });
-        let db = Arc::new(Database::open_for_account(":memory:", "exchange-aaaaaa").unwrap());
+        let db = Rc::new(Database::open_for_account(":memory:", "exchange-aaaaaa").unwrap());
         (ContactsDaemon::new(ContactsDaemonConfig::default(), db, p.clone()), p)
     }
     fn ids(d: &ContactsDaemon) -> Vec<String> {

@@ -59,7 +59,7 @@ fn shared_connection(path: &str) -> Result<std::rc::Rc<Connection>> {
             return Ok(conn);
         }
     }
-    let conn = Connection::open(path).map_err(|e| OmarchyError::DatabaseError(e))?;
+    let conn = Connection::open(path).map_err(OmarchyError::DatabaseError)?;
     // WAL: background sync writers no longer block the HTTP server's readers (and the
     // UI stays responsive during a crawl); NORMAL is the recommended pairing with WAL.
     // busy_timeout covers the brief moments two writers collide.

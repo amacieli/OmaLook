@@ -10,6 +10,7 @@
 //! Every thread runs under `supervisor::spawn_supervised`: a panic restarts it with backoff and
 //! `GET /sync/health` shows the state (ARCH-C1).
 
+use std::rc::Rc;
 use crate::auth::{broker_for, AuthManager};
 use crate::accounts::provider_of;
 use crate::calendar_daemon::{CalendarDaemon, CalendarDaemonConfig};
@@ -164,7 +165,7 @@ impl SyncScheduler {
             async move {
                 let provider = email_provider(&kind, &id, &path);
                 let db = match Database::open_for_account(&path, &id) {
-                    Ok(db) => Arc::new(db),
+                    Ok(db) => Rc::new(db),
                     Err(e) => return error!("Mail sync {}: cannot open database: {}", id, e),
                 };
                 let cfg = DaemonConfig { settings_path: Some(mail_settings), ..DaemonConfig::default() };
@@ -178,7 +179,7 @@ impl SyncScheduler {
             async move {
                 let provider = calendar_provider(&kind, &id);
                 let db = match Database::open_for_account(&path, &id) {
-                    Ok(db) => Arc::new(db),
+                    Ok(db) => Rc::new(db),
                     Err(e) => return error!("Calendar sync {}: cannot open database: {}", id, e),
                 };
                 let cfg = CalendarDaemonConfig { settings_path: Some(settings_path), ..CalendarDaemonConfig::default() };
@@ -192,7 +193,7 @@ impl SyncScheduler {
             async move {
                 let provider = contacts_provider(&kind, &id);
                 let db = match Database::open_for_account(&path, &id) {
-                    Ok(db) => Arc::new(db),
+                    Ok(db) => Rc::new(db),
                     Err(e) => return error!("Contacts sync {}: cannot open database: {}", id, e),
                 };
                 let cfg = ContactsDaemonConfig { create_contacts: crate::settings::read_lists_create_contacts(&contacts_settings), ..ContactsDaemonConfig::default() };
@@ -208,7 +209,7 @@ impl SyncScheduler {
                 let (id, path) = (id.clone(), path.clone());
                 async move {
                     let db = match Database::open_for_account(&path, &id) {
-                        Ok(db) => Arc::new(db),
+                        Ok(db) => Rc::new(db),
                         Err(e) => return error!("Tasks sync {}: cannot open database: {}", id, e),
                     };
                     let provider = Arc::new(GraphTasksProvider::new(AuthManager::for_account(&id)));
@@ -226,7 +227,7 @@ impl SyncScheduler {
             async move {
                 let provider = email_provider(&kind, &id, &path);
                 let db = match Database::open_for_account(&path, &id) {
-                    Ok(db) => Arc::new(db),
+                    Ok(db) => Rc::new(db),
                     Err(e) => return error!("Outbox {}: cannot open database: {}", id, e),
                 };
                 OutboxWorker::new(&id, db, provider).run().await;
@@ -241,7 +242,7 @@ impl SyncScheduler {
             async move {
                 let provider = email_provider(&kind, &id, &path);
                 let db = match Database::open_for_account(&path, &id) {
-                    Ok(db) => Arc::new(db),
+                    Ok(db) => Rc::new(db),
                     Err(e) => return error!("Drafts {}: cannot open database: {}", id, e),
                 };
                 crate::draft_sync::DraftWorker::new(&id, db, provider, gmail.then_some(crate::draft_sync::LARGE_PUSH_BYTES)).run().await;
@@ -256,7 +257,7 @@ impl SyncScheduler {
             async move {
                 let provider = calendar_provider(&kind, &id);
                 let db = match Database::open_for_account(&path, &id) {
-                    Ok(db) => Arc::new(db),
+                    Ok(db) => Rc::new(db),
                     Err(e) => return error!("Calendar outbox {}: cannot open database: {}", id, e),
                 };
                 CalendarOutboxWorker::new(&id, db, provider, Some(settings_path)).run().await;
@@ -271,7 +272,7 @@ impl SyncScheduler {
             async move {
                 let provider = contacts_provider(&kind, &id);
                 let db = match Database::open_for_account(&path, &id) {
-                    Ok(db) => Arc::new(db),
+                    Ok(db) => Rc::new(db),
                     Err(e) => return error!("Contacts outbox {}: cannot open database: {}", id, e),
                 };
                 ContactsOutboxWorker::new(&id, db, provider).run().await;

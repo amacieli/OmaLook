@@ -59,7 +59,7 @@ pub fn refresh_calendar_note(db_path: &str, account: &str, date: Option<chrono::
         Err(e) => format!("not refreshed: {}", e),
         Ok(cal_db) => {
             let provider = Arc::new(crate::providers::GraphCalendarProvider::new(AuthManager::for_account(account)));
-            let cal = crate::calendar_daemon::CalendarDaemon::new(Default::default(), Arc::new(cal_db), provider);
+            let cal = crate::calendar_daemon::CalendarDaemon::new(Default::default(), std::rc::Rc::new(cal_db), provider);
             let near = crate::runtime::block_on(cal.refresh_near_window());
             let around = match date {
                 Some(d) => crate::runtime::block_on(cal.refresh_around(d)).map(|_| ()),

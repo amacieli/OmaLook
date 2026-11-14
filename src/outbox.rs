@@ -12,6 +12,7 @@
 //! * only failures that cannot have delivered the message are retried (`compose::is_transient`);
 //! * after a crash, a message left `sending` is reported as failed, not sent again.
 
+use std::rc::Rc;
 use crate::compose::{is_transient, retry_delay_secs, OutgoingMessage, MAX_ATTEMPTS};
 use crate::db::Database;
 use crate::providers::EmailProvider;
@@ -30,7 +31,7 @@ const KEEP_MS: i64 = 24 * 3600 * 1000;
 
 pub struct OutboxWorker {
     account_id: String,
-    db: Arc<Database>,
+    db: Rc<Database>,
     provider: Arc<dyn EmailProvider>,
     /// Where the attachment copies of queued messages live (`attach_spool`).
     spool_root: PathBuf,
@@ -48,7 +49,7 @@ fn short_error(e: &crate::errors::OmarchyError) -> String {
 }
 
 impl OutboxWorker {
-    pub fn new(account_id: &str, db: Arc<Database>, provider: Arc<dyn EmailProvider>) -> Self {
+    pub fn new(account_id: &str, db: Rc<Database>, provider: Arc<dyn EmailProvider>) -> Self {
         Self { account_id: account_id.to_string(), db, provider, spool_root: crate::attach_spool::default_root() }
     }
 
@@ -224,8 +225,8 @@ mod tests {
         .unwrap()
     }
 
-    fn setup(script: Vec<Result<()>>) -> (OutboxWorker, Arc<Fake>, Arc<Database>) {
-        let db = Arc::new(Database::open_for_account(":memory:", "a1").unwrap());
+    fn setup(script: Vec<Result<()>>) -> (OutboxWorker, Arc<Fake>, Rc<Database>) {
+        let db = Rc::new(Database::open_for_account(":memory:", "a1").unwrap());
         let fake = Arc::new(Fake { sent: Mutex::new(vec![]), script: Mutex::new(script), files: Mutex::new(vec![]) });
         (OutboxWorker::new("a1", db.clone(), fake.clone()), fake, db)
     }

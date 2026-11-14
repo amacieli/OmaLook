@@ -234,7 +234,7 @@ pub fn sms_list_contacts(ctx: &Ctx, args: &Value) -> Result<Value, String> {
 
 pub fn sms_unread_counts(ctx: &Ctx, _args: &Value) -> Result<Value, String> {
     let db = open_db(ctx)?;
-    Ok(to_json(app::sms::unread_counts(&db)?)?)
+    to_json(app::sms::unread_counts(&db)?)
 }
 
 #[cfg(test)]

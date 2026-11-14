@@ -741,7 +741,7 @@ impl super::EmailProvider for GraphEmailProvider {
                     got += 1;
                     let Some(id) = m["id"].as_str() else { continue };
                     if let Some(r) = m["receivedDateTime"].as_str() {
-                        if oldest.as_deref().map_or(true, |o| r < o) { oldest = Some(r.to_string()); }
+                        if oldest.as_deref().is_none_or(|o| r < o) { oldest = Some(r.to_string()); }
                     }
                     if seen.insert(id.to_string()) {
                         ids.push(id.to_string());
@@ -1065,7 +1065,7 @@ impl super::EmailProvider for GraphEmailProvider {
     }
 
     async fn save_draft(&self, msg: &crate::compose::OutgoingMessage, remote_id: Option<&str>, _from: &str, attachments_changed: bool) -> Result<crate::providers::RemoteDraft> {
-        use crate::compose::{graph_message_json, graph_message_json_with};
+        use crate::compose::graph_message_json;
         let token = self.get_token().await?;
         let client = super::http_client();
         let enc = |s: &str| urlencoding::encode(s).into_owned();

@@ -106,10 +106,9 @@ fn now_unix() -> i64 {
 fn panic_text(payload: &(dyn std::any::Any + Send)) -> Option<String> {
     let raw = if let Some(s) = payload.downcast_ref::<&str>() {
         (*s).to_string()
-    } else if let Some(s) = payload.downcast_ref::<String>() {
-        s.clone()
     } else {
-        return None;
+        let s = payload.downcast_ref::<String>()?;
+        s.clone()
     };
     Some(raw.chars().take(PANIC_TEXT_MAX).collect())
 }
@@ -149,7 +148,7 @@ pub fn spawn_supervised(
             }
             update(&key, |h| h.state = State::Running);
             let started = Instant::now();
-            match catch_unwind(AssertUnwindSafe(|| body())) {
+            match catch_unwind(AssertUnwindSafe(&body)) {
                 Ok(()) => {
                     // Ended because it was told to stop: not a problem. Ended on its own (e.g. the
                     // database could not be opened): visible as stopped.

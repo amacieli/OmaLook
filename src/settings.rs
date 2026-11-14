@@ -65,9 +65,8 @@ impl SettingsManager {
         let path_for_read = path.clone();
         
         let mut watcher = notify::recommended_watcher(move |res: NotifyResult<_>| {
-            if let Ok(event) = res {
+            if let Ok(notify::Event { paths, .. }) = res {
                 // Reload settings on file change
-                if let notify::Event { ref paths, .. } = event {
                     if paths.iter().any(|p| p == &path_clone) {
                         match fs::read_to_string(&path_for_read) {
                             Ok(content) => {
@@ -88,7 +87,6 @@ impl SettingsManager {
                             }
                         }
                     }
-                }
             }
         })
         .map_err(|e| OmarchyError::SettingsError(e.to_string()))?;

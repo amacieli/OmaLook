@@ -11,6 +11,7 @@
 //! Phase 2 knows one operation, `create`. After a create the calendar cache is refreshed at once
 //! (the few days around a single event, the whole configured window for a series).
 
+use std::rc::Rc;
 use crate::calendar_daemon::{CalendarDaemon, CalendarDaemonConfig};
 use crate::calendar_write::{recurrence_from_graph, series_end_recurrence, series_first_date, tail_recurrence, EventDraft};
 use crate::compose::{is_transient, retry_delay_secs, MAX_ATTEMPTS};
@@ -27,7 +28,7 @@ const KEEP_MS: i64 = 24 * 3600 * 1000;
 
 pub struct CalendarOutboxWorker {
     account_id: String,
-    db: Arc<Database>,
+    db: Rc<Database>,
     provider: Arc<dyn CalendarProvider>,
     settings_path: Option<std::path::PathBuf>,
 }
@@ -56,7 +57,7 @@ fn short_error(e: &crate::errors::OmarchyError) -> String {
 }
 
 impl CalendarOutboxWorker {
-    pub fn new(account_id: &str, db: Arc<Database>, provider: Arc<dyn CalendarProvider>, settings_path: Option<std::path::PathBuf>) -> Self {
+    pub fn new(account_id: &str, db: Rc<Database>, provider: Arc<dyn CalendarProvider>, settings_path: Option<std::path::PathBuf>) -> Self {
         Self { account_id: account_id.to_string(), db, provider, settings_path }
     }
 
@@ -330,12 +331,12 @@ mod tests {
         }
     }
 
-    fn setup(script: Vec<Result<crate::calendar_write::CreatedEvent>>) -> (CalendarOutboxWorker, Arc<Fake>, Arc<Database>) {
+    fn setup(script: Vec<Result<crate::calendar_write::CreatedEvent>>) -> (CalendarOutboxWorker, Arc<Fake>, Rc<Database>) {
         static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
         let dir = std::env::temp_dir().join(format!("omalook-caloutbox-{}-{}", std::process::id(), N.fetch_add(1, std::sync::atomic::Ordering::SeqCst)));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let db = Arc::new(Database::open_for_account(dir.join("m.db").to_str().unwrap(), "exchange-test").unwrap());
+        let db = Rc::new(Database::open_for_account(dir.join("m.db").to_str().unwrap(), "exchange-test").unwrap());
         let fake = Arc::new(Fake { script: Mutex::new(script), seen: Mutex::new(vec![]) });
         (CalendarOutboxWorker::new("exchange-test", db.clone(), fake.clone(), None), fake, db)
     }
@@ -438,12 +439,12 @@ mod tests {
     }
     fn t(v: &[&str]) -> Vec<String> { v.iter().map(|x| x.to_string()).collect() }
 
-    fn tag_setup(script: Vec<Result<Vec<String>>>) -> (CalendarOutboxWorker, Arc<TagFake>, Arc<Database>) {
+    fn tag_setup(script: Vec<Result<Vec<String>>>) -> (CalendarOutboxWorker, Arc<TagFake>, Rc<Database>) {
         static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
         let dir = std::env::temp_dir().join(format!("omalook-caltags-{}-{}", std::process::id(), N.fetch_add(1, std::sync::atomic::Ordering::SeqCst)));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let db = Arc::new(Database::open_for_account(dir.join("m.db").to_str().unwrap(), "exchange-test").unwrap());
+        let db = Rc::new(Database::open_for_account(dir.join("m.db").to_str().unwrap(), "exchange-test").unwrap());
         let ev = |id: &str, kind: &str, master: Option<&str>| CalendarEvent { id: id.into(), subject: id.into(), start: "2026-10-05T09:00:00".into(), end: "2026-10-05T10:00:00".into(),
             event_type: kind.into(), series_master_id: master.map(String::from), ..Default::default() };
         db.upsert_event(&ev("M", "seriesMaster", None)).unwrap();
@@ -564,12 +565,12 @@ mod tests {
         }
     }
 
-    fn change_setup(script: Vec<Result<()>>) -> (CalendarOutboxWorker, Arc<ChangeFake>, Arc<Database>) {
+    fn change_setup(script: Vec<Result<()>>) -> (CalendarOutboxWorker, Arc<ChangeFake>, Rc<Database>) {
         static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
         let dir = std::env::temp_dir().join(format!("omalook-calchange-{}-{}", std::process::id(), N.fetch_add(1, std::sync::atomic::Ordering::SeqCst)));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let db = Arc::new(Database::open_for_account(dir.join("m.db").to_str().unwrap(), "exchange-test").unwrap());
+        let db = Rc::new(Database::open_for_account(dir.join("m.db").to_str().unwrap(), "exchange-test").unwrap());
         let ev = |id: &str, kind: &str, master: Option<&str>| CalendarEvent { id: id.into(), subject: id.into(), start: "2026-10-05T09:00:00".into(), end: "2026-10-05T10:00:00".into(),
             event_type: kind.into(), series_master_id: master.map(String::from), ..Default::default() };
         db.upsert_event(&ev("M", "seriesMaster", None)).unwrap();

@@ -303,7 +303,7 @@ mod tests {
     fn snapshot_copies_the_bytes_and_remembers_the_original() {
         let (src, root) = (tmp("a-src"), tmp("a-root"));
         let a = pick(&src, "Q3 report.pdf", b"original bytes");
-        let spooled = snapshot(&root, "ob-1", &[a.clone()]).unwrap();
+        let spooled = snapshot(&root, "ob-1", std::slice::from_ref(&a)).unwrap();
         assert_eq!(spooled.len(), 1);
         let s = &spooled[0];
         assert_ne!(s.path, a.path);
@@ -337,7 +337,7 @@ mod tests {
         // The reason copies are not hard links.
         let (src, root) = (tmp("c-src"), tmp("c-root"));
         let a = pick(&src, "a.txt", b"before");
-        let spooled = snapshot(&root, "ob-3", &[a.clone()]).unwrap();
+        let spooled = snapshot(&root, "ob-3", std::slice::from_ref(&a)).unwrap();
         let mut f = fs::OpenOptions::new().write(true).truncate(true).open(&a.path).unwrap();
         io::Write::write_all(&mut f, b"after!").unwrap();
         assert_eq!(fs::read(&spooled[0].path).unwrap(), b"before");
@@ -457,7 +457,7 @@ mod draft_spool_tests {
         assert_eq!(second[0].path, first[0].path);
         assert_eq!(second[1].path, first[1].path);
         // b is removed from the draft: its copy goes, a's stays.
-        let third = snapshot_draft(&root, "d1", &[a.clone()], &second).unwrap();
+        let third = snapshot_draft(&root, "d1", std::slice::from_ref(&a), &second).unwrap();
         assert_eq!(third.len(), 1);
         assert!(Path::new(&third[0].path).is_file());
         assert!(!Path::new(&second[1].path).exists(), "removed attachment's copy is deleted");
@@ -474,7 +474,7 @@ mod draft_spool_tests {
         let root = base.join("spool");
         fs::create_dir_all(&picks).unwrap();
         let a = picked(&picks, "a.txt", b"aaa");
-        let first = snapshot_draft(&root, "d1", &[a.clone()], &[]).unwrap();
+        let first = snapshot_draft(&root, "d1", std::slice::from_ref(&a), &[]).unwrap();
         // The picked file changes size: the old copy is not reused.
         let a2 = picked(&picks, "a.txt", b"aaaaaaaa");
         let second = snapshot_draft(&root, "d1", &[a2], &first).unwrap();

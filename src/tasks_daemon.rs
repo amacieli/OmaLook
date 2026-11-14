@@ -2,6 +2,7 @@
 //! network. Same rhythm as the contacts daemon: wait for mail's priority stages, then read
 //! everything every few minutes; a list is replaced only after it was read in full.
 
+use std::rc::Rc;
 use crate::db::Database;
 use crate::errors::Result;
 use crate::providers::TasksProvider;
@@ -21,12 +22,12 @@ impl Default for TasksDaemonConfig {
 
 pub struct TasksDaemon {
     config: TasksDaemonConfig,
-    db: Arc<Database>,
+    db: Rc<Database>,
     provider: Arc<dyn TasksProvider>,
 }
 
 impl TasksDaemon {
-    pub fn new(config: TasksDaemonConfig, db: Arc<Database>, provider: Arc<dyn TasksProvider>) -> Self {
+    pub fn new(config: TasksDaemonConfig, db: Rc<Database>, provider: Arc<dyn TasksProvider>) -> Self {
         Self { config, db, provider }
     }
 
@@ -97,7 +98,7 @@ mod tests {
 
     #[test]
     fn a_failed_list_keeps_its_cached_tasks_and_the_others_update() {
-        let db = Arc::new(Database::open_for_account(":memory:", "exchange-aaaaaa").unwrap());
+        let db = Rc::new(Database::open_for_account(":memory:", "exchange-aaaaaa").unwrap());
         let fake = Arc::new(Fake { fail_list: Mutex::new(None), tasks: Mutex::new(vec![task("a1", "A"), task("b1", "B")]) });
         let d = TasksDaemon::new(TasksDaemonConfig::default(), db.clone(), fake.clone());
         assert_eq!(run(d.sync()).unwrap(), 2, "two new tasks");

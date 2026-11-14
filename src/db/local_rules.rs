@@ -8,6 +8,9 @@ use crate::local_rules::{additions, LocalRule, Msg};
 use rusqlite::params;
 use std::collections::BTreeMap;
 
+/// Per message: `(id, [(tag, rule id)])`.
+pub type RulePlan = Vec<(String, Vec<(String, String)>)>;
+
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
 pub struct DryRun {
     /// Inbox messages looked at.
@@ -82,7 +85,7 @@ impl Database {
     /// fetched (`meta_ok = 0`): matching on missing recipients or categories would be guessing. Rules are for
     /// incoming mail, so only the Inbox is considered.
     fn scan_inbox(&self, rules: &[LocalRule], extra_where: &str, args: &[&dyn rusqlite::ToSql])
-        -> Result<(Vec<String>, Vec<(String, Vec<(String, String)>)>, usize)> {
+        -> Result<(Vec<String>, RulePlan, usize)> {
         let (mut looked, mut plan, mut matched) = (Vec::new(), Vec::new(), 0usize);
         let sql = format!(
             "SELECT m.id, m.account_id, m.from_email, COALESCE(m.from_name,''), COALESCE(m.to_text,''),
@@ -111,7 +114,7 @@ impl Database {
     }
 
     /// Every cached Inbox message (all accounts) `rules` would add tags to, plus how many were looked at.
-    pub fn plan_local_rules(&self, rules: &[LocalRule]) -> Result<(usize, Vec<(String, Vec<(String, String)>)>)> {
+    pub fn plan_local_rules(&self, rules: &[LocalRule]) -> Result<(usize, RulePlan)> {
         let (looked, plan, _) = self.scan_inbox(rules, "", &[])?;
         Ok((looked.len(), plan))
     }

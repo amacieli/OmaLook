@@ -70,7 +70,6 @@ pub use auth::AuthManager;
 pub use db::Database;
 pub use settings::SettingsManager;
 
-use log::warn;
 
 /// Initialize logging for the application
 pub fn init_logging() {

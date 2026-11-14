@@ -277,7 +277,7 @@ mod tests {
         a["attendees"] = json!(42);
         assert!(create_event(&c, &a).unwrap_err().contains("must be a list"));
         let f = json!({ "account": "exchange-1", "from": "2026-11-20", "to": "2026-11-27", "duration": 30, "attendees": "a@x.com" });
-        assert!(find_times(&c, &f).is_ok() || find_times(&c, &f).unwrap_err().len() > 0);
+        assert!(find_times(&c, &f).is_ok() || !find_times(&c, &f).unwrap_err().is_empty());
         let _ = fs::remove_dir_all(d);
     }
 

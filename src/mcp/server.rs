@@ -175,7 +175,7 @@ pub fn start(config_dir: &Path) {
             let mut listener: Option<TcpListener> = None;
             let mut last_check: Option<std::time::Instant> = None;
             loop {
-                if last_check.map_or(true, |t| t.elapsed() >= Duration::from_secs(1)) {
+                if last_check.is_none_or(|t| t.elapsed() >= Duration::from_secs(1)) {
                     last_check = Some(std::time::Instant::now());
                     let want = ctx.policy().active();
                     if want && listener.is_none() {

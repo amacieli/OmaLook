@@ -415,10 +415,10 @@ impl ContactsProvider for GraphContactsProvider {
         let users_url = format!("{}/users?$filter={}&$top=15&$select=displayName,mail,jobTitle,companyName,department", GRAPH, enc(&filter));
         let people = Self::get_page(&client, &token, &people_url).await.unwrap_or(serde_json::Value::Null);
         let users = Self::get_page(&client, &token, &users_url).await;
-        if people.is_null() && users.is_err() {
-            return Err(users.unwrap_err());
+        match users {
+            Err(e) if people.is_null() => Err(e),
+            users => Ok(parse_directory(&people, &users.unwrap_or(serde_json::Value::Null))),
         }
-        Ok(parse_directory(&people, &users.unwrap_or(serde_json::Value::Null)))
     }
 
     async fn get_extended(&self, id: &str, ids: &[&str]) -> Result<Vec<(String, String)>> {

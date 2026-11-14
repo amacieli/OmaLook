@@ -2,10 +2,16 @@
 
 use super::*;
 
+/// `(id, op, payload, transaction_id, attempt)`.
+pub type CalOutboxDue = (String, String, String, String, i64);
+/// `(state, last_error, result_id)`.
+pub type CalOutboxStatus = (String, Option<String>, Option<String>);
+
 impl Database {
 
     // ── calendar outbox (same claim / undo discipline as the mail outbox) ───────────────────────
 
+    #[allow(clippy::too_many_arguments)] // flat column list of one outbox row; callers pass each field by name
     pub fn cal_outbox_enqueue(&self, id: &str, account_id: &str, op: &str, payload_json: &str, attendees: usize, tx: &str, due_ms: i64) -> Result<()> {
         let now = Self::now_ms();
         self.conn.execute(
@@ -18,7 +24,7 @@ impl Database {
 
 
     /// Claim every due operation of the account: `(id, op, payload, transaction_id, attempt)`.
-    pub fn cal_outbox_claim_due(&self, account_id: &str, now_ms: i64) -> Result<Vec<(String, String, String, String, i64)>> {
+    pub fn cal_outbox_claim_due(&self, account_id: &str, now_ms: i64) -> Result<Vec<CalOutboxDue>> {
         let due: Vec<(String, String, String, String)> = {
             let mut stmt = self.conn.prepare(
                 "SELECT id, op, payload_json, transaction_id FROM calendar_outbox
@@ -186,7 +192,7 @@ impl Database {
     }
 
 
-    pub fn cal_outbox_status(&self, id: &str) -> Result<Option<(String, Option<String>, Option<String>)>> {
+    pub fn cal_outbox_status(&self, id: &str) -> Result<Option<CalOutboxStatus>> {
         match self.conn.query_row(
             "SELECT state, last_error, result_id FROM calendar_outbox WHERE id = ?1",
             params![id],

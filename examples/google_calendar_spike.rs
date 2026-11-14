@@ -61,7 +61,7 @@ async fn run() {
     }
     .await;
 
-    let deleted = provider.delete_event(&made.id).await;
+    let deleted = provider.delete_event(&made.id, None).await;
     let left = match provider.fetch_window(day, day + Duration::days(1)).await {
         Ok(read) => read.iter().filter(|e| e.id == made.id).count(),
         Err(e) => {

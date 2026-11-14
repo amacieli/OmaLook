@@ -410,7 +410,7 @@ mod tests {
         let first_unconfirmed = slots.iter().position(|s| !s.confirmed()).unwrap_or(slots.len());
         let last_confirmed = slots.iter().rposition(|s| s.confirmed());
         assert!(last_confirmed.is_none() || last_confirmed.unwrap() < first_unconfirmed, "confirmed slots come first");
-        assert!(slots.iter().all(|s| s.confirmed() == false), "the unknown person is never confirmed free");
+        assert!(slots.iter().all(|s| !s.confirmed()), "the unknown person is never confirmed free");
     }
 
     #[test]
@@ -552,10 +552,12 @@ mod tests {
 
     #[test]
     fn events_busy_skips_free_and_unparseable() {
-        let mut busy_ev = crate::models::CalendarEvent::default();
-        busy_ev.start = "2026-11-16T09:00:00".into();
-        busy_ev.end = "2026-11-16T10:00:00".into();
-        busy_ev.show_as = "busy".into();
+        let busy_ev = crate::models::CalendarEvent {
+            start: "2026-11-16T09:00:00".into(),
+            end: "2026-11-16T10:00:00".into(),
+            show_as: "busy".into(),
+            ..Default::default()
+        };
         let mut free_ev = busy_ev.clone();
         free_ev.show_as = "free".into();
         let mut bad = busy_ev.clone();

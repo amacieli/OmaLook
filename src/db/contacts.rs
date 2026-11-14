@@ -19,6 +19,9 @@ use crate::models::{Contact, ContactDeltaPage};
 use rusqlite::params;
 use serde_json::Value;
 
+/// `(id, op, contact_id, payload, base_etag, attempt)`.
+pub type ContactOutboxRow = (String, String, String, String, String, i64);
+
 /// What the writer needs to know about one cached contact.
 #[derive(Debug, Clone)]
 pub struct ContactRecord {
@@ -260,7 +263,7 @@ impl Database {
 
     /// Claim every due operation of the account in the order it was queued (a second edit of one
     /// contact must not run before the first): `(id, op, contact_id, payload, base_etag, attempt)`.
-    pub fn contact_outbox_claim_due(&self, now_ms: i64) -> Result<Vec<(String, String, String, String, String, i64)>> {
+    pub fn contact_outbox_claim_due(&self, now_ms: i64) -> Result<Vec<ContactOutboxRow>> {
         let due: Vec<(String, String, String, String, String)> = {
             let mut stmt = self.conn.prepare(
                 "SELECT id, op, contact_id, payload_json, base_etag FROM contact_outbox
