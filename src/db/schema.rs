@@ -1,6 +1,47 @@
 //! Schema: open, migrations (`init_schema` and friends), and the shared connection setup.
 
 use super::*;
+use std::collections::HashSet;
+use std::os::unix::fs::MetadataExt;
+use std::sync::{LazyLock, Mutex};
+
+/// Identity of a database file for the once-per-process schema check (R3.3): canonical path plus
+/// device and inode. A file deleted and recreated at the same path, or moved aside by db_health,
+/// is a different file, so its DDL runs again.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct FileKey {
+    path: std::path::PathBuf,
+    dev: u64,
+    ino: u64,
+}
+
+impl FileKey {
+    /// `None` for `:memory:`, empty paths and `file:` URIs (no stable file identity).
+    /// Call only after `Connection::open` has created the file.
+    fn of(path: &str) -> Option<Self> {
+        if path.is_empty() || path == ":memory:" || path.starts_with("file:") {
+            return None;
+        }
+        let path = std::fs::canonicalize(path).ok()?;
+        let meta = std::fs::metadata(&path).ok()?;
+        Some(Self { path, dev: meta.dev(), ino: meta.ino() })
+    }
+}
+
+/// Files whose schema this process has already created (see `Database::ensure_schema`).
+static SCHEMA_READY: LazyLock<Mutex<HashSet<FileKey>>> = LazyLock::new(|| Mutex::new(HashSet::new()));
+
+#[cfg(test)]
+thread_local! {
+    /// Test-only: DDL runs on the thread that opens the database, so a thread-local counter is exact
+    /// even while other tests run in parallel.
+    static SCHEMA_RUNS_HERE: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn schema_runs_on_this_thread() -> usize {
+    SCHEMA_RUNS_HERE.with(|c| c.get())
+}
 
 impl Database {
     /// Open or create database at the given path
@@ -26,13 +67,47 @@ impl Database {
         let _ = conn.pragma_update(None, "synchronous", "NORMAL");
 
         let db = Self { conn, account_id: account_id.to_string() };
-        db.init_schema()?;
+        db.ensure_schema(path)?;
+        info!("Database initialized");
+        
+        Ok(db)
+    }
+
+    /// Run the DDL for `path` unless this process already did it for the same file (R3.3).
+    /// The check and the DDL run under one global lock, so concurrent first opens serialise and
+    /// the rest skip the DDL. `:memory:` and `file:` URIs always run it (each is a new database).
+    fn ensure_schema(&self, path: &str) -> Result<()> {
+        let Some(key) = FileKey::of(path) else { return self.run_schema() };
+        let mut ready = SCHEMA_READY.lock().unwrap_or_else(|e| e.into_inner());
+        // The inode alone is not proof: a deleted file's inode can be reused by the next file at
+        // the same path. A cheap look for the `messages` table catches that case.
+        if ready.contains(&key) && self.schema_present() {
+            return Ok(());
+        }
+        self.run_schema()?;
+        ready.insert(key);
+        Ok(())
+    }
+
+    fn schema_present(&self) -> bool {
+        self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'messages')",
+            [],
+            |row| row.get::<_, bool>(0),
+        ).unwrap_or(false)
+    }
+
+    /// Every DDL statement a database needs. Called through `ensure_schema` only.
+    fn run_schema(&self) -> Result<()> {
+        #[cfg(test)]
+        SCHEMA_RUNS_HERE.with(|c| c.set(c.get() + 1));
+        self.init_schema()?;
         // Serves "newest N in folder" without scanning and sorting the whole table.
-        db.conn.execute(
+        self.conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_messages_folder_received ON messages(folder_id, received_at DESC)", [])?;
         // Change-feed position per account + folder (Graph delta). `complete` = 0 while the
         // first full enumeration is still running (the link then resumes it next launch).
-        db.conn.execute(
+        self.conn.execute(
             "CREATE TABLE IF NOT EXISTS mail_delta (
                 account_id TEXT NOT NULL,
                 folder_id  TEXT NOT NULL,
@@ -41,9 +116,7 @@ impl Database {
                 updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 PRIMARY KEY (account_id, folder_id)
             )", [])?;
-        info!("Database initialized");
-        
-        Ok(db)
+        Ok(())
     }
 
     
@@ -554,5 +627,80 @@ impl Database {
                 Err(e)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod schema_once_tests {
+    use super::*;
+
+    fn scratch(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("omalook-schema-once-{}-{}", std::process::id(), name));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn remove_db(path: &std::path::Path) {
+        for suffix in ["", "-wal", "-shm"] {
+            let mut p = path.as_os_str().to_owned();
+            p.push(suffix);
+            let _ = std::fs::remove_file(p);
+        }
+    }
+
+    #[test]
+    fn second_open_of_the_same_file_runs_no_ddl() {
+        let dir = scratch("second-open");
+        let path = dir.join("m.db");
+        let p = path.to_str().unwrap();
+        let before = schema_runs_on_this_thread();
+        let first = Database::open(p).unwrap();
+        assert_eq!(schema_runs_on_this_thread(), before + 1, "first open runs the DDL once");
+        drop(first);
+        let _second = Database::open(p).unwrap();
+        assert_eq!(schema_runs_on_this_thread(), before + 1, "second open of the same file skips the DDL");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn memory_databases_always_run_the_ddl() {
+        let before = schema_runs_on_this_thread();
+        let _a = Database::open(":memory:").unwrap();
+        let _b = Database::open(":memory:").unwrap();
+        assert_eq!(schema_runs_on_this_thread(), before + 2);
+    }
+
+    #[test]
+    fn file_deleted_and_recreated_at_the_same_path_gets_its_schema_again() {
+        let dir = scratch("recreate");
+        let path = dir.join("m.db");
+        let p = path.to_str().unwrap();
+        drop(Database::open(p).unwrap());
+        let before = schema_runs_on_this_thread();
+        remove_db(&path);
+        // Same path, new (empty) file: the inode may be reused, so the table check must catch it.
+        let db = Database::open(p).unwrap();
+        assert_eq!(schema_runs_on_this_thread(), before + 1, "recreated file runs the DDL again");
+        assert!(db.schema_present());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn file_replaced_by_a_new_inode_gets_its_schema_again() {
+        // db_health moves the damaged file aside and builds a new one at the same path; a rename
+        // over the path gives a different inode while the old file still exists.
+        let dir = scratch("replaced");
+        let path = dir.join("m.db");
+        let p = path.to_str().unwrap();
+        drop(Database::open(p).unwrap());
+        let before = schema_runs_on_this_thread();
+        let fresh = dir.join("fresh.db");
+        drop(rusqlite::Connection::open(&fresh).unwrap());
+        std::fs::rename(&fresh, &path).unwrap();
+        let db = Database::open(p).unwrap();
+        assert_eq!(schema_runs_on_this_thread(), before + 1, "a different inode runs the DDL again");
+        assert!(db.schema_present());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
