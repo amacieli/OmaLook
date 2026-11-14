@@ -38,6 +38,35 @@ impl GraphEmailProvider {
         Ok(token)
     }
 
+    /// Drop the cached access token Graph rejected with 401; the next `get_token` refreshes.
+    async fn invalidate(&self, rejected: &str) {
+        self.auth.lock().await.invalidate_access(rejected);
+    }
+
+    /// Send a Graph request with the account's token. A 401 drops the cached token and resends
+    /// once with a refreshed one; a second 401 is returned to the caller, which reports it as the
+    /// usual Graph error (the grant is then rejected for real and the broker asks for sign-in).
+    /// `build` is called again for the resend, so bodies must be rebuilt from scratch in it.
+    async fn send_authed<F>(&self, client: &reqwest::Client, build: F) -> Result<reqwest::Response>
+    where
+        F: Fn(&reqwest::Client, &str) -> reqwest::RequestBuilder,
+    {
+        let mut auth = super::retry::AuthRetry::default();
+        loop {
+            let token = self.get_token().await?;
+            let resp = build(client, &token)
+                .send()
+                .await
+                .map_err(|e| crate::errors::OmarchyError::HttpError(e.to_string()))?;
+            if auth.on_status(resp.status().as_u16()) == super::retry::AuthStep::InvalidateAndResend {
+                warn!("Graph API 401: refreshing the access token and retrying once");
+                self.invalidate(&token).await;
+                continue;
+            }
+            return Ok(resp);
+        }
+    }
+
     /// Attach one file to draft `did`: under 3 MB in one request, otherwise through an upload
     /// session in chunks (read from disk one at a time, so a large file is never held whole).
     async fn add_attachment(client: &reqwest::Client, token: &str, did: &str, a: &crate::compose::OutgoingAttachment) -> Result<()> {
@@ -435,7 +464,6 @@ impl super::EmailProvider for GraphEmailProvider {
 
     async fn fetch_folder_messages(&self, folder_id: &str, limit: usize) -> Result<Vec<EmailMessage>> {
         debug!("Fetching {} emails from Graph API folder: {}", limit, folder_id);
-        let token = self.get_token().await?;
         let client = super::http_client();
 
         // Use well-known names directly OR folder IDs
@@ -446,12 +474,9 @@ impl super::EmailProvider for GraphEmailProvider {
             folder_id, limit, sel = MSG_SELECT
         );
 
-        let response = client
-            .get(&url)
-            .header("Authorization", format!("Bearer {}", token))
-            .send()
-            .await
-            .map_err(|e| crate::errors::OmarchyError::HttpError(e.to_string()))?;
+        let response = self
+            .send_authed(&client, |c, t| c.get(&url).header("Authorization", format!("Bearer {}", t)))
+            .await?;
 
         let body = Self::check_response(response).await?;
         let json: serde_json::Value = serde_json::from_str(&body)
@@ -476,7 +501,6 @@ impl super::EmailProvider for GraphEmailProvider {
         folder_id: &str,
         tx: tokio::sync::mpsc::Sender<Vec<EmailMessage>>,
     ) -> Result<usize> {
-        let token = self.get_token().await?;
         let client = super::http_client();
 
         let mut next_url = Some(format!(
@@ -489,12 +513,9 @@ impl super::EmailProvider for GraphEmailProvider {
         let mut total = 0usize;
 
         while let Some(url) = next_url.take() {
-            let response = client
-                .get(&url)
-                .header("Authorization", format!("Bearer {}", token))
-                .send()
-                .await
-                .map_err(|e| crate::errors::OmarchyError::HttpError(e.to_string()))?;
+            let response = self
+                .send_authed(&client, |c, t| c.get(&url).header("Authorization", format!("Bearer {}", t)))
+                .await?;
 
             let body = Self::check_response(response).await?;
             let json: serde_json::Value = serde_json::from_str(&body)
@@ -551,16 +572,15 @@ impl super::EmailProvider for GraphEmailProvider {
             )
         });
         loop {
-            let token = self.get_token().await?;
             let mut attempt = 0;
             let body = loop {
-                let response = client
-                    .get(&url)
-                    .header("Authorization", format!("Bearer {}", token))
-                    .header("Prefer", "odata.maxpagesize=500")
-                    .send()
-                    .await
-                    .map_err(|e| crate::errors::OmarchyError::HttpError(e.to_string()))?;
+                let response = self
+                    .send_authed(&client, |c, token| {
+                        c.get(&url)
+                            .header("Authorization", format!("Bearer {}", token))
+                            .header("Prefer", "odata.maxpagesize=500")
+                    })
+                    .await?;
                 let status = response.status();
                 if status.is_success() {
                     break response
@@ -576,13 +596,13 @@ impl super::EmailProvider for GraphEmailProvider {
                 // Throttled / briefly unavailable: honour Retry-After a few times.
                 if matches!(status.as_u16(), 429 | 503 | 504) && attempt < 3 {
                     attempt += 1;
-                    let wait = response
-                        .headers()
-                        .get("retry-after")
-                        .and_then(|v| v.to_str().ok())
-                        .and_then(|v| v.parse::<u64>().ok())
-                        .unwrap_or(2 * attempt as u64)
-                        .min(30);
+                    let wait = super::retry::retry_after_capped(
+                        response.headers(),
+                        std::time::SystemTime::now(),
+                        std::time::Duration::from_secs(30),
+                    )
+                    .map(|d| d.as_secs())
+                    .unwrap_or(2 * attempt as u64);
                     debug!("Delta request throttled ({}); retrying in {}s", status, wait);
                     tokio::time::sleep(std::time::Duration::from_secs(wait)).await;
                     continue;
@@ -628,7 +648,6 @@ impl super::EmailProvider for GraphEmailProvider {
     }
 
     async fn fetch_unread_ids(&self, folder_id: &str) -> Result<Vec<String>> {
-        let token = self.get_token().await?;
         let client = super::http_client();
         let mut ids = Vec::new();
         let mut next_url = Some(format!(
@@ -637,12 +656,9 @@ impl super::EmailProvider for GraphEmailProvider {
             folder_id
         ));
         while let Some(url) = next_url.take() {
-            let response = client
-                .get(&url)
-                .header("Authorization", format!("Bearer {}", token))
-                .send()
-                .await
-                .map_err(|e| crate::errors::OmarchyError::HttpError(e.to_string()))?;
+            let response = self
+                .send_authed(&client, |c, t| c.get(&url).header("Authorization", format!("Bearer {}", t)))
+                .await?;
             let body = Self::check_response(response).await?;
             let json: serde_json::Value = serde_json::from_str(&body)
                 .map_err(|e| crate::errors::OmarchyError::HttpError(e.to_string()))?;

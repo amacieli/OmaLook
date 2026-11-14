@@ -4,13 +4,26 @@
 //! tokens come from the shared per-account broker) and retries the transient failures Google
 //! documents (429, 5xx, per-user rate limits) with exponential backoff.
 
+use super::retry::{retry_after_capped, AuthRetry, AuthStep};
 use crate::auth::AuthManager;
 use crate::errors::{OmarchyError, Result};
 use log::{debug, error, warn};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 use tokio::sync::Mutex;
 
 const MAX_ATTEMPTS: u32 = 4;
+
+/// Longest `Retry-After` honoured; a longer one is cut to this and the request is retried then.
+pub(crate) const RETRY_AFTER_CAP: Duration = Duration::from_secs(120);
+
+/// Time to wait before retrying a transient failure: Google's `Retry-After` on 429/503 when it
+/// was sent (already capped), else the exponential backoff for `attempt`.
+pub(crate) fn wait_before_retry(status: u16, retry_after: Option<Duration>, attempt: u32) -> Duration {
+    match (status, retry_after) {
+        (429 | 503, Some(d)) => d,
+        _ => Duration::from_secs(1 << (attempt - 1)),
+    }
+}
 
 pub struct GoogleApi {
     auth: Mutex<AuthManager>,
@@ -51,6 +64,12 @@ impl GoogleApi {
             return Err(OmarchyError::AuthError("No access token".to_string()));
         }
         Ok(token)
+    }
+
+    /// Drop the cached access token that Google rejected with 401; the next `token()` refreshes.
+    async fn invalidate(&self, rejected: &str) {
+        let mut auth = self.auth.lock().await;
+        auth.invalidate_access(rejected);
     }
 
     pub async fn is_token_valid(&self) -> Result<bool> {
@@ -96,10 +115,11 @@ impl GoogleApi {
         };
         let init_url = "https://gmail.googleapis.com/upload/gmail/v1/users/me/messages/send?uploadType=resumable";
         let mut attempt = 0;
+        let mut auth = AuthRetry::default();
         let session = loop {
             attempt += 1;
             let token = self.token().await?;
-            let resp = self.client.post(init_url).bearer_auth(token)
+            let resp = self.client.post(init_url).bearer_auth(&token)
                 .header("X-Upload-Content-Type", "message/rfc822")
                 .header("X-Upload-Content-Length", total.to_string())
                 .json(&init_body).send().await;
@@ -112,9 +132,15 @@ impl GoogleApi {
                 }
                 Ok(r) => {
                     let status = r.status();
+                    let retry_after = retry_after_capped(r.headers(), SystemTime::now(), RETRY_AFTER_CAP);
                     let text = r.text().await.unwrap_or_default();
+                    if auth.on_status(status.as_u16()) == AuthStep::InvalidateAndResend {
+                        self.invalidate(&token).await;
+                        attempt -= 1;
+                        continue;
+                    }
                     if attempt < MAX_ATTEMPTS && is_retryable(status.as_u16(), &text) {
-                        tokio::time::sleep(Duration::from_secs(1 << (attempt - 1))).await;
+                        tokio::time::sleep(wait_before_retry(status.as_u16(), retry_after, attempt)).await;
                         continue;
                     }
                     return Err(OmarchyError::HttpError(format!("Google API error: {}{} — {}", status, hint_for(status.as_u16(), &text), text)));
@@ -131,6 +157,7 @@ impl GoogleApi {
         let up_err = |m: String| OmarchyError::HttpError(format!("Google upload error: {}", m));
         let mut offset: u64 = 0;
         let mut failures = 0;
+        let mut chunk_auth = AuthRetry::default();
         loop {
             let len = (total - offset).min(CHUNK);
             let mut buf = vec![0u8; len as usize];
@@ -138,11 +165,16 @@ impl GoogleApi {
             file.read_exact(&mut buf).map_err(|e| up_err(e.to_string()))?;
             let range = if len == 0 { format!("bytes */{}", total) } else { format!("bytes {}-{}/{}", offset, offset + len - 1, total) };
             let token = self.token().await?;
-            let resp = self.client.put(&session).bearer_auth(token).header("Content-Range", range).body(buf).send().await;
+            let resp = self.client.put(&session).bearer_auth(&token).header("Content-Range", range).body(buf).send().await;
             let (status, headers, text) = match resp {
                 Ok(r) => { let s = r.status(); let h = r.headers().clone(); (s.as_u16(), h, r.text().await.unwrap_or_default()) }
                 Err(e) => (0, reqwest::header::HeaderMap::new(), e.to_string()),
             };
+            // A 401 means Google did not take this chunk: resend it once (the session stays valid).
+            if chunk_auth.on_status(status) == AuthStep::InvalidateAndResend {
+                self.invalidate(&token).await;
+                continue;
+            }
             match status {
                 200 | 201 => {
                     return serde_json::from_str(&text).map_err(|e| up_err(format!("bad JSON from Google: {}", e)));
@@ -151,10 +183,12 @@ impl GoogleApi {
                     // "Range: bytes=0-N" is what Google holds; none yet means start over.
                     offset = headers.get("range").and_then(|v| v.to_str().ok()).and_then(|v| v.rsplit('-').next()).and_then(|n| n.trim().parse::<u64>().ok()).map(|n| n + 1).unwrap_or(0);
                     failures = 0;
+                    chunk_auth = AuthRetry::default();
                 }
                 s if (s == 0 || s == 429 || (500..600).contains(&s)) && failures < MAX_ATTEMPTS => {
                     failures += 1;
-                    tokio::time::sleep(Duration::from_secs(1 << (failures - 1))).await;
+                    let retry_after = retry_after_capped(&headers, SystemTime::now(), RETRY_AFTER_CAP);
+                    tokio::time::sleep(wait_before_retry(s, retry_after, failures)).await;
                     // Ask what Google has; a finished upload answers 200/201 with the message.
                     let token = self.token().await?;
                     if let Ok(r) = self.client.put(&session).bearer_auth(token).header("Content-Range", format!("bytes */{}", total)).header("Content-Length", "0").body("").send().await {
@@ -179,10 +213,11 @@ impl GoogleApi {
 
     async fn send(&self, method: reqwest::Method, url: &str, body: Option<&serde_json::Value>) -> Result<serde_json::Value> {
         let mut attempt = 0;
+        let mut auth = AuthRetry::default();
         loop {
             attempt += 1;
             let token = self.token().await?;
-            let mut req = self.client.request(method.clone(), url).bearer_auth(token);
+            let mut req = self.client.request(method.clone(), url).bearer_auth(&token);
             if let Some(b) = body {
                 req = req.json(b);
             }
@@ -196,6 +231,7 @@ impl GoogleApi {
                 Err(e) => return Err(OmarchyError::HttpError(e.to_string())),
             };
             let status = resp.status();
+            let retry_after = retry_after_capped(resp.headers(), SystemTime::now(), RETRY_AFTER_CAP);
             let text = resp.text().await.map_err(|e| OmarchyError::HttpError(e.to_string()))?;
             if status.is_success() {
                 if text.trim().is_empty() {
@@ -203,8 +239,15 @@ impl GoogleApi {
                 }
                 return serde_json::from_str(&text).map_err(|e| OmarchyError::HttpError(format!("bad JSON from Google: {}", e)));
             }
+            if auth.on_status(status.as_u16()) == AuthStep::InvalidateAndResend {
+                // Not accepted, so nothing happened: resend once with a freshly refreshed token.
+                warn!("Google API 401 for {}: refreshing the access token and retrying once", url.split('?').next().unwrap_or(url));
+                self.invalidate(&token).await;
+                attempt -= 1;
+                continue;
+            }
             if attempt < MAX_ATTEMPTS && is_retryable(status.as_u16(), &text) {
-                let wait = Duration::from_secs(1 << (attempt - 1));
+                let wait = wait_before_retry(status.as_u16(), retry_after, attempt);
                 debug!("Google API {} — retrying in {:?}", status, wait);
                 tokio::time::sleep(wait).await;
                 continue;
@@ -227,6 +270,18 @@ mod tests {
         assert!(!is_retryable(403, r#"{"error":{"errors":[{"reason":"insufficientPermissions"}]}}"#));
         assert!(!is_retryable(401, ""));
         assert!(!is_retryable(404, ""));
+    }
+
+    #[test]
+    fn retry_after_wins_on_429_and_503_only() {
+        let ra = Some(Duration::from_secs(7));
+        assert_eq!(wait_before_retry(429, ra, 1), Duration::from_secs(7));
+        assert_eq!(wait_before_retry(503, ra, 3), Duration::from_secs(7));
+        // Other statuses ignore the header (none is sent for them in practice).
+        assert_eq!(wait_before_retry(500, ra, 2), Duration::from_secs(2));
+        // Absent header: exponential backoff 1, 2, 4 s.
+        assert_eq!(wait_before_retry(429, None, 1), Duration::from_secs(1));
+        assert_eq!(wait_before_retry(503, None, 3), Duration::from_secs(4));
     }
 
     #[test]

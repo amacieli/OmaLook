@@ -434,6 +434,16 @@ impl AuthManager {
         self.token_expires_at = self.broker.expires_at();
         Ok(token)
     }
+
+    /// The server rejected `rejected` with 401: drop it so the next `get_token` refreshes.
+    /// Returns whether the cached token was dropped (false: someone already replaced it).
+    pub fn invalidate_access(&mut self, rejected: &str) -> bool {
+        if self.access_token.as_deref() == Some(rejected) {
+            self.access_token = None;
+            self.token_expires_at = None;
+        }
+        self.broker.invalidate_access_if(rejected)
+    }
     
     /// Check if user is authenticated (has stored credentials; no network)
     pub fn is_authenticated(&self) -> bool {

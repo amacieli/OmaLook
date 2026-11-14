@@ -167,6 +167,12 @@ pub trait Refresher: Send + Sync {
 /// (instead of refreshing): long enough to finish the startup requests.
 const REUSE_MARGIN: Duration = Duration::from_secs(300);
 
+/// Refresh an in-memory access token once less than this much life is left. Expiry is computed
+/// from the local clock, so a clock set back after a refresh makes a dead token look fresh; a
+/// server 401 is the authority for that case (see `invalidate_access_if`), this margin covers the
+/// rest of the skew.
+const REFRESH_MARGIN: Duration = Duration::from_secs(300);
+
 fn unix_now() -> u64 {
     SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
@@ -286,7 +292,7 @@ impl TokenBroker {
         self.ensure_loaded(&mut st);
 
         if let (Some(tok), Some(exp)) = (&st.access, st.expires_at) {
-            if SystemTime::now() + Duration::from_secs(60) < exp {
+            if SystemTime::now() + REFRESH_MARGIN < exp {
                 return Ok(tok.clone());
             }
         }
@@ -329,6 +335,27 @@ impl TokenBroker {
                 st.last_error = msg.clone();
                 Err(OmarchyError::TokenError(format!("Token refresh failed: {}", msg)))
             }
+        }
+    }
+
+    /// Forget the cached access token `rejected` after the server answered 401 with it, so the next
+    /// `get_token` refreshes with the refresh token whatever the local clock says. Only clears when
+    /// `rejected` is still the cached one: if another caller has already refreshed, the new token
+    /// is kept. Stored refresh credentials are untouched.
+    pub fn invalidate_access_if(&self, rejected: &str) -> bool {
+        let mut st = self.lock();
+        if st.access.as_deref() == Some(rejected) {
+            st.access = None;
+            st.expires_at = None;
+            if let Some(c) = st.stored.as_mut() {
+                // A reused launch token must not come back from the stored copy either.
+                if c.access_token == rejected {
+                    c.access_token.clear();
+                }
+            }
+            true
+        } else {
+            false
         }
     }
 
@@ -443,6 +470,28 @@ mod tests {
         let s = Arc::new(MemoryStore::default());
         s.save("a", &CachedToken { access_token: "old".into(), refresh_token: Some("r1".into()), expires_at: None }).unwrap();
         s
+    }
+
+    #[test]
+    fn invalidate_forces_refresh_and_ignores_stale_rejections() {
+        let store = seeded();
+        let n = Arc::new(AtomicUsize::new(0));
+        let n2 = n.clone();
+        let r = FakeRefresher::new(move || {
+            let i = n2.fetch_add(1, Ordering::SeqCst);
+            RefreshOutcome::Ok(resp(&format!("t{}", i), Some("r2")))
+        });
+        let b = TokenBroker::new("a", store.clone(), r.clone());
+        assert_eq!(b.get_token().unwrap(), "t0");
+        // A 401 for a token that is no longer cached (someone already refreshed) drops nothing.
+        assert!(!b.invalidate_access_if("stale"));
+        assert_eq!(b.get_token().unwrap(), "t0");
+        assert_eq!(r.calls(), 1);
+        // A 401 for the cached token forces a refresh even though its expiry is far away.
+        assert!(b.invalidate_access_if("t0"));
+        assert_eq!(b.get_token().unwrap(), "t1");
+        assert_eq!(r.calls(), 2);
+        assert_eq!(store.load("a").unwrap().unwrap().refresh_token.as_deref(), Some("r2"));
     }
 
     #[test]

@@ -237,6 +237,8 @@ pub fn http_client() -> reqwest::Client {
 pub mod graph;
 pub use graph::GraphEmailProvider;
 
+pub mod retry;
+
 /// A draft as the provider stores it after a save.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RemoteDraft {
