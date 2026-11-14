@@ -50,7 +50,7 @@ pub mod calendar_tags;
 pub mod google_meet;
 pub mod online_meeting;
 pub mod attach_spool;
-pub mod picked;
+pub mod app;
 pub mod contacts_daemon;
 pub mod contacts_api;
 pub mod contacts_write;

@@ -9,7 +9,7 @@ use crate::Database;
 use log::warn;
 use serde_json::Value;
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 const MIB: usize = 1024 * 1024;
@@ -261,27 +261,22 @@ fn contact_photo_path(config_dir: &PathBuf, id: &str) -> String {
     serde_json::json!({ "ok": true, "path": "", "pending": true }).to_string()
 }
 
-/// POST /contacts/photo/set `{id, path}` — a JPEG file becomes the contact's photo (at once, not queued).
-/// The file must have been picked (`/files/register`, purpose photo).
+/// POST /contacts/photo/set `{id, handle}` — a JPEG file becomes the contact's photo (at once, not queued).
+/// The handle must have been issued for this file (`/files/register`, purpose photo).
 fn photo_set(c: &Ctx) -> Response {
     let body = match read_body(c, KIB64) {
         Ok(b) => b,
         Err(r) => return r,
     };
     let req = parse(&body);
-    Response::json(set_photo(c.config_dir, req["id"].as_str().unwrap_or(""), req["path"].as_str().unwrap_or("")))
+    Response::json(set_photo(c.config_dir, req["id"].as_str().unwrap_or(""), req["handle"].as_str().unwrap_or("")))
 }
 
-fn set_photo(config_dir: &PathBuf, id: &str, path: &str) -> String {
-    let expanded = if let Some(rest) = path.trim().strip_prefix("~/") {
-        std::env::var("HOME").map(|h| format!("{h}/{rest}")).unwrap_or_default()
-    } else {
-        path.trim().to_string()
-    };
-    if !crate::picked::allowed(crate::picked::Purpose::Photo, Path::new(&expanded)) {
+fn set_photo(config_dir: &PathBuf, id: &str, handle: &str) -> String {
+    let Some(path) = crate::app::files::resolve(crate::app::files::Purpose::Photo, handle) else {
         return err_json("pick the picture again");
-    }
-    let bytes = match std::fs::read(&expanded) {
+    };
+    let bytes = match std::fs::read(&path) {
         Ok(b) => b,
         Err(_) => return err_json("cannot read that file"),
     };
@@ -392,30 +387,24 @@ fn export(c: &Ctx) -> Response {
     })
 }
 
-/// POST /contacts/import `{path, account_id, folder_id}` — a vCard or CSV file into one folder.
-/// SECURITY: the path must have been picked for an import (`/files/register`, purpose import).
+/// POST /contacts/import `{handle, account_id, folder_id}` — a vCard or CSV file into one folder.
+/// SECURITY: the handle must have been issued for an import (`/files/register`, purpose import).
 fn import(c: &Ctx) -> Response {
     let body = match read_body(c, KIB64) {
         Ok(b) => b,
         Err(r) => return r,
     };
     let req = parse(&body);
-    let raw_path = req["path"].as_str().unwrap_or("").trim().to_string();
-    let expanded = if let Some(rest) = raw_path.strip_prefix("~/") {
-        std::env::var("HOME").map(|h| format!("{h}/{rest}")).unwrap_or(raw_path.clone())
-    } else {
-        raw_path.clone()
-    };
-    if !crate::picked::allowed(crate::picked::Purpose::Import, Path::new(&expanded)) {
+    let Some(path) = crate::app::files::resolve(crate::app::files::Purpose::Import, req["handle"].as_str().unwrap_or("")) else {
         return refused("pick the file again");
-    }
+    };
     let (account, folder) = (req["account_id"].as_str().unwrap_or("").to_string(), req["folder_id"].as_str().unwrap_or("").to_string());
     Response::json(contacts_write_call(c.config_dir, &account, |db| {
         let folder = if folder.is_empty() { db.default_contact_folder().ok().flatten().unwrap_or_default() } else { folder.clone() };
         if folder.is_empty() {
             return serde_json::json!({ "ok": false, "error": "this account's contact folder is not known yet" });
         }
-        crate::contacts_api::import(db, Path::new(&expanded), &folder, seq())
+        crate::contacts_api::import(db, &path, &folder, seq())
     }))
 }
 
@@ -692,18 +681,26 @@ mod tests {
     }
 
     #[test]
-    fn import_and_photo_set_refuse_an_unregistered_path() {
+    fn import_and_photo_set_refuse_a_path_or_an_unissued_handle() {
         let dir = temp_dir("refuse");
         let file = dir.join("unregistered.vcf");
         std::fs::write(&file, b"BEGIN:VCARD\r\nEND:VCARD\r\n").unwrap();
+        // A path with no handle is not an import: the body carries handles only now.
         let body = serde_json::json!({ "account_id": "acct-a", "folder_id": "f", "path": file.to_string_lossy() }).to_string();
         let r = run(&dir, post("/contacts/import", &body), import);
         assert_eq!(r.status(), 200);
+        assert_eq!(json_of(&r), serde_json::json!({ "ok": false, "error": "pick the file again" }));
+        // A forged handle is refused the same way.
+        let body = serde_json::json!({ "account_id": "acct-a", "folder_id": "f", "handle": "fh-00000000000000000000000000000000" }).to_string();
+        let r = run(&dir, post("/contacts/import", &body), import);
         assert_eq!(json_of(&r), serde_json::json!({ "ok": false, "error": "pick the file again" }));
 
         let body = serde_json::json!({ "id": "c1", "path": file.to_string_lossy() }).to_string();
         let r = run(&dir, post("/contacts/photo/set", &body), photo_set);
         assert_eq!(r.status(), 200);
+        assert_eq!(json_of(&r), serde_json::json!({ "ok": false, "error": "pick the picture again" }));
+        let body = serde_json::json!({ "id": "c1", "handle": "fh-00000000000000000000000000000000" }).to_string();
+        let r = run(&dir, post("/contacts/photo/set", &body), photo_set);
         assert_eq!(json_of(&r), serde_json::json!({ "ok": false, "error": "pick the picture again" }));
     }
 
