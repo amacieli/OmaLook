@@ -4,6 +4,7 @@
 //! for clients that spawn a command. Design: `notes/DESIGN-mcp-server.md`.
 //!
 //! - [`admin`]: the Settings → MCP page's backend (state + changes).
+//! - [`confirm`]: wider permissions wait for the UI's confirmation (R1.6).
 //! - [`policy`]: master switch → domain level → tool mode, fail-closed.
 //! - [`read`]: the read tools (cache only).
 //! - [`registry`]: the tool catalogue and handlers.
@@ -13,6 +14,7 @@
 
 pub mod admin;
 pub mod calendar_tools;
+pub mod confirm;
 pub mod policy;
 pub mod read;
 pub mod registry;

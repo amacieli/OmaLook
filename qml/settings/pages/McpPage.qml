@@ -24,7 +24,7 @@ SettingsPage {
   readonly property bool usable: bg && st.settings_readable !== false
 
   property string copied: ""        // what was last copied, for the confirmation line
-  property bool confirmRegen: false
+  property string copyWaiting: ""   // a copy the backend holds for the user's confirmation
 
   editing: false
 
@@ -61,7 +61,12 @@ SettingsPage {
   function copy(what) {
     if (!app) return
     page.copied = ""
-    app.mcpPost("/copy?what=" + what, function(ok) { page.copied = ok ? what : "" })
+    page.copyWaiting = ""
+    app.mcpPost("/copy", { what: what }, function(ok, st) {
+      // Only a copy the backend actually applied counts as copied; a pending one waits for confirmation.
+      if (ok && st && st.pending) page.copyWaiting = what
+      else page.copied = ok ? what : ""
+    })
   }
 
   readonly property var domainInfo: [
@@ -140,7 +145,7 @@ SettingsPage {
         : page.st.listening ? "On. Listening on " + page.st.http_url + " and through the omalook mcp command."
         : "On. Starting…"
       checked: page.st.enabled === true
-      onClicked: page.app.mcpPost("/enabled?value=" + (page.st.enabled ? "false" : "true"))
+      onClicked: page.app.mcpPost("/enabled", { value: !page.st.enabled })
       onActiveFocusChanged: if (activeFocus) page.reveal(master)
     }
   }
@@ -189,15 +194,10 @@ SettingsPage {
       }
       Button {
         id: regen
-        text: page.confirmRegen ? "Press again to confirm" : "Regenerate token"
+        text: "Regenerate token"
         bordered: true; focusable: true; enabled: page.usable
-        onClicked: {
-          if (!page.confirmRegen) { page.confirmRegen = true; regenReset.restart(); return }
-          page.confirmRegen = false
-          page.app.mcpPost("/token/regenerate")
-        }
-        onActiveFocusChanged: { if (activeFocus) page.reveal(regen); else page.confirmRegen = false }
-        Timer { id: regenReset; interval: 5000; onTriggered: page.confirmRegen = false }
+        onClicked: page.app.mcpPost("/token/regenerate", {})
+        onActiveFocusChanged: if (activeFocus) page.reveal(regen)
       }
     }
 
@@ -209,12 +209,12 @@ SettingsPage {
       text: page.copied === "token" ? "Token copied to the clipboard." : "Copied to the clipboard."
     }
     UiText {
-      visible: page.confirmRegen
+      visible: page.copyWaiting !== "" && page.st.pending !== null && page.st.pending !== undefined
       width: parent.width
       wrapMode: Text.WordWrap
       dim: true
       font.pixelSize: Style.font.caption
-      text: "Regenerating cuts off every app that uses the URL and token. Apps using the omalook mcp command pick the new token up by themselves."
+      text: "Confirm the request to copy it. Nothing is copied until you allow it."
     }
   }
 
@@ -247,7 +247,7 @@ SettingsPage {
         label: (modelData.email || modelData.id)
         description: modelData.provider + (modelData.signed_in ? "" : " (signed out)")
         checked: page.accountAllowed(modelData.id)
-        onClicked: page.app.mcpPost("/account?id=" + encodeURIComponent(modelData.id) + "&value=" + (checked ? "false" : "true"))
+        onClicked: page.app.mcpPost("/account", { id: modelData.id, value: !checked })
         onActiveFocusChanged: if (activeFocus) page.reveal(this)
       }
     }
@@ -268,7 +268,7 @@ SettingsPage {
       focusable: page.usable
       options: [{ value: "locked", label: "Locked" }, { value: "read_only", label: "Read only" }, { value: "approval", label: "Read + write, asking first" }]
       value: page.st.preset || "locked"
-      onChanged: function(v) { page.app.mcpPost("/preset?name=" + v) }
+      onChanged: function(v) { page.app.mcpPost("/preset", { name: v }) }
       onActiveFocusChanged: if (activeFocus) page.reveal(presets)
     }
     UiText {
@@ -314,7 +314,7 @@ SettingsPage {
               ? [{ value: "off", label: "Off" }, { value: "read", label: "Read" }]
               : [{ value: "off", label: "Off" }, { value: "read", label: "Read only" }, { value: "write", label: "Read + write" }]
             value: dom.level
-            onChanged: function(v) { page.app.mcpPost("/domain?domain=" + dom.modelData.id + "&level=" + v) }
+            onChanged: function(v) { page.app.mcpPost("/domain", { domain: dom.modelData.id, level: v }) }
             onActiveFocusChanged: if (activeFocus) page.reveal(domChips)
           }
         }
@@ -352,7 +352,7 @@ SettingsPage {
               defaultMode: modelData.default
               implemented: modelData.implemented
               enabled: page.usable
-              onModeChosen: function(m) { page.app.mcpPost("/tool?name=" + modelData.name + "&mode=" + (m === modelData.default ? "default" : m)) }
+              onModeChosen: function(m) { page.app.mcpPost("/tool", { name: modelData.name, mode: m === modelData.default ? "default" : m }) }
               onFocusReached: function(it) { page.reveal(it) }
             }
           }

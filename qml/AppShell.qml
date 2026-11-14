@@ -224,9 +224,9 @@ FocusScope {
     opened: appState.pendingConfirm !== null
     message: appState.pendingConfirm ? appState.pendingConfirm.message : ""
     confirmText: appState.pendingConfirm ? appState.pendingConfirm.confirmText : "Confirm"
-    // Enter must never destroy mail by accident: the dialog opens on Cancel.
-    onOpenedChanged: if (opened) selectedIndex = 0
-    onCanceled: appState.pendingConfirm = null
+    // Enter must never destroy mail by accident: the dialog opens on Cancel unless the question says otherwise.
+    onOpenedChanged: if (opened) selectedIndex = (appState.pendingConfirm && appState.pendingConfirm.selectedIndex !== undefined) ? appState.pendingConfirm.selectedIndex : 0
+    onCanceled: { var c = appState.pendingConfirm; appState.pendingConfirm = null; if (c && c.cancel) c.cancel() }
     onConfirmed: { var c = appState.pendingConfirm; appState.pendingConfirm = null; if (c) c.run() }
   }
 

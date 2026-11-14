@@ -1049,6 +1049,17 @@ fn read_post_body(stream: &mut std::net::TcpStream, initial: &[u8], limit: usize
     String::from_utf8(data[header_end..header_end + len].to_vec()).map_err(|_| "message is not valid UTF-8".into())
 }
 
+/// JSON body for the Settings -> MCP routes. GET has no body (Null). POST: read it with
+/// `read_post_body` (64 KiB); an empty or unparsable body is Null, which the handlers answer as
+/// "missing ...". A read error is returned as the message to show.
+fn mcp_json_body(stream: &mut std::net::TcpStream, method: &str, initial: &[u8]) -> Result<serde_json::Value, String> {
+    if method != "POST" {
+        return Ok(serde_json::Value::Null);
+    }
+    let text = read_post_body(stream, initial, 64 * 1024)?;
+    Ok(serde_json::from_str::<serde_json::Value>(&text).unwrap_or(serde_json::Value::Null))
+}
+
 /// POST /files/register — `{"purpose": "attach"|"photo"|"import", "paths": [...]}`. Each path the user
 /// picked, pasted, dropped or typed joins the allow-list (`picked::register`). Answers
 /// `{ok, files, refused}`; a refused entry echoes the path as sent and names no other file.
@@ -3011,7 +3022,7 @@ fn route_http_request(config_dir: &PathBuf, mut stream: std::net::TcpStream, raw
                 let req_t = std::time::Instant::now();
                 // ── GET /sync/serial — cheap change counter the UI polls (no DB access)
                 if first_line.contains("GET /sync/serial") {
-                    let body = format!("{{\"mail\":{},\"sms\":{}}}", omalook::sync_state::mail_serial(), omalook::sync_state::sms_serial());
+                    let body = format!("{{\"mail\":{},\"sms\":{},\"mcp_pending\":{}}}", omalook::sync_state::mail_serial(), omalook::sync_state::sms_serial(), omalook::mcp::confirm::serial());
                     let response = format!(
                         "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                         body.len(), body
@@ -4089,11 +4100,23 @@ fn route_http_request(config_dir: &PathBuf, mut stream: std::net::TcpStream, raw
                 if first_line.contains(" /settings/mcp") {
                     let method = if first_line.starts_with("POST") { "POST" } else { "GET" };
                     let path = first_line.split_whitespace().nth(1).unwrap_or("").split('?').next().unwrap_or("");
-                    let line = first_line.to_string();
+                    // Settings travel in the JSON body only; the query string is never read.
+                    let body_json = match mcp_json_body(&mut stream, method, raw) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            let body = serde_json::json!({ "error": e }).to_string();
+                            let response = format!(
+                                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                                body.len(), body
+                            );
+                            let _ = stream.write_all(response.as_bytes());
+                            return;
+                        }
+                    };
                     let dir = config_dir.clone();
                     let path = path.to_string();
                     std::thread::spawn(move || {
-                        let body = omalook::mcp::admin::handle(&dir, method, &path, &|k| query_param(&line, k))
+                        let body = omalook::mcp::admin::handle(&dir, method, &path, &body_json)
                             .unwrap_or_else(|| "{\"error\":\"unknown route\"}".to_string());
                         let response = format!(
                             "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
@@ -4107,21 +4130,12 @@ fn route_http_request(config_dir: &PathBuf, mut stream: std::net::TcpStream, raw
                 // ── GET|POST /settings/background?enabled=true|false — keep the backend running
                 // after the UI window closes. Takes effect when the window closes; no restart. ──
                 if first_line.contains("GET /settings/background") || first_line.contains("POST /settings/background") {
-                    let settings_path = config_dir.join("settings.toml");
-                    let enabled = if first_line.contains("POST /settings/background") {
-                        let cur = omalook::settings::read_run_in_background(&settings_path);
-                        let wanted = query_param(first_line, "enabled").map(|v| v == "true").unwrap_or(cur);
-                        match omalook::settings::write_run_in_background(&settings_path, wanted) {
-                            Ok(stored) => stored,
-                            Err(e) => {
-                                warn!("POST /settings/background: could not save: {}", e);
-                                cur
-                            }
-                        }
-                    } else {
-                        omalook::settings::read_run_in_background(&settings_path)
+                    let method = if first_line.starts_with("POST") { "POST" } else { "GET" };
+                    let body_json = match mcp_json_body(&mut stream, method, raw) {
+                        Ok(v) => v,
+                        Err(e) => serde_json::json!({ "error": e }),
                     };
-                    let body = serde_json::json!({ "run_in_background": enabled }).to_string();
+                    let body = omalook::mcp::admin::handle_background(config_dir, method, &body_json);
                     let response = format!(
                         "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                         body.len(), body

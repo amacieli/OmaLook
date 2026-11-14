@@ -745,11 +745,11 @@ Item {
 
   // --------------------------------------------------------- backend calls
   // AppState's own calls also track whether the backend answers (backendOnline).
-  function request(method, path, onDone, body) {
+  function request(method, path, onDone, body, headers) {
     return Backend.request(method, path, function(xhr) {
       root.backendOnline = xhr.status !== 0
       if (onDone) onDone(xhr)
-    }, body)
+    }, body, headers)
   }
 
   // Refresh (button, F5): ask the backend to poll the provider now. Show the cache at once;
@@ -1644,12 +1644,15 @@ Item {
   }
 
   function setRunInBackground(on) {
-    var before = runInBackground
-    runInBackground = on
-    request("POST", "/settings/background?enabled=" + (on ? "true" : "false"), function(xhr) {
-      if (xhr.status !== 200) { runInBackground = before; return }
-      try { runInBackground = JSON.parse(xhr.responseText).run_in_background === true } catch (e) { runInBackground = before }
-    })
+    request("POST", "/settings/background", function(xhr) {
+      var r = null
+      try { r = JSON.parse(xhr.responseText) } catch (e) {}
+      if (xhr.status !== 200 || !r) { notify("Not changed: backend not reachable"); return }
+      // The stored value: a pending change (turning it on while MCP is enabled) leaves it as it was.
+      runInBackground = r.run_in_background === true
+      if (r.error) notify("Not changed: " + r.error)
+      if (r.pending) showMcpConfirm(r.pending)
+    }, JSON.stringify({ enabled: on === true }), { "Content-Type": "application/json" })
   }
 
   // ---- MCP server (Settings -> MCP) --------------------------------------------------------
@@ -1670,17 +1673,61 @@ Item {
     } catch (e) { console.log("[MCP] parse error:", e) }
   }
 
-  function loadMcp() {
-    request("GET", "/settings/mcp", function(xhr) { if (xhr.status === 200) applyMcp(xhr.responseText) })
-  }
-
-  // path is the part after /settings/mcp, query included, e.g. "/domain?domain=mail&level=read".
-  function mcpPost(path, done) {
-    request("POST", "/settings/mcp" + path, function(xhr) {
+  function loadMcp(done) {
+    request("GET", "/settings/mcp", function(xhr) {
       if (xhr.status === 200) applyMcp(xhr.responseText)
-      if (done) done(xhr.status === 200 && mcpError === "")
+      if (done) done(xhr.status === 200 ? mcp : null)
     })
   }
+
+  // route is the part after /settings/mcp, e.g. "/domain"; args is the JSON body, e.g. {domain, level}.
+  // done(ok, state): state is the MCP state the reply carried (its pending field tells whether the
+  // change is waiting for the user's confirmation rather than applied).
+  function mcpPost(route, args, done) {
+    request("POST", "/settings/mcp" + route, function(xhr) {
+      if (xhr.status === 200) applyMcp(xhr.responseText)
+      if (mcp.pending) showMcpConfirm(mcp.pending)
+      if (done) done(xhr.status === 200 && mcpError === "", mcp)
+    }, JSON.stringify(args || {}), { "Content-Type": "application/json" })
+  }
+
+  // Ids the user has answered (confirm or cancel), so a stale report of the same pending change
+  // does not bring its dialog back.
+  property var _mcpAnswered: []
+  // A wider-permission question that arrived while another question was open; asked when that one closes.
+  property var _mcpDeferred: null
+  onPendingConfirmChanged: if (pendingConfirm === null && _mcpDeferred) { _mcpDeferred = null; _checkMcpPending() }
+
+  // A wider permission waiting for the user (from this UI or from an AI client via the backend):
+  // p = { id, summary: [string] }. Opens the global confirm on Cancel; Enter alone never allows.
+  function showMcpConfirm(p) {
+    if (!p || !p.id) return
+    if (_mcpAnswered.indexOf(p.id) >= 0) return
+    if (pendingConfirm && pendingConfirm.mcpId === p.id) return
+    // Another question (a permanent delete, an unsaved draft) is open: never replace it; ask once it is answered.
+    if (pendingConfirm && !pendingConfirm.mcpId) { _mcpDeferred = p; return }
+    _mcpDeferred = null
+    var lines = (p.summary || []).slice(0, 8)
+    var text = "Allow AI agents more access?"
+    for (var i = 0; i < lines.length; i++) text += "\n\u2022 " + String(lines[i])
+    pendingConfirm = {
+      message: text,
+      confirmText: "Allow",
+      selectedIndex: 0,
+      mcpId: p.id,
+      run: function() { _mcpAnswer(p.id, "/confirm") },
+      cancel: function() { _mcpAnswer(p.id, "/cancel") }
+    }
+  }
+
+  function _mcpAnswer(id, route) {
+    _mcpAnswered = _mcpAnswered.concat([id]).slice(-20)
+    mcpPost(route, { id: id }, function(ok) {
+      if (!ok && route === "/confirm") notify("Not changed: " + (mcpError || "backend not reachable"))
+      loadBackgroundSettings()   // a confirmed background change alters the stored value
+    })
+  }
+
 
   // Messages handed to the backend and not yet dismissed:
   // [{ id, message, sendAt (ms), state: pending|sending|sent|failed, error, doneAt }]
@@ -1978,6 +2025,7 @@ Item {
   // this tiny endpoint (no DB access) makes fresh mail appear within one tick of being
   // stored. Fast (500 ms) for the first 90 s after launch while the stages land, then 3 s.
   property int _syncSerial: -1
+  property int _mcpPendingSerial: -1   // last mcp_pending the sync serial reported
   // SMS: bumped when the backend's sms serial moves; the SMS view reloads on it.
   property int smsRev: 0
   property int _smsSerial: -1
@@ -1994,8 +2042,17 @@ Item {
   function checkSyncSerial() {
     request("GET", "/sync/serial", function(xhr) {
       if (xhr.status !== 200) return
-      var n = -1, sms = -1
-      try { var j = JSON.parse(xhr.responseText); n = j.mail; sms = (j.sms === undefined ? -1 : j.sms) } catch (e) { return }
+      var n = -1, sms = -1, mp = -1
+      try {
+        var j = JSON.parse(xhr.responseText)
+        n = j.mail; sms = (j.sms === undefined ? -1 : j.sms)
+        mp = (j.mcp_pending === undefined ? -1 : j.mcp_pending)
+      } catch (e) { return }
+      // A wider MCP permission started anywhere (an AI client, another window) shows up here.
+      if (mp !== root._mcpPendingSerial) {
+        root._mcpPendingSerial = mp
+        root._checkMcpPending()
+      }
       if (sms !== root._smsSerial) { root._smsSerial = sms; root.smsRev++ }
       if (root._syncSerial === -1) { root._syncSerial = n; if (n === 0) return }
       else if (n === root._syncSerial) return
@@ -2004,6 +2061,16 @@ Item {
       root.refreshFolderCounts()
       if (messageModelObj.count === 0) root.loadMessages()
       else root.refreshMessages()
+    })
+  }
+
+  // The MCP pending state changed: fetch it, open the confirm for a waiting change, or close the
+  // open one when the change was answered or expired elsewhere.
+  function _checkMcpPending() {
+    loadMcp(function(st) {
+      if (!st) return
+      if (st.pending) showMcpConfirm(st.pending)
+      else if ("pending" in st) { _mcpDeferred = null; if (pendingConfirm && pendingConfirm.mcpId) pendingConfirm = null }
     })
   }
 
@@ -2500,7 +2567,9 @@ Item {
     }
   }
 
-  // Pending yes/no question (permanent delete): { message, confirmText, run }, or null.
+  // Pending yes/no question: { message, confirmText, run, [cancel], [selectedIndex], [mcpId] }, or null.
+  // run on confirm; cancel (optional) on Cancel/Escape; selectedIndex 0 = Cancel (default 1 = confirm);
+  // mcpId marks a backend MCP permission confirm (see showMcpConfirm).
   property var pendingConfirm: null
 
   function _noun(n) { return n === 1 ? "1 message" : n + " messages" }
