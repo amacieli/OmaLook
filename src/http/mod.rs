@@ -1,12 +1,15 @@
 //! The UI's loopback HTTP server plumbing (roadmap R1): request reading (`request`), the
-//! connection cap and the dispatch policy. Routes still live in `main.rs` until the typed router (R3.1).
+//! connection cap, the guard, and the typed router (`router`, `routes`, R3.1). Routes not yet in
+//! the table still run through the old chain in `main.rs` under `dispatch_guard`.
 
 pub mod guard;
 pub mod request;
+pub mod router;
+pub mod routes;
 pub mod session;
 
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::MutexGuard;
 
 /// Most connections handled at once. Beyond this a new connection gets `503` straight away instead
 /// of waiting, so a pile of stuck clients cannot hold the accept loop.
@@ -44,7 +47,6 @@ impl Drop for Slot {
 /// Routes run one at a time, as they did on the old single accept thread, so read-modify-write of
 /// settings.toml and similar keep their old guarantees. Reading the request happens before this
 /// lock (a slow or idle client blocks nobody), and the read-only routes in `runs_unlocked` skip it.
-static DISPATCH: Mutex<()> = Mutex::new(());
 
 /// Read-only routes that may run beside anything else: the UI's poll, perf marks, and the routes that
 /// wait on a provider or scan the cache inline (ARCH-H1), which used to hold up every other request.
@@ -76,7 +78,7 @@ pub fn dispatch_guard(method: &str, path: &str) -> Option<MutexGuard<'static, ()
     if runs_unlocked(method, path) {
         None
     } else {
-        Some(DISPATCH.lock().unwrap_or_else(|e| e.into_inner()))
+        Some(router::exclusive())
     }
 }
 

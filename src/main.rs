@@ -13,42 +13,13 @@ use std::net::TcpListener;
 use std::sync::Arc;
 use tokio::runtime::Runtime;
 
-/// Process-wide sync scheduler (one mail + one calendar thread per signed-in account).
-static SCHEDULER: std::sync::OnceLock<Arc<omalook::scheduler::SyncScheduler>> = std::sync::OnceLock::new();
+/// Process-wide sync scheduler (one mail + one calendar thread per signed-in account); lives in
+/// the library so moved route groups reach it too.
+use omalook::scheduler::GLOBAL as SCHEDULER;
 
-/// Value of `?key=` in a request line (percent-decoded).
+/// Value of `?key=` in a request line (percent-decoded; empty counts as absent).
 fn query_param(first_line: &str, key: &str) -> Option<String> {
-    let needle = format!("{}=", key);
-    first_line.split_once('?').and_then(|(_, q)| {
-        q.split(|c| c == ' ' || c == '\r' || c == '\n').next().and_then(|q| {
-            q.split('&').find_map(|kv| kv.strip_prefix(needle.as_str()).map(url_decode))
-        })
-    }).filter(|v| !v.is_empty())
-}
-
-/// Percent-decode a URL query parameter value (e.g. %3D → =, %2F → /)
-fn url_decode(s: &str) -> String {
-    let bytes = s.as_bytes();
-    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let Ok(hex) = std::str::from_utf8(&bytes[i + 1..i + 3]) {
-                if let Ok(byte) = u8::from_str_radix(hex, 16) {
-                    out.push(byte);
-                    i += 3;
-                    continue;
-                }
-            }
-        } else if bytes[i] == b'+' {
-            out.push(b' ');
-            i += 1;
-            continue;
-        }
-        out.push(bytes[i]);
-        i += 1;
-    }
-    String::from_utf8_lossy(&out).into_owned()
+    omalook::http::router::query_value(first_line, key)
 }
 
 fn main() {
@@ -2809,7 +2780,7 @@ fn messages_response(config_dir: &PathBuf, first_line: &str, req_t: std::time::I
                                 .next()
                                 .unwrap_or("");
                             // URL-decode: folder IDs contain = and / which QML encodeURIComponent encodes
-                            url_decode(raw)
+                            omalook::http::router::url_decode(raw)
                         })
                         .filter(|s| !s.is_empty());
 
@@ -3017,8 +2988,24 @@ fn handle_http_connection(config_dir: &PathBuf, port: u16, token: &str, mut stre
         let _ = stream.write_all(omalook::http::error_response(why.status()).as_bytes());
         return;
     }
-    let _guard = omalook::http::dispatch_guard(&req.method, req.path());
-    route_http_request(config_dir, stream, &req.raw);
+    if req.path() != "/perf" {
+        omalook::perf::mark(&format!("http <- {}", omalook::perf::route_name(&req.first_line())));
+    }
+    use omalook::http::router::{self, Found};
+    match router::table().find(&req.method, req.path()) {
+        Found::Route(route) => {
+            let _guard = router::lock_for(route);
+            let (bytes, after) = (route.handler)(&router::Ctx::new(config_dir, &req)).into_parts();
+            let _ = stream.write_all(&bytes);
+            drop(stream);
+            if let Some(f) = after { f(); }
+        }
+        // Not in the table yet: the old chain (R3.1 moves it over group by group).
+        Found::WrongMethod | Found::NotFound => {
+            let _guard = omalook::http::dispatch_guard(&req.method, req.path());
+            route_http_request(config_dir, stream, &req.raw);
+        }
+    }
 }
 
 /// The route chain (substring matches on the request line, as before R1.2). `raw` is the whole
@@ -3031,118 +3018,6 @@ fn route_http_request(config_dir: &PathBuf, mut stream: std::net::TcpStream, raw
                 let request = String::from_utf8_lossy(raw);
                 let first_line = request.lines().next().unwrap_or("");
                 let req_t = std::time::Instant::now();
-                // ── GET /sync/health — per-thread supervisor state (restarts, last panic text). No DB access.
-                if first_line.contains("GET /sync/health") {
-                    let body = omalook::supervisor::health_json().to_string();
-                    let response = format!(
-                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
-                        body.len(), body
-                    );
-                    let _ = stream.write_all(response.as_bytes());
-                    return;
-                }
-                // ── GET /sync/serial — cheap change counter the UI polls (no DB access)
-                if first_line.contains("GET /sync/serial") {
-                    let body = format!("{{\"mail\":{},\"sms\":{},\"mcp_pending\":{},\"sync_health\":{}}}", omalook::sync_state::mail_serial(), omalook::sync_state::sms_serial(), omalook::mcp::confirm::serial(), omalook::supervisor::health_serial());
-                    let response = format!(
-                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
-                        body.len(), body
-                    );
-                    let _ = stream.write_all(response.as_bytes());
-                    return;
-                }
-                if !first_line.contains("POST /perf") {
-                    omalook::perf::mark(&format!("http <- {}", omalook::perf::route_name(first_line)));
-                }
-
-                // ── POST /perf?m=label — a mark from the QML side (shares this timeline)
-                if first_line.contains("POST /perf") {
-                    if let Some(m) = query_param(first_line, "m") {
-                        omalook::perf::mark(&format!("UI: {}", m));
-                    }
-                    let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
-                    return;
-                }
-
-                // ── GET /folders — return cached folder list as JSON ──────────────
-                if first_line.contains("GET /folders") {
-                    let db_path = config_dir.join("messages.db");
-                    let body = match rusqlite::Connection::open(&db_path) {
-                        Ok(conn) => {
-                            // ?account=<id or email> limits to one account; every row says which
-                            // account (id + email address) it belongs to.
-                            let account = query_param(first_line, "account");
-                            let mut stmt = conn.prepare(
-                                "SELECT f.id, f.display_name, f.unread_item_count, f.well_known_name, f.total_item_count, \
-                                        COALESCE(f.account_id, ''), COALESCE(a.email, '') \
-                                 FROM folders f LEFT JOIN accounts a ON a.id = f.account_id \
-                                 WHERE (?1 IS NULL OR f.account_id = ?1 OR lower(a.email) = lower(?1)) \
-                                 ORDER BY f.account_id ASC, f.sort_order ASC, f.display_name ASC"
-                            ).unwrap();
-                            let rows: Vec<String> = stmt.query_map(rusqlite::params![account], |row| {
-                                let id: String = row.get(0)?;
-                                let display_name: String = row.get(1)?;
-                                let unread: i32 = row.get::<_, Option<i32>>(2)?.unwrap_or(0);
-                                let well_known: String = row.get::<_, Option<String>>(3)?.unwrap_or_default();
-                                let total: i32 = row.get::<_, Option<i32>>(4)?.unwrap_or(0);
-                                let account_id: String = row.get(5)?;
-                                let account_email: String = row.get(6)?;
-                                Ok(format!(
-                                    "{{\"id\":{},\"display_name\":{},\"unread_item_count\":{},\"well_known_name\":{},\"total_item_count\":{},\"account_id\":{},\"account_email\":{}}}",
-                                    serde_json::to_string(&id).unwrap(),
-                                    serde_json::to_string(&display_name).unwrap(),
-                                    unread,
-                                    serde_json::to_string(&well_known).unwrap(),
-                                    total,
-                                    serde_json::to_string(&account_id).unwrap(),
-                                    serde_json::to_string(&account_email).unwrap(),
-                                ))
-                            }).unwrap()
-                            .filter_map(|r| r.ok())
-                            .collect();
-                            // "<Kind> - all accounts" rows go first: one per folder kind that two or
-                            // more accounts have. Their account_id is empty, so move targets skip them.
-                            let mut all_rows: Vec<String> = Vec::new();
-                            if account.is_none() {
-                                if let Ok(aggs) = omalook::db::all_accounts_folders(&conn) {
-                                    for a in aggs {
-                                        all_rows.push(format!(
-                                            "{{\"id\":{},\"display_name\":{},\"unread_item_count\":{},\"well_known_name\":{},\"total_item_count\":{},\"account_id\":\"\",\"account_email\":\"All accounts\",\"all_accounts\":true}}",
-                                            serde_json::to_string(&format!("all:{}", a.well_known_name)).unwrap(),
-                                            serde_json::to_string(omalook::db::all_accounts_label(&a.well_known_name)).unwrap(),
-                                            a.unread_item_count,
-                                            serde_json::to_string(&a.well_known_name).unwrap(),
-                                            a.total_item_count,
-                                        ));
-                                    }
-                                }
-                            }
-                            all_rows.extend(rows);
-                            format!("[{}]", all_rows.join(","))
-                        }
-                        Err(e) => {
-                            warn!("GET /folders: DB open failed: {}", e);
-                            "[]".to_string()
-                        }
-                    };
-                    let response = format!(
-                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
-                        body.len(), body
-                    );
-                    let _ = stream.write_all(response.as_bytes());
-                    return;
-                }
-
-                // ── GET /accounts — configured accounts and whether each is signed in ──
-                if first_line.contains("GET /accounts") {
-                    let body = omalook::account_ops::accounts_json(config_dir);
-                    let response = format!(
-                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
-                        body.len(), body
-                    );
-                    let _ = stream.write_all(response.as_bytes());
-                    return;
-                }
 
                 // ── SMS cache (KDE Connect). Reads: GET /sms/threads?device=&limit=,
                 // GET /sms/messages?thread=&device=&before=&limit=, GET /sms/unread.
@@ -3151,23 +3026,6 @@ fn route_http_request(config_dir: &PathBuf, mut stream: std::net::TcpStream, raw
                 if first_line.contains(" /sms/") {
                     let body = if first_line.contains("POST /sms/send") { sms_send_response(config_dir, &mut stream, raw) }
                                else { sms_route(config_dir, first_line) };
-                    let response = format!(
-                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
-                        body.len(), body
-                    );
-                    let _ = stream.write_all(response.as_bytes());
-                    return;
-                }
-
-                // ── GET /tasks[?account=ID] — cached To Do tasks of every account (JSON array). ──
-                if first_line.contains("GET /tasks") {
-                    let body = match Database::open(config_dir.join("messages.db").to_str().unwrap_or("messages.db")) {
-                        Ok(db) => match db.query_tasks(query_param(first_line, "account").as_deref()) {
-                            Ok(rows) => serde_json::to_string(&rows).unwrap_or_else(|_| "[]".to_string()),
-                            Err(e) => { warn!("GET /tasks: query failed: {}", e); "[]".to_string() }
-                        },
-                        Err(e) => { warn!("GET /tasks: DB open failed: {}", e); "[]".to_string() }
-                    };
                     let response = format!(
                         "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                         body.len(), body

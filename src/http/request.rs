@@ -216,6 +216,43 @@ pub fn read_request<S: TimedStream>(stream: &mut S, limits: &Limits) -> Result<R
     })
 }
 
+/// In-memory stream for tests elsewhere in the crate (router/guard tables): reads `input`, then EOF.
+#[cfg(test)]
+pub struct MemStream {
+    input: std::io::Cursor<Vec<u8>>,
+    pub output: Vec<u8>,
+}
+
+#[cfg(test)]
+impl Read for MemStream {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.input.read(buf)
+    }
+}
+
+#[cfg(test)]
+impl Write for MemStream {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.output.extend_from_slice(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+impl TimedStream for MemStream {
+    fn set_timeout(&mut self, _: Duration) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+pub fn test_stream(input: Vec<u8>) -> MemStream {
+    MemStream { input: std::io::Cursor::new(input), output: Vec::new() }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

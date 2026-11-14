@@ -85,6 +85,14 @@ impl StopSignal {
     }
 }
 
+/// The process's scheduler, set once by `main` after start-up; route handlers read it.
+pub static GLOBAL: std::sync::OnceLock<std::sync::Arc<SyncScheduler>> = std::sync::OnceLock::new();
+
+/// Whether `account` has running sync threads (false before start-up finished).
+pub fn is_running(account: &str) -> bool {
+    GLOBAL.get().map(|s| s.is_running(account)).unwrap_or(false)
+}
+
 pub struct SyncScheduler {
     db_path: PathBuf,
     settings_path: PathBuf,
