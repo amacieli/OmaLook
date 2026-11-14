@@ -43,6 +43,42 @@ pub(crate) fn schema_runs_on_this_thread() -> usize {
     SCHEMA_RUNS_HERE.with(|c| c.get())
 }
 
+thread_local! {
+    /// This thread's connections per database file (R3.3). Weak: a connection lives while a handle
+    /// on this thread uses it and closes with the last handle, as before. Overlapping handles for
+    /// the same file share it; a replaced file gets a fresh one.
+    static THREAD_CONNS: std::cell::RefCell<std::collections::HashMap<FileKey, std::rc::Weak<Connection>>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// The connection for `path` on this thread: the cached one while the file's identity still matches,
+/// otherwise a fresh one (PRAGMAs set here; a cached connection already has them).
+fn shared_connection(path: &str) -> Result<std::rc::Rc<Connection>> {
+    if let Some(key) = FileKey::of(path) {
+        if let Some(conn) = THREAD_CONNS.with(|m| m.borrow().get(&key).and_then(|w| w.upgrade())) {
+            return Ok(conn);
+        }
+    }
+    let conn = Connection::open(path).map_err(|e| OmarchyError::DatabaseError(e))?;
+    // WAL: background sync writers no longer block the HTTP server's readers (and the
+    // UI stays responsive during a crawl); NORMAL is the recommended pairing with WAL.
+    // busy_timeout covers the brief moments two writers collide.
+    conn.busy_timeout(std::time::Duration::from_secs(10)).map_err(OmarchyError::DatabaseError)?;
+    let _ = conn.pragma_update(None, "journal_mode", "WAL");
+    let _ = conn.pragma_update(None, "synchronous", "NORMAL");
+    let conn = std::rc::Rc::new(conn);
+    // `:memory:` and `file:` URIs have no key and are never shared.
+    if let Some(key) = FileKey::of(path) {
+        THREAD_CONNS.with(|m| {
+            let mut m = m.borrow_mut();
+            // Drop the entry of the file this path used to be (a different inode), and dead ones.
+            m.retain(|k, w| k.path != key.path && w.strong_count() > 0);
+            m.insert(key, std::rc::Rc::downgrade(&conn));
+        });
+    }
+    Ok(conn)
+}
+
 impl Database {
     /// Open or create database at the given path
     pub fn open(path: &str) -> Result<Self> {
@@ -56,15 +92,7 @@ impl Database {
     pub fn open_for_account(path: &str, account_id: &str) -> Result<Self> {
         debug!("Opening database at: {} (account {})", path, account_id);
         
-        let conn = Connection::open(path)
-            .map_err(|e| OmarchyError::DatabaseError(e))?;
-        
-        // WAL: background sync writers no longer block the HTTP server's readers (and the
-        // UI stays responsive during a crawl); NORMAL is the recommended pairing with WAL.
-        // busy_timeout covers the brief moments two writers collide.
-        conn.busy_timeout(std::time::Duration::from_secs(10)).map_err(OmarchyError::DatabaseError)?;
-        let _ = conn.pragma_update(None, "journal_mode", "WAL");
-        let _ = conn.pragma_update(None, "synchronous", "NORMAL");
+        let conn = shared_connection(path)?;
 
         let db = Self { conn, account_id: account_id.to_string() };
         db.ensure_schema(path)?;
@@ -702,5 +730,62 @@ mod schema_once_tests {
         assert_eq!(schema_runs_on_this_thread(), before + 1, "a different inode runs the DDL again");
         assert!(db.schema_present());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn probe(db: &Database) -> rusqlite::Result<i64> {
+        db.conn.query_row("SELECT x FROM shared_probe", [], |row| row.get(0))
+    }
+
+    #[test]
+    fn two_handles_on_one_thread_share_one_connection() {
+        let dir = scratch("share-thread");
+        let path = dir.join("m.db");
+        let p = path.to_str().unwrap();
+        let a = Database::open(p).unwrap();
+        // A TEMP table lives on one connection only: visible through the second handle iff shared.
+        a.conn.execute_batch("CREATE TEMP TABLE shared_probe (x INTEGER); INSERT INTO shared_probe VALUES (7);").unwrap();
+        let b = Database::open_for_account(p, "exchange-other").unwrap();
+        assert!(std::rc::Rc::ptr_eq(&a.conn, &b.conn));
+        assert_eq!(probe(&b).unwrap(), 7);
+        assert_eq!(b.account_id(), "exchange-other", "each handle keeps its own account");
+        assert_eq!(a.account_id(), DEFAULT_ACCOUNT);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_handle_on_another_thread_gets_its_own_connection() {
+        let dir = scratch("share-other-thread");
+        let path = dir.join("m.db");
+        let p = path.to_str().unwrap().to_string();
+        let a = Database::open(&p).unwrap();
+        a.conn.execute_batch("CREATE TEMP TABLE shared_probe (x INTEGER); INSERT INTO shared_probe VALUES (7);").unwrap();
+        let other_sees = std::thread::spawn(move || {
+            let c = Database::open(&p).unwrap();
+            probe(&c).is_ok()
+        }).join().unwrap();
+        assert!(!other_sees, "another thread must not see this thread's TEMP table");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_replaced_file_gets_a_fresh_connection() {
+        let dir = scratch("share-replaced");
+        let path = dir.join("m.db");
+        let p = path.to_str().unwrap();
+        let a = Database::open(p).unwrap();
+        let fresh = dir.join("fresh.db");
+        drop(rusqlite::Connection::open(&fresh).unwrap());
+        std::fs::rename(&fresh, &path).unwrap();
+        let b = Database::open(p).unwrap();
+        assert!(!std::rc::Rc::ptr_eq(&a.conn, &b.conn), "a new inode must not reuse the old connection");
+        assert!(b.schema_present());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn memory_handles_are_never_shared() {
+        let a = Database::open(":memory:").unwrap();
+        let b = Database::open(":memory:").unwrap();
+        assert!(!std::rc::Rc::ptr_eq(&a.conn, &b.conn));
     }
 }

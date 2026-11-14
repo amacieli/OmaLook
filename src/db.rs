@@ -75,7 +75,9 @@ pub struct AccountCacheKeys {
 }
 
 pub struct Database {
-    conn: Connection,
+    /// Shared with the other handles on this thread for the same file (see `schema::shared_connection`).
+    /// `Rc`, so a `Database` is not `Send`: open it on the thread that uses it.
+    conn: std::rc::Rc<Connection>,
     /// Account that rows written through this handle belong to.
     account_id: String,
 }
