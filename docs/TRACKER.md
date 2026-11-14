@@ -106,7 +106,7 @@ IDs are stable (never reused). Status: `open` | `investigating` | `planned` | `i
 - **Found:** Low, Likely (`google_auth.rs:257-268`). Details: `docs/REVIEW-2026-11-12.md`.
 - **Fix plan:** Answer 404 to mismatched `state` and keep waiting (R2.8).
 
-### OL-067 — `cache_retention_days` is parsed but never used (SEC-013) (open, security review 2026-11-12)
+### OL-067 — `cache_retention_days` is parsed but never used (SEC-013) (fixed in tree 2026-11-14, R4.3: setting removed; old settings files still load; privacy policy says the cache is kept until the account is removed)
 - **Found:** Low, Confirmed (`models.rs:663/702`; `db.rs:1776` has no caller). Cache 286 MB. Details: `docs/REVIEW-2026-11-12.md`.
 - **Fix plan:** Wire it within purge rules or remove the setting (R4.3).
 
