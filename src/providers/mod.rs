@@ -217,6 +217,25 @@ pub trait EmailProvider: Send + Sync {
         Err(crate::errors::OmarchyError::HttpError("delta not supported".into()))
     }
 
+    /// True when the provider reports mailbox-wide changes since a stored history id (Gmail
+    /// `users.history.list`), so the daemon applies changes instead of listing every folder.
+    fn supports_history(&self) -> bool {
+        false
+    }
+
+    /// The mailbox's current history id. Taken BEFORE a seeding walk, so changes made while the
+    /// walk runs are replayed by `fetch_history` afterwards.
+    async fn current_history_id(&self) -> Result<String> {
+        Err(crate::errors::OmarchyError::HttpError("current_history_id not supported".into()))
+    }
+
+    /// Every change since `start` (a history id from `current_history_id` or an earlier fetch).
+    /// Nothing is applied here: the daemon applies a `Changes` result in one transaction together
+    /// with its `position`. `Expired` = the server no longer has `start` (the caller walks again).
+    async fn fetch_history(&self, _start: &str) -> Result<HistoryFetch> {
+        Err(crate::errors::OmarchyError::HttpError("fetch_history not supported".into()))
+    }
+
     /// Fetch all top-level mail folders
     async fn fetch_folders(&self) -> Result<Vec<MailFolder>>;
 
@@ -266,6 +285,21 @@ pub(crate) mod test_server;
 pub use graph::GraphEmailProvider;
 
 pub mod retry;
+
+/// Result of `EmailProvider::fetch_history`.
+#[derive(Debug, Clone)]
+pub enum HistoryFetch {
+    /// `upserts`: messages to store or update, each with the folder the provider chose (scoped).
+    /// `removed`: scoped ids to delete from the cache (deleted, or no longer in any folder).
+    /// `position`: the historyId the listing reached (None when the server sent none).
+    Changes {
+        upserts: Vec<crate::models::EmailMessage>,
+        removed: Vec<String>,
+        position: Option<String>,
+    },
+    /// The start id is too old for the server: walk the mailbox again.
+    Expired,
+}
 
 /// A draft as the provider stores it after a save.
 #[derive(Debug, Clone, PartialEq)]

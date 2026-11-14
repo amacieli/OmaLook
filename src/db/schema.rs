@@ -151,6 +151,15 @@ impl Database {
                 updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 PRIMARY KEY (account_id, folder_id)
             )", [])?;
+        // Gmail change position per account: the mailbox historyId that the last applied
+        // history.list (or the seeding walk) reached. Written in the same transaction as the
+        // changes it covers (`Database::apply_history`).
+        self.conn.execute(
+            "CREATE TABLE IF NOT EXISTS mail_history (
+                account_id TEXT PRIMARY KEY,
+                history_id TEXT NOT NULL,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )", [])?;
         Ok(())
     }
 

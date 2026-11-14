@@ -73,8 +73,30 @@ impl Database {
 
 
     /// Remove cached messages of `folder_id` that the provider no longer lists (deleted or moved
-    /// on another client). Rows with an unpushed local read change are kept.
-    pub fn reconcile_deleted(&self, folder_id: &str, live_ids: &[String]) -> Result<usize> {
+    /// on another client, for a non-delta provider such as Gmail). `live_ids` must be a COMPLETE
+    /// listing taken after `started`: only rows cached before `started` are candidates, so mail
+    /// that arrived while the listing ran is never removed. Rows with an unpushed local read
+    /// change are kept. The same believability rule as `purge_unseen` decides (see
+    /// `deletion_is_believable`). Returns rows deleted.
+    pub fn reconcile_deleted(
+        &self,
+        folder_id: &str,
+        live_ids: &[String],
+        started: chrono::DateTime<Utc>,
+    ) -> Result<usize> {
+        let live: std::collections::HashSet<&String> = live_ids.iter().collect();
+        let candidates: Vec<String> = {
+            let mut st = self.conn.prepare(
+                "SELECT id FROM messages WHERE folder_id = ?1 AND account_id = ?2 AND cached_at < ?3 AND read_pending = 0")?;
+            let rows = st.query_map(params![folder_id, self.account_id, started], |r| r.get::<_, String>(0))?;
+            rows.filter_map(|r| r.ok()).filter(|id| !live.contains(id)).collect()
+        };
+        if candidates.is_empty() {
+            return Ok(0);
+        }
+        if !self.purge_is_believable(folder_id, candidates.len(), live_ids.len())? {
+            return Ok(0);
+        }
         self.conn.execute_batch("BEGIN")?;
         let result = (|| -> Result<usize> {
             self.conn.execute_batch(
@@ -88,14 +110,36 @@ impl Database {
             }
             Ok(self.conn.execute(
                 "DELETE FROM messages WHERE folder_id = ?1 AND account_id = ?2 AND read_pending = 0
-                   AND id NOT IN (SELECT id FROM live_ids)",
-                params![folder_id, self.account_id],
+                   AND cached_at < ?3 AND id NOT IN (SELECT id FROM live_ids)",
+                params![folder_id, self.account_id, started],
             )?)
         })();
         match result {
             Ok(n) => { self.conn.execute_batch("COMMIT")?; Ok(n) }
             Err(e) => { let _ = self.conn.execute_batch("ROLLBACK"); Err(e) }
         }
+    }
+
+    /// The one decision for every destructive "the server no longer lists it" delete (Graph purge
+    /// after a complete walk, Gmail reconcile): `candidates` rows of `folder_id` would go, out of
+    /// `total` cached rows, given `listed` ids from a complete listing. Logs and refuses when the
+    /// listing is not believable. Returns true when the delete may proceed.
+    fn purge_is_believable(&self, folder_id: &str, candidates: usize, listed: usize) -> Result<bool> {
+        let total: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM messages WHERE folder_id = ?1 AND account_id = ?2",
+            params![folder_id, self.account_id], |r| r.get(0))?;
+        let server_total: Option<i64> = self.conn.query_row(
+            "SELECT total_item_count FROM folders WHERE id = ?1 AND account_id = ?2",
+            params![folder_id, self.account_id], |r| r.get::<_, Option<i64>>(0),
+        ).optional()?.flatten();
+        let ok = deletion_is_believable(total as usize, candidates, listed, server_total);
+        if !ok {
+            warn!(
+                "Not purging {} of {} cached rows in folder {}: the enumeration ({} messages) does not match the provider's count ({:?})",
+                candidates, total, folder_id, listed, server_total
+            );
+        }
+        Ok(ok)
     }
 
 
@@ -158,22 +202,74 @@ impl Database {
     }
 
 
-    /// Apply one change-feed page in ONE transaction: insert new messages, update the read flag
-    /// and folder of existing ones (a message with an unpushed local read change keeps its local
-    /// flag), delete removed ones from `folder_id`. `progress` (the page's next link) is stored
-    /// in the same transaction so an interrupted first enumeration resumes where it stopped.
-    /// Returns (rows inserted or changed, rows deleted).
-    pub fn apply_delta_page(
+    // ───────────────────────────── Gmail history position ─────────────────────────────
+
+    /// The mailbox historyId the account's changes were applied up to; None = never seeded.
+    pub fn history_position(&self) -> Result<Option<String>> {
+        match self.conn.query_row(
+            "SELECT history_id FROM mail_history WHERE account_id = ?1",
+            params![self.account_id],
+            |r| r.get::<_, String>(0),
+        ) {
+            Ok(v) => Ok(Some(v)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// Apply the changes of one history walk in ONE transaction, and move the position to
+    /// `position` in the same transaction (None keeps it). `upserts` are full message details
+    /// (folder already chosen by the provider); `removed` are scoped ids to delete from every
+    /// folder. Explicit server deletions, so no purge guard applies. Returns (rows changed, rows
+    /// removed).
+    pub fn apply_history(
         &self,
-        folder_id: &str,
-        page: &crate::models::DeltaPage,
-        progress: Option<&str>,
+        upserts: &[crate::models::EmailMessage],
+        removed: &[String],
+        position: Option<&str>,
     ) -> Result<(usize, usize)> {
         self.conn.execute_batch("BEGIN")?;
         let result = (|| -> Result<(usize, usize)> {
-            let now = Utc::now();
-            let mut changed = 0usize;
+            let changed = self.upsert_messages(upserts)?;
+            let mut deleted = 0usize;
             {
+                let mut del = self.conn.prepare_cached("DELETE FROM messages WHERE id = ?1 AND account_id = ?2")?;
+                for id in removed {
+                    deleted += del.execute(params![id, self.account_id])?;
+                }
+            }
+            if let Some(p) = position {
+                self.conn.execute(
+                    "INSERT INTO mail_history (account_id, history_id, updated_at) VALUES (?1, ?2, CURRENT_TIMESTAMP)
+                     ON CONFLICT(account_id) DO UPDATE SET history_id = ?2, updated_at = CURRENT_TIMESTAMP",
+                    params![self.account_id, p],
+                )?;
+            }
+            Ok((changed, deleted))
+        })();
+        match result {
+            Ok(v) => { self.conn.execute_batch("COMMIT")?; Ok(v) }
+            Err(e) => { let _ = self.conn.execute_batch("ROLLBACK"); Err(e) }
+        }
+    }
+
+    /// Record the position a seeding walk started from (no rows touched).
+    pub fn set_history_position(&self, history_id: &str) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO mail_history (account_id, history_id, updated_at) VALUES (?1, ?2, CURRENT_TIMESTAMP)
+             ON CONFLICT(account_id) DO UPDATE SET history_id = ?2, updated_at = CURRENT_TIMESTAMP",
+            params![self.account_id, history_id],
+        )?;
+        Ok(())
+    }
+
+    /// Insert or update message rows (shared by delta pages and history applies). A message keeps
+    /// an unpushed local read change; folder, details and categories follow the provider.
+    /// Returns rows inserted or changed.
+    fn upsert_messages(&self, upserts: &[crate::models::EmailMessage]) -> Result<usize> {
+        let now = Utc::now();
+        let mut changed = 0usize;
+        {
                 let mut up = self.conn.prepare_cached(
                     "INSERT INTO messages (id, subject, from_email, body, received_at, is_read, cached_at, folder_id, account_id,
                             from_name, to_text, cc_text, bcc_text, categories, categories_synced, sent_at, importance, has_attachments, conversation_id, meta_ok)
@@ -198,12 +294,29 @@ impl Database {
                         OR messages.folder_id IS NOT excluded.folder_id
                         OR (excluded.meta_ok = 1 AND messages.meta_ok = 0)
                         OR (excluded.meta_ok = 1 AND messages.categories_synced IS NOT excluded.categories)")?;
-                for e in &page.upserts {
+                for e in upserts {
                     changed += up.execute(params![e.id, e.subject, e.from, e.body, e.received, e.is_read, now, e.folder_id, self.account_id,
                         e.from_name, e.to_text, e.cc_text, e.bcc_text, categories_json(&e.categories),
                         e.sent_at, e.importance, e.has_attachments, e.conversation_id, e.meta])?;
                 }
-            }
+        }
+        Ok(changed)
+    }
+
+    /// Apply one change-feed page in ONE transaction: insert new messages, update the read flag
+    /// and folder of existing ones (a message with an unpushed local read change keeps its local
+    /// flag), delete removed ones from `folder_id`. `progress` (the page's next link) is stored
+    /// in the same transaction so an interrupted first enumeration resumes where it stopped.
+    /// Returns (rows inserted or changed, rows deleted).
+    pub fn apply_delta_page(
+        &self,
+        folder_id: &str,
+        page: &crate::models::DeltaPage,
+        progress: Option<&str>,
+    ) -> Result<(usize, usize)> {
+        self.conn.execute_batch("BEGIN")?;
+        let result = (|| -> Result<(usize, usize)> {
+            let changed = self.upsert_messages(&page.upserts)?;
             let mut deleted = 0usize;
             {
                 // Only from THIS folder: a message that was moved keeps its row via the other folder's feed.
@@ -254,25 +367,7 @@ impl Database {
             let rows = st.query_map(params![folder_id, self.account_id, started], |r| r.get::<_, String>(0))?;
             rows.filter_map(|r| r.ok()).filter(|id| !seen.contains(id)).collect()
         };
-        let total: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM messages WHERE folder_id = ?1 AND account_id = ?2",
-            params![folder_id, self.account_id], |r| r.get(0))?;
-        let server_total: Option<i64> = self.conn.query_row(
-            "SELECT total_item_count FROM folders WHERE id = ?1 AND account_id = ?2",
-            params![folder_id, self.account_id], |r| r.get::<_, Option<i64>>(0),
-        ).optional()?.flatten();
-        let believable = match server_total {
-            Some(t) => {
-                let slack = (t / 50).max(3);
-                (seen.len() as i64 - t).abs() <= slack
-            }
-            None => candidates.len() as i64 * 5 <= total,
-        };
-        if !believable {
-            warn!(
-                "Not purging {} of {} cached rows in folder {}: the enumeration ({} messages) does not match the provider's count ({:?})",
-                candidates.len(), total, folder_id, seen.len(), server_total
-            );
+        if !self.purge_is_believable(folder_id, candidates.len(), seen.len())? {
             return Ok(0);
         }
         // Chunked: each delete also removes the row from the FTS index, which is not cheap.
@@ -293,5 +388,78 @@ impl Database {
             }
         }
         Ok(deleted)
+    }
+}
+
+/// Provider-neutral sanity check before deleting cached rows the server no longer lists.
+/// An empty listing never deletes. With the provider's own item count for the folder, the
+/// listing has to match it (within 2%, minimum 3: mail arrives and goes while a walk runs), which
+/// is what lets a mostly-emptied folder such as Deleted Items be cleaned. With no count, at most
+/// 20% of the cached rows may go. Shared by the Graph purge (`purge_unseen`) and the Gmail
+/// reconcile (`reconcile_deleted`); there is no other copy of this rule.
+pub(crate) fn deletion_is_believable(cached: usize, candidates: usize, listed: usize, server_total: Option<i64>) -> bool {
+    if listed == 0 {
+        return false;
+    }
+    match server_total {
+        Some(t) => (listed as i64 - t).abs() <= (t / 50).max(3),
+        None => candidates * 5 <= cached,
+    }
+}
+
+#[cfg(test)]
+mod purge_rule_tests {
+    use super::*;
+    use crate::models::EmailMessage;
+
+    #[test]
+    fn empty_listing_is_never_believable() {
+        assert!(!deletion_is_believable(200, 200, 0, None));
+        assert!(!deletion_is_believable(200, 1, 0, Some(0)));
+    }
+
+    #[test]
+    fn with_a_server_count_the_listing_must_match_it() {
+        assert!(deletion_is_believable(10, 7, 3, Some(3)), "mostly emptied folder, walk matches the count");
+        assert!(deletion_is_believable(100, 1, 100, Some(101)), "within max(3, 2%)");
+        assert!(!deletion_is_believable(10, 1, 1, Some(100)), "short enumeration is not trusted");
+    }
+
+    #[test]
+    fn without_a_count_at_most_a_fifth_may_go() {
+        assert!(deletion_is_believable(10, 2, 8, None));
+        assert!(!deletion_is_believable(10, 3, 7, None));
+    }
+
+    fn msg(id: &str) -> EmailMessage {
+        EmailMessage { id: id.into(), from: "a@b.c".into(), subject: "s".into(), received: "2026-10-06T12:00:00Z".into(),
+                       body: "p".into(), folder_id: Some("F".into()), is_read: false, ..Default::default() }
+    }
+
+    fn cached(db: &Database) -> usize { db.get_messages_for_folder("F", 10_000).unwrap().len() }
+
+    #[test]
+    fn reconcile_never_removes_rows_cached_after_the_listing_started() {
+        let db = Database::open_for_account(":memory:", "gmail-t1").unwrap();
+        for i in 0..10 { db.insert_email(&msg(&format!("m{i}"))).unwrap(); }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let started = Utc::now();
+        db.insert_email(&msg("late")).unwrap(); // arrived while the listing was running
+        let live: Vec<String> = (0..9).map(|i| format!("m{i}")).collect();
+        assert_eq!(db.reconcile_deleted("F", &live, started).unwrap(), 1, "only m9 is an old, unlisted row");
+        assert_eq!(cached(&db), 10);
+        assert!(db.email_exists("late").unwrap());
+    }
+
+    #[test]
+    fn reconcile_and_purge_refuse_the_same_listings() {
+        let db = Database::open_for_account(":memory:", "gmail-t1").unwrap();
+        for i in 0..10 { db.insert_email(&msg(&format!("m{i}"))).unwrap(); }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let started = Utc::now();
+        assert_eq!(db.reconcile_deleted("F", &["m0".to_string()], started).unwrap(), 0, "9 of 10 unlisted: over the cap");
+        let seen: std::collections::HashSet<String> = ["m0".to_string()].into_iter().collect();
+        assert_eq!(db.purge_unseen("F", &seen, started).unwrap(), 0);
+        assert_eq!(cached(&db), 10);
     }
 }
