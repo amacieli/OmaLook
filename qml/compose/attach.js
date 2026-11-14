@@ -149,22 +149,30 @@ function pictureFiles(attachments, liveCids) {
     if (a.inline_cid) {
       if (live.indexOf(a.inline_cid) < 0) continue
       converted += 1
-      a = { path: a.path, name: a.name, size: a.size }
+      a = { handle: a.handle, name: a.name, size: a.size, localPath: a.localPath }
     }
-    if (seen[a.path]) continue
-    seen[a.path] = true
+    if (seen[a.handle]) continue
+    seen[a.handle] = true
     files.push(a)
   }
   return { files: files, converted: converted }
 }
+
+// What goes to the backend for one attachment: its handle and display facts, never a path. `localPath`
+// (the file as the user named it) stays in the UI; the backend never sees it.
+function wireAttachment(a) {
+  var o = { handle: a.handle, name: a.name, size: a.size }
+  if (a.inline_cid) o.inline_cid = a.inline_cid
+  return o
+}
 function baseName(p) { var i = String(p).lastIndexOf("/"); return i < 0 ? String(p) : String(p).slice(i + 1) }
 function dirName(p) { var i = String(p).lastIndexOf("/"); return i <= 0 ? "/" : String(p).slice(0, i) }
 
-// The answer of POST /files/register for the files the user picked: which of them were accepted, under
-// which canonical path, and which were refused. `inputs` are the picked entries [{ path, name, size }] in
-// the order they were sent; `reply` is { files, refused } from the backend (refused[i].path is the path as
-// sent). Returns { entries: [{ path, name, size }] (canonical path, the picked display name),
-// refusedMsg: "Not attached: NAME (ERROR); ..." or "" , error: "" or the backend's reason }.
+// The answer of POST /files/register for the files the user picked: which were accepted, under which
+// handle, and which were refused. `inputs` are the picked entries [{ path, name, size }] in the order
+// they were sent; `files` is [{ handle, name, size }] from the backend and `refused` is [{ path (as
+// sent), error }]. Returns { entries: [{ handle, name, size, localPath }] (the picked display name and
+// the path as the user gave it, kept in the UI only), refusedMsg: "Not attached: NAME (ERROR); ..." or "" }.
 // Refused inputs are matched by the path as sent; accepted ones are zipped with `files` in order, and if
 // the counts disagree they are matched by base name instead.
 function matchRegistered(inputs, files, refused) {
@@ -185,7 +193,7 @@ function matchRegistered(inputs, files, refused) {
   var entries = []
   if (accepted.length === files.length) {
     for (i = 0; i < accepted.length; i++)
-      entries.push({ path: files[i].path, name: accepted[i].name, size: files[i].size || 0 })
+      entries.push({ handle: files[i].handle, name: accepted[i].name, size: files[i].size || 0, localPath: accepted[i].path })
   } else {
     var used = {}
     for (i = 0; i < accepted.length; i++) {
@@ -194,7 +202,7 @@ function matchRegistered(inputs, files, refused) {
         if (!used[j] && files[j].name === want) { hit = j; break }
       if (hit < 0) { refusedParts.push(accepted[i].name + " (not registered)"); continue }
       used[hit] = true
-      entries.push({ path: files[hit].path, name: accepted[i].name, size: files[hit].size || 0 })
+      entries.push({ handle: files[hit].handle, name: accepted[i].name, size: files[hit].size || 0, localPath: accepted[i].path })
     }
   }
   return { entries: entries, refusedMsg: refusedParts.length > 0 ? "Not attached: " + refusedParts.join("; ") : "" }

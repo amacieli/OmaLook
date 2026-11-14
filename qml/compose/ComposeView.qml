@@ -44,15 +44,18 @@ FocusScope {
   // progress and "saved ..." lines are plain information, not errors
   readonly property bool statusIsInfo: shownStatus.indexOf("…") >= 0 || /^(saved|saving|inserted|attached)/i.test(shownStatus)
   onStatusChanged: if (status !== "") localStatus = ""
-  // Attachments: [{ path, name, size }]. `listDir(path, hidden, cb)` and `browseDir` come from the
+  // Attachments: [{ handle, name, size, localPath?, inline_cid? }]. `localPath` is the file as the user
+  // named it, kept in the UI for the picture insert and the browser's marks; the backend only gets handles.
+  // `listDir(picker, path, hidden, cb)`, `openPicker(purpose, cb)` and `browseDir` come from the
   // owner (the daemon lists folders for the file browser; the last folder used is remembered).
   property var attachments: []
   // Attachments changed by the user: an autosave straight away (not after the 10 s timer).
   onAttachmentsChanged: if (root._ready) root.saveDraftNow("editing")
   property var missingNames: []              // draft attachments whose spool copy is gone (AttachStrip "!")
   property var listDir: null
-  // registerFiles(purpose, paths, cb(files, refused, error)) from the owner (R1.5, OL-057): the backend only
-  // accepts paths the UI registered, so every new local file is registered before it enters the list or the text.
+  property var openPicker: null
+  // registerFiles(purpose, paths, cb(files, refused, error)) from the owner (R1.5, OL-057; R3.2): the backend
+  // answers a handle per accepted file, and every new local file is registered before it enters the list or the text.
   property var registerFiles: null
   property string browseDir: ""
   property var recentDirs: []
@@ -245,11 +248,11 @@ FocusScope {
   // Files picked in the browser. Adding past the limit is allowed: the strip turns red and says
   // why, and Send refuses with the numbers (a From switch can push a fine set over the limit too).
   function addAttachments(files) {
-    var have = root.liveAttachments.map(function(a) { return a.path })
+    var have = root.liveAttachments.map(function(a) { return a.handle })
     var next = root.attachments.slice()
     for (var i = 0; i < files.length; i++) {
-      if (have.indexOf(files[i].path) >= 0) continue
-      next.push({ path: files[i].path, name: files[i].name, size: files[i].size || 0 })
+      if (have.indexOf(files[i].handle) >= 0) continue
+      next.push({ handle: files[i].handle, name: files[i].name, size: files[i].size || 0, localPath: files[i].localPath || "" })
     }
     root.attachments = next
     editor.forceActiveFocus()
@@ -285,8 +288,8 @@ FocusScope {
   // Pictures: a picture file goes into the text as an image when the mode can show it, else it is attached.
   function _addPicture(f) {
     var cid = root._newCid()
-    if (!handler.insertImage(f.path, cid)) return false
-    root.attachments = root.attachments.concat([{ path: f.path, name: f.name, size: f.size || 0, inline_cid: cid }])
+    if (!handler.insertImage(f.localPath, cid)) return false
+    root.attachments = root.attachments.concat([{ handle: f.handle, name: f.name, size: f.size || 0, localPath: f.localPath, inline_cid: cid }])
     return true
   }
   function _newCid() {
@@ -399,10 +402,12 @@ FocusScope {
       })
     }
     var names = Object.keys(dirs)
-    if (!root.listDir) { skipped = paths.length; finish(); return }
+    if (!root.listDir || !root.openPicker) { skipped = paths.length; finish(); return }
+    root.openPicker("attach", function(picker) {
+    if (picker === "") { skipped = paths.length; finish(); return }
     waiting = names.length
     names.forEach(function(d) {
-      root.listDir(d, true, function(r) {
+      root.listDir(picker, d, true, function(r) {
         var by = {}
         ;(r && r.entries ? r.entries : []).forEach(function(e) { by[e.name] = e })
         dirs[d].forEach(function(p) {
@@ -412,6 +417,7 @@ FocusScope {
         })
         if (--waiting === 0) finish()
       })
+    })
     })
   }
 
@@ -453,11 +459,7 @@ FocusScope {
       draft_id: root.draftId,
       mode: root.mode,
       body: _body(),
-      attachments: root.liveAttachments.map(function(a) {
-        var o = { path: a.path, name: a.name, size: a.size }
-        if (a.inline_cid) o.inline_cid = a.inline_cid
-        return o
-      }),
+      attachments: root.liveAttachments.map(Att.wireAttachment),
       // Which of the original's files go along (forward only); left out until the list is known.
       forwarded_keep: initial.kind === "forward" && root.originalsState !== "idle" ? root.originals.map(function(o) { return o.id }) : undefined
     }
@@ -525,7 +527,7 @@ FocusScope {
       else handler.setHtml(initial.restore.content)
     }
     // A restored message's pictures come back from their files (the document only names them).
-    if (initial.attachments) initial.attachments.forEach(function(a) { if (a.inline_cid) handler.registerImage(a.path, a.inline_cid) })
+    if (initial.attachments) initial.attachments.forEach(function(a) { if (a.inline_cid && a.localPath) handler.registerImage(a.localPath, a.inline_cid) })
     // The signature goes in before `_seedText` is taken, so a message with only a signature is not "dirty".
     if (!initial.restore) _insertSignature()
     _seedText = initial.restore ? "" : handler.plainText()
@@ -878,7 +880,7 @@ else if (ctrl && !shift && e.key === Qt.Key_V) { root.startPaste(); e.accepted =
       if (!a) return
       root.attachments = root.attachments.map(function(x) {
         if (x !== a) return x
-        var o = { path: x.path, name: name, size: x.size }
+        var o = { handle: x.handle, name: name, size: x.size, localPath: x.localPath }
         if (x.inline_cid) o.inline_cid = x.inline_cid
         return o
       })
@@ -891,11 +893,12 @@ else if (ctrl && !shift && e.key === Qt.Key_V) { root.startPaste(); e.accepted =
     anchors.fill: parent
     z: 900
     listDir: root.listDir
+    openPicker: root.openPicker
     startDir: root.browseDir
     recentDirs: root.recentDirs
     capacity: Att.capacity(root.limits)
     baseBytes: root.attachedBytes
-    attached: root.liveAttachments.map(function(a) { return a.path })
+    attached: root.liveAttachments.map(function(a) { return a.localPath || "" })
     onPicked: function(files) {
       var asPicture = root._pictureMode   // captured now: a toggle while the registration runs does not move the files
       root._pictureMode = false

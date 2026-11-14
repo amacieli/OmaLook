@@ -25,7 +25,9 @@ FocusScope {
   id: root
 
   property bool opened: false
-  property var listDir: null              // function(path, hidden, cb(result))
+  property var listDir: null              // function(picker, path, hidden, cb(result)) — result.error "picker expired" reopens
+  property var openPicker: null           // function(purpose, cb(pickerId)) — opened when the browser opens (R3.2)
+  property string pickerId: ""
   property string startDir: ""
   property var attached: []               // paths already on the message (shown ticked, not re-added)
   property real capacity: 0               // bytes of files the From account takes (0 = unknown)
@@ -86,17 +88,34 @@ FocusScope {
     input.text = ""
     inputMode = ""
     opened = true
-    go(startDir !== "" ? startDir : "~")
+    _openPicker(function() { go(startDir !== "" ? startDir : "~") })
     input.forceActiveFocus()
   }
 
   function close() { opened = false }
 
-  function go(p) {
+  // R3.2 (OL-087): the browser lists only through a picker the backend opened for it. A picker that has
+  // expired (30 minutes idle) is reopened once and the same folder is asked again.
+  function _openPicker(then) {
+    if (!openPicker) { error = "no file access"; return }
+    openPicker("attach", function(id) {
+      pickerId = id
+      if (id === "") { error = "could not open the folder browser"; return }
+      then()
+    })
+  }
+
+  function go(p, again) {
     if (!listDir) { error = "no file access"; return }
+    if (pickerId === "") { _openPicker(function() { go(p, again) }); return }
     loading = true
     var asked = p
-    listDir(p, showHidden, function(r) {
+    listDir(pickerId, p, showHidden, function(r) {
+      if (r && r.error === "picker expired" && !again) {
+        pickerId = ""
+        _openPicker(function() { go(asked, true) })
+        return
+      }
       loading = false
       if (!r || r.error || !r.path) {
         error = r && r.error ? String(r.error) : "could not read the folder"
