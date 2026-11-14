@@ -24,6 +24,9 @@ function matches(filter, name) {
   return name.toLowerCase().indexOf(filter.toLowerCase()) >= 0
 }
 
+// Is the name a JPEG (.jpg / .jpeg, any case)? A contact photo takes only these (the backend checks the bytes too).
+function isJpeg(name) { return /\.jpe?g$/i.test(String(name || "")) }
+
 var SORTS = ["name", "newest", "size"]
 
 function nextSort(s) { return SORTS[(SORTS.indexOf(s) + 1) % SORTS.length] }

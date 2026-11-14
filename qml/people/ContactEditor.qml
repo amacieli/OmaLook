@@ -5,6 +5,7 @@ import qs.Commons
 import qs.Commons as Commons
 import qs.Ui
 import "../common"
+import "../compose"
 import "draft.js" as Draft
 
 // Contact editor (docs/PLAN-contacts.md section 5). It sits over the People view. Pure view: it owns the
@@ -13,6 +14,7 @@ import "draft.js" as Draft
 // Keys (text fields own theirs; the app's global bindings are off while this is open):
 //   Tab / Shift-Tab   next / previous field         Ctrl-Enter   save
 //   Ctrl-K            add a field (type to find it)  Ctrl-T       choose the account / folder (new contact)
+//   Ctrl-O            choose the photo (a .jpg file; click the Photo row too)
 //   Esc               close (asks once if edited)    Ctrl-D       remove the empty extra fields again
 FocusScope {
     id: root
@@ -23,9 +25,14 @@ FocusScope {
     property int    targetIndex: 0
     property var    accounts: []              // for the account colour
     property string status: ""                // "" | "saving…" | an error from the server side
+    property bool   hasPhoto: false           // the contact has a photo on disk (PeopleView knows)
+    property string photoStatus: ""          // the last photo result ("Photo set", or why not); PeopleView sets it
+    property var    photoListDir: null        // listDir(picker, path, hidden, cb) for the picture browser (PeopleView passes it)
+    property var    photoOpenPicker: null     // openPicker(purpose, cb) for the picture browser
 
     signal saveRequested(var body)
     signal cancelRequested()
+    signal photoPicked(string path)           // a .jpg was chosen; PeopleView registers it and sets it
 
     // ---- state
     readonly property bool isNew: raw === null
@@ -62,6 +69,7 @@ FocusScope {
     }
 
     function tryCancel() {
+        if (photoBrowser.opened) { photoBrowser.opened = false; closePhotoPicker(); return }
         if (picking) { closePicker(); return }
         if (!dirty() || confirmDiscard) { cancelRequested(); return }
         confirmDiscard = true
@@ -92,12 +100,28 @@ FocusScope {
     }
     // The way back in when focus went somewhere else anyway (a click outside a field, a popup).
     function refocus() {
+        if (photoBrowser.opened) { photoBrowser.forceActiveFocus(); return }
         if (picking) { pickFilter.forceActiveFocus(); return }
         var f = firstInput()
         if (f) f.forceActiveFocus(); else root.forceActiveFocus()
     }
     function openPicker() { picking = true; pickFilter.text = ""; pickList.currentIndex = 0; pickFilter.forceActiveFocus() }
     function closePicker() { picking = false; Qt.callLater(function() { if (rep.count > 0 && rep.itemAt(0)) rep.itemAt(0).input.forceActiveFocus() }) }
+
+    // ---- photo: only a saved contact can have one (not a new one, not a local- id that has not synced)
+    readonly property bool photoCanSet: raw !== null && raw.id !== undefined && String(raw.id).indexOf("local-") !== 0
+    readonly property string photoLine: photoStatus !== "" ? photoStatus
+        : (isNew ? "save the contact first, then choose a photo here"
+        : !photoCanSet ? "not on the server yet; a photo can be set once it has synced"
+        : (hasPhoto ? "set  \u00b7  Ctrl-O or click to change it to another .jpg" : "none yet  \u00b7  Ctrl-O or click to choose a .jpg"))
+    function openPhotoPicker() {
+        if (!photoCanSet) { if (isNew) localStatus = photoLine; return }
+        if (!photoListDir || !photoOpenPicker) { photoStatus = "file access is not available"; return }
+        picking = false
+        photoBrowser.opened = false
+        photoBrowser.open()
+    }
+    function closePhotoPicker() { Qt.callLater(function() { if (rep.count > 0 && rep.itemAt(0)) rep.itemAt(0).input.forceActiveFocus() }) }
     // drop the extra fields that are still empty
     function tidy() {
         var keep = Draft.shownIds(values, [])
@@ -110,8 +134,10 @@ FocusScope {
     Component.onCompleted: Qt.callLater(function() { if (rep.count > 0 && rep.itemAt(0)) rep.itemAt(0).input.forceActiveFocus() })
 
     Keys.onPressed: function(e) {
+        if (photoBrowser.opened) return          // the picture browser owns the keys while it is open
         var ctrl = (e.modifiers & Qt.ControlModifier) !== 0
         if (ctrl && (e.key === Qt.Key_Return || e.key === Qt.Key_Enter)) { save(); e.accepted = true }
+        else if (ctrl && e.key === Qt.Key_O) { openPhotoPicker(); e.accepted = true }
         else if (e.key === Qt.Key_Escape) { tryCancel(); e.accepted = true }
         else if (ctrl && e.key === Qt.Key_K) { openPicker(); e.accepted = true }
         else if (ctrl && e.key === Qt.Key_T) { cycleTarget(1); e.accepted = true }
@@ -169,6 +195,24 @@ FocusScope {
                 foreground: root.target ? root.fg : Commons.Color.urgent
             }
             UiText { visible: root.targets.length > 1; text: "Ctrl-T change"; dim: true; font.pixelSize: Style.font.caption }
+        }
+
+        // the photo: click or Ctrl-O opens the picture browser; disabled (with the reason) when the contact cannot have one
+        RowLayout {
+            id: photoRow
+            Layout.fillWidth: true
+            spacing: Style.spacing.md
+            UiText { text: "Photo"; dim: true; Layout.preferredWidth: Style.space(92) }
+            UiText {
+                Layout.fillWidth: true; elide: Text.ElideRight
+                text: root.photoLine
+                dim: !root.photoCanSet || root.photoStatus === ""
+            }
+            UiText {
+                visible: root.photoCanSet
+                text: "Ctrl-O"; dim: true; font.pixelSize: Style.font.caption
+            }
+            TapHandler { enabled: root.photoCanSet; onTapped: root.openPhotoPicker() }
         }
 
         Flickable {
@@ -332,5 +376,22 @@ FocusScope {
         var add = opts[pickList.currentIndex].add
         picking = false
         addFields(add)
+    }
+
+    // ---- the photo file picker: the same browser as attachments, limited to .jpg files, one pick
+    AttachBrowser {
+        id: photoBrowser
+        anchors.fill: parent
+        z: 200
+        purpose: "photo"
+        jpegOnly: true
+        title: "Choose a contact photo (.jpg)"
+        listDir: root.photoListDir
+        openPicker: root.photoOpenPicker
+        onPicked: function(files) {
+            if (files.length > 0) root.photoPicked(files[0].path)
+            root.closePhotoPicker()
+        }
+        onCanceled: root.closePhotoPicker()
     }
 }

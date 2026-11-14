@@ -287,6 +287,9 @@ mod tests {
         let (w, fake, db) = setup(vec![http(400)]);
         db.put_contact_json(&json!({"id":"c1","givenName":"Ada"}), Some("f1"), "ok").unwrap();
         crate::contacts_write::move_contacts(&db, &["c1".into()], "f2", 1);
+        // As in the move test above: the delete is due at now+1 ms; a drain in the same millisecond sees only
+        // the (failing) copy and the original is restored one drain later (OL-089).
+        std::thread::sleep(std::time::Duration::from_millis(5));
         w.drain().await;
         assert_eq!(fake.calls.lock().unwrap().len(), 1, "the delete was never sent");
         assert_eq!(db.get_contact_record("c1").unwrap().unwrap().sync_state, "ok", "the original is back");

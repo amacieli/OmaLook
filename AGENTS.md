@@ -16,8 +16,8 @@ Renamed from "omarchylook" on 2026-10-12. `README.md` is the short entry point; 
 - `./build.sh [--release] [--live] [--clean]` — builds to `./target` unless `OMALOOK_BUILD_DIR` is set (env, or `~/.config/omalook/build.env`; nothing machine-specific is committed). On the main PC that file points at `/mnt/d/omalook-build` because the project lives on NFS and building in-tree is very slow.
 - `./build.sh --live` installs to `/opt/omalook` (first run asks sudo once). The running app uses `/opt/omalook/qml`, **not** the working tree: QML-only changes need deploy/relaunch to show up.
 - Dev and live copies share port **27182**, `~/.config/omalook`, and the cache — close one before starting the other.
-- Tests: `cargo test --lib -- --skip test_copy_to_clipboard`; node tests: `node tests/commands.test.js`, `node tests/search.test.js`.
-  `test_copy_to_clipboard` hangs on `wl-copy` (OL-005, open) — never run the full suite without the skip, never wait on it.
+- Tests: `cargo test --lib` (the `--skip test_copy_to_clipboard` habit is harmless: that hanging test went with `qt_bridge/` in R4.2);
+  node tests: `for t in tests/*.test.js; do node $t; done`.
 - Rust toolchain via `$HOME/.cargo/env` (rustup, Rust 1.98.1, Qt 6.11.x). Perf target: launch → refreshed mail < 2 s.
 
 ## Hard-won rules

@@ -13,6 +13,8 @@ assert.ok(P.matches("(1).*", "(1).txt"), "regex metacharacters are literal")
 assert.ok(!P.matches("a.c*", "abc"), "dot is literal")
 assert.ok(P.matches("inv", "My Invoice.pdf") && !P.matches("zzz", "My Invoice.pdf"))
 assert.ok(P.matches("", "anything"))
+assert.ok(P.isJpeg("Pic.JPG") && P.isJpeg("a.jpeg") && P.isJpeg("x.Jpe.jpg"))
+assert.ok(!P.isJpeg("shot.png") && !P.isJpeg("a.jpg.bak") && !P.isJpeg("") && !P.isJpeg(undefined))
 
 const e = [
   { name: "b.txt", dir: false, size: 5, mtime: 10 },
