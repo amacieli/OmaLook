@@ -58,8 +58,6 @@ pub fn runs_unlocked(method: &str, path: &str) -> bool {
                 | "/sync/health"
                 | "/calendar/find"
                 | "/compose/originals"
-                | "/contacts/directory"
-                | "/contacts/get"
                 | "/drafts"
                 | "/drafts/get"
                 | "/rules"
@@ -115,6 +113,9 @@ mod tests {
         assert!(!runs_unlocked("POST", "/calendar/find"));
         assert!(!runs_unlocked("GET", "/settings/mcp"));
         assert!(!runs_unlocked("GET", "/contacts/photo"));
+        // moved to the table with Lock::None (routes/contacts.rs)
+        assert!(!runs_unlocked("GET", "/contacts/get"));
+        assert!(!runs_unlocked("GET", "/contacts/directory"));
         assert!(dispatch_guard("GET", "/sync/serial").is_none());
         assert!(dispatch_guard("POST", "/settings/mail").is_some());
     }
