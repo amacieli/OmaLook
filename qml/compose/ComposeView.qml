@@ -833,6 +833,11 @@ else if (ctrl && !shift && e.key === Qt.Key_V) { root.startPaste(); e.accepted =
           font.pixelSize: root.mode === Modes.HTML ? 15 : Style.font.body
           onLinkActivated: function(l) { Links.openExternal(l) }
           KeyNavigation.backtab: header.subject
+          // TextEdit takes Ctrl+V itself (text only), so the pane's own Keys handler never saw it and a
+          // clipboard picture or copied file did nothing. The attached handler runs before the item's own.
+          Keys.onPressed: function(e) {
+            if ((e.modifiers & Qt.ControlModifier) && !(e.modifiers & Qt.ShiftModifier) && e.key === Qt.Key_V) { root.startPaste(); e.accepted = true }
+          }
 
           DocumentHandler {
             id: handler
