@@ -13,6 +13,7 @@
 //! - Events are upserted into SQLite so edits and reschedules propagate
 //! - Fully independent of the mail daemon: own provider, own DB handle, own loop
 
+use std::rc::Rc;
 use crate::perf;
 use chrono::{Duration as Days, Months, NaiveDate};
 use std::path::PathBuf;
@@ -58,12 +59,12 @@ pub fn window_bounds(today: NaiveDate, years_back: i32, years_ahead: i32) -> (Na
 
 pub struct CalendarDaemon {
     config: CalendarDaemonConfig,
-    db: Arc<Database>,
+    db: Rc<Database>,
     provider: Arc<dyn CalendarProvider>,
 }
 
 impl CalendarDaemon {
-    pub fn new(config: CalendarDaemonConfig, db: Arc<Database>, provider: Arc<dyn CalendarProvider>) -> Self {
+    pub fn new(config: CalendarDaemonConfig, db: Rc<Database>, provider: Arc<dyn CalendarProvider>) -> Self {
         Self { config, db, provider }
     }
 
@@ -298,7 +299,7 @@ mod tests {
 
     fn daemon() -> (CalendarDaemon, Arc<FakeProvider>) {
         let p = Arc::new(FakeProvider { windows: Mutex::new(vec![]), cancel_week_of: Mutex::new(None), fail: Mutex::new(false) });
-        let db = Arc::new(Database::open_for_account(":memory:", "exchange-aaaaaa").unwrap());
+        let db = Rc::new(Database::open_for_account(":memory:", "exchange-aaaaaa").unwrap());
         (CalendarDaemon::new(CalendarDaemonConfig::default(), db, p.clone()), p)
     }
     fn d(y: i32, m: u32, day: u32) -> NaiveDate { NaiveDate::from_ymd_opt(y, m, day).unwrap() }

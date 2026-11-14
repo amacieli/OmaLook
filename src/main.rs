@@ -4,6 +4,7 @@
 //! - Rust backend: Auth, Graph API, SQLite cache
 //! - QML frontend: Native Qt UI with hot-reload support
 
+use std::rc::Rc;
 use omalook::{init_logging, AuthManager, Database, SettingsManager};
 use log::{debug, error, info, warn};
 use std::env;
@@ -232,7 +233,7 @@ fn initialize_app(config_dir: &PathBuf, db_path: &str, settings_path: &str, list
     // Initialize database
     let db = {
         let _t = omalook::perf::span("Database::open (schema init)");
-        Arc::new(Database::open(db_path)?)
+        Rc::new(Database::open(db_path)?)
     };
     info!("Database initialized");
     

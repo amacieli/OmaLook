@@ -57,7 +57,7 @@ fn is_sending(id: &str) -> bool {
 /// (at most `IDLE`, so a change made from another thread is seen within that time).
 pub struct DraftWorker {
     account_id: String,
-    db: std::sync::Arc<Database>,
+    db: std::rc::Rc<Database>,
     provider: std::sync::Arc<dyn EmailProvider>,
     push_limit: Option<u64>,
 }
@@ -65,7 +65,7 @@ pub struct DraftWorker {
 const IDLE: std::time::Duration = std::time::Duration::from_secs(5);
 
 impl DraftWorker {
-    pub fn new(account_id: &str, db: std::sync::Arc<Database>, provider: std::sync::Arc<dyn EmailProvider>, push_limit: Option<u64>) -> Self {
+    pub fn new(account_id: &str, db: std::rc::Rc<Database>, provider: std::sync::Arc<dyn EmailProvider>, push_limit: Option<u64>) -> Self {
         Self { account_id: account_id.to_string(), db, provider, push_limit }
     }
 

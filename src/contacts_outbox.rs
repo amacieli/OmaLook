@@ -3,6 +3,7 @@
 //! write goes out at once; Ctrl-Z is a reverse write (`contacts_write::undo`). A version mismatch (412)
 //! stops the write and marks the contact `conflict`; nothing is overwritten.
 
+use std::rc::Rc;
 use crate::compose::{is_transient, retry_delay_secs, MAX_ATTEMPTS};
 use crate::db::Database;
 use crate::providers::contacts::error_status;
@@ -18,7 +19,7 @@ const KEEP_MS: i64 = 24 * 3600 * 1000;
 
 pub struct ContactsOutboxWorker {
     account_id: String,
-    db: Arc<Database>,
+    db: Rc<Database>,
     provider: Arc<dyn ContactsProvider>,
 }
 
@@ -37,7 +38,7 @@ pub fn short_error(e: &crate::errors::OmarchyError) -> String {
 }
 
 impl ContactsOutboxWorker {
-    pub fn new(account_id: &str, db: Arc<Database>, provider: Arc<dyn ContactsProvider>) -> Self {
+    pub fn new(account_id: &str, db: Rc<Database>, provider: Arc<dyn ContactsProvider>) -> Self {
         Self { account_id: account_id.to_string(), db, provider }
     }
 
@@ -189,8 +190,8 @@ mod tests {
         }
     }
 
-    fn setup(script: Vec<Result<Value>>) -> (ContactsOutboxWorker, Arc<Fake>, Arc<Database>) {
-        let db = Arc::new(Database::open_for_account(":memory:", "exchange-aaaaaa").unwrap());
+    fn setup(script: Vec<Result<Value>>) -> (ContactsOutboxWorker, Arc<Fake>, Rc<Database>) {
+        let db = Rc::new(Database::open_for_account(":memory:", "exchange-aaaaaa").unwrap());
         db.upsert_contact_folder(&ContactFolder { id: "f1".into(), display_name: "Contacts".into(), parent_folder_id: None }).unwrap();
         let fake = Arc::new(Fake { script: Mutex::new(script), calls: Mutex::new(vec![]) });
         (ContactsOutboxWorker::new("exchange-aaaaaa", db.clone(), fake.clone()), fake, db)

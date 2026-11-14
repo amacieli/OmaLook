@@ -7,6 +7,7 @@
 //! - Deduplicates against SQLite before insertion
 //! - Respects token validity and retries on auth failure
 
+use std::rc::Rc;
 use crate::db::Database;
 use crate::models::{MailFolder, Settings};
 use crate::providers::{EmailProvider, HistoryFetch};
@@ -61,7 +62,7 @@ const INBOX_POLL_SECS: u64 = 10;
 
 pub struct EmailDaemon {
     config: DaemonConfig,
-    db: Arc<Database>,
+    db: Rc<Database>,
     provider: Arc<dyn EmailProvider>,
     /// Last `read_push_serial` whose pushes (reads, actions, categories) were carried out.
     seen_push: std::sync::atomic::AtomicU64,
@@ -77,7 +78,7 @@ pub struct EmailDaemon {
 impl EmailDaemon {
     pub fn new(
         config: DaemonConfig,
-        db: Arc<Database>,
+        db: Rc<Database>,
         provider: Arc<dyn EmailProvider>,
     ) -> Self {
         Self {
@@ -1120,7 +1121,7 @@ impl EmailDaemon {
                 provider.fetch_all_folder_messages(&folder_id_owned, tx).await
             });
 
-            let db = Arc::clone(&self.db);
+            let db = Rc::clone(&self.db);
             let mut inserted = 0usize;
             let mut first_batch = true;
 
@@ -1251,7 +1252,7 @@ mod delta_tests {
         DeltaPage { upserts: up, removed: removed.into_iter().map(String::from).collect(), next_link: next.map(String::from) }
     }
     fn setup(script: Vec<(Vec<DeltaPage>, DeltaEnd)>) -> (EmailDaemon, Arc<Fake>) {
-        let db = Arc::new(Database::open_for_account(":memory:", "exchange-aaaaaa").unwrap());
+        let db = Rc::new(Database::open_for_account(":memory:", "exchange-aaaaaa").unwrap());
         db.upsert_folder(&MailFolder { id: "F".into(), display_name: "Inbox".into(), parent_folder_id: None,
                                        unread_item_count: None, total_item_count: None, well_known_name: Some("inbox".into()) }).unwrap();
         let fake = Arc::new(Fake { script: Mutex::new(script), links_seen: Mutex::new(vec![]) });
@@ -1274,7 +1275,7 @@ mod delta_tests {
         async fn is_token_valid(&self) -> Result<bool> { Ok(true) }
     }
     fn reconcile_setup(n: usize, listing: Vec<String>) -> EmailDaemon {
-        let db = Arc::new(Database::open_for_account(":memory:", "gmail-t1").unwrap());
+        let db = Rc::new(Database::open_for_account(":memory:", "gmail-t1").unwrap());
         for i in 0..n { db.insert_email(&msg(&format!("m{i}"), false)).unwrap(); }
         // Rows must be cached before the listing starts (the reconcile never removes newer rows).
         std::thread::sleep(std::time::Duration::from_millis(5));
@@ -1464,7 +1465,7 @@ mod body_prefetch_tests {
                        body: preview.into(), folder_id: Some("F".into()), is_read: false, ..Default::default() }
     }
     fn setup(p: Bodies, msgs: Vec<EmailMessage>) -> (EmailDaemon, Arc<Bodies>) {
-        let db = Arc::new(Database::open_for_account(":memory:", "exchange-aaaaaa").unwrap());
+        let db = Rc::new(Database::open_for_account(":memory:", "exchange-aaaaaa").unwrap());
         db.upsert_folder(&MailFolder { id: "F".into(), display_name: "Inbox".into(), parent_folder_id: None,
                                        unread_item_count: None, total_item_count: None, well_known_name: Some("inbox".into()) }).unwrap();
         db.insert_emails_batch(&msgs).unwrap();
@@ -1579,7 +1580,7 @@ mod gmail_filter_tests {
             conditions: vec![Pred::FromAddresses(vec![from.into()])], exceptions: vec![], actions: Actions { tags: vec![tag.into()], stop: false } }
     }
     fn setup() -> (EmailDaemon, Arc<FakeGmail>) {
-        let db = Arc::new(Database::open_for_account(":memory:", "gmail-aaaaaa").unwrap());
+        let db = Rc::new(Database::open_for_account(":memory:", "gmail-aaaaaa").unwrap());
         db.conn_for_tests().execute("INSERT INTO accounts (id, provider, email, created_at) VALUES ('gmail-aaaaaa', 'gmail', 'me@gmail.com', 1)", []).unwrap();
         let p = Arc::new(FakeGmail(Mutex::new(St::default())));
         (EmailDaemon::new(DaemonConfig::default(), db, p.clone()), p)
@@ -1760,7 +1761,7 @@ mod history_sync_tests {
     }
 
     fn setup(seed: &str, walk: Vec<EmailMessage>, walk_error: Option<&str>, history: Vec<std::result::Result<HistoryFetch, String>>) -> (EmailDaemon, Arc<HistFake>) {
-        let db = Arc::new(Database::open_for_account(":memory:", "gmail-h1").unwrap());
+        let db = Rc::new(Database::open_for_account(":memory:", "gmail-h1").unwrap());
         db.upsert_folder(&MailFolder { id: "F".into(), display_name: "Inbox".into(), parent_folder_id: None,
                                        unread_item_count: None, total_item_count: None, well_known_name: Some("inbox".into()) }).unwrap();
         let fake = Arc::new(HistFake {
