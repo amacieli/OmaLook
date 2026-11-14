@@ -12,7 +12,7 @@ IDs are stable (never reused). Status: `open` | `investigating` | `planned` | `i
 ### OL-056 — Loopback backend 27182 has no auth, no Host/Origin check, `ACAO *` (SEC-001; supersedes OL-006) (fixed in tree 2026-11-12 by R1.1–R1.4, needs `./build.sh --live`; not run live)
 - **Found:** High, Confirmed live (sandbox probes). Any local process/user, agent HTTP tool, or web page (after one LNA prompt) reads all cached data and drives 91 write routes. Details: `docs/REVIEW-2026-11-12.md`.
 - **Fix plan:** Roadmap R1.1–R1.4: single QML client (`Backend.qml`), request parser + timeouts, guard (reject Origin, exact Host, drop `ACAO *`), per-launch session token (0600 runtime file + env), fail-closed bind. First check that QML XHR sends no `Origin`.
-- **Progress (2026-11-12):** R1.1 done in tree (OL-074): every UI request goes through `qml/state/Backend.qml`. R1.2 done in tree (OL-059): request parser, timeouts, caps, thread per connection. R1.3 done in tree: `src/http/guard.rs` refuses (403, before any route runs) every request with an `Origin` header (any value, `null` included), with any `Sec-Fetch-*` header (browser no-cors GETs carry no Origin but always carry these), and without exactly one `Host: 127.0.0.1:<port>` (DNS rebinding, `localhost`, other ports). All 65 `Access-Control-Allow-Origin: *` and the one `Access-Control-Expose-Headers` are gone. The launcher's "backend already running" probe (`background::backend_listening`) now sends the exact Host. Verified in the sandbox, old `2e927f1` vs new: the review's browser-shaped probes (cross-origin `/accounts`, `Origin: null`, `Host: attacker.example`, `localhost`, `/fs/list` with Origin or no-cors fetch metadata, text/plain `compose/send`, MCP enable/domain/tool/token regenerate/copy, sender always-images, Gmail sign-in trigger, account remove, signature) all 200 + ACAO on old, all 403 on new with nothing changed (senders, signature, MCP settings, clipboard, browser stub untouched); no response carries ACAO. The real UI (offscreen quickshell) against the new backend: 39 logged requests, 0 refused; a second launch still detects the running backend. Missing `Host` is covered by unit tests (the sandbox probe for it was mis-written and sent the default host). R1.4 done in tree: per-launch session token (`src/http/session.rs`): 256 random bits, written at every backend start to `$XDG_RUNTIME_DIR/omalook/ui-<port>.token` (dir 0700, file 0600, temp + rename; `<config>/run/` without a runtime dir), handed to the UI in `OMALOOK_TOKEN`, sent by `Backend.qml` as `Authorization: Bearer …` on every request; the guard answers 401 without it (constant-time compare; after the 403 browser/Host checks). A launch that finds a running backend reads the file and gives its window the same token; `background::backend_listening` sends it and treats "no token file" as "no backend". Verified in the sandbox: token file 0600 in a 0700 dir, 64 hex chars, never in the backend log; 46 routes (24 GET, 22 POST incl. the review's 7 MCP-widening POSTs = probe Q3, background mode, token regenerate/copy, compose send, signature, senders, account remove, Gmail sign-in, `/fs/list`, `/sync/serial`) all 401 without the token, nothing changed (MCP still locked, background off, no senders, no signature, clipboard/browser stubs untouched); wrong token 401; Origin with the right token 403; right token 200. Real UI (offscreen) against the new backend: 79 requests, 0 refused, including a second launch that found the running backend and opened a window with its token. Curl debugging now: `curl -H "Authorization: Bearer $(cat $XDG_RUNTIME_DIR/omalook/ui-27182.token)" http://127.0.0.1:27182/…` (Host must stay `127.0.0.1:<port>`). Residual (accepted, review §4.2 Option A): same-uid processes can read the token file and the UI's environment (inherited by programs the UI starts); they can read the keyring and the DB too. Checked for R1.3: in a sandboxed run of the whole UI (122 requests, GET and POST, async and the sync draft save) QML XHR sent **no `Origin` header**, and `Host` was always `127.0.0.1:<port>`. R1.5 done in tree (OL-057, see there). R1.6 done in tree (OL-058, see there). R1 (all six steps) done in tree; not yet deployed.
+- **Progress (2026-11-12):** R1.1 done in tree (OL-074): every UI request goes through `qml/state/Backend.qml`. R1.2 done in tree (OL-059): request parser, timeouts, caps, thread per connection. R1.3 done in tree: `src/http/guard.rs` refuses (403, before any route runs) every request with an `Origin` header (any value, `null` included), with any `Sec-Fetch-*` header (browser no-cors GETs carry no Origin but always carry these), and without exactly one `Host: 127.0.0.1:<port>` (DNS rebinding, `localhost`, other ports). All 65 `Access-Control-Allow-Origin: *` and the one `Access-Control-Expose-Headers` are gone. The launcher's "backend already running" probe (`background::backend_listening`) now sends the exact Host. Verified in the sandbox, old `2e927f1` vs new: the review's browser-shaped probes (cross-origin `/accounts`, `Origin: null`, `Host: attacker.example`, `localhost`, `/fs/list` with Origin or no-cors fetch metadata, text/plain `compose/send`, MCP enable/domain/tool/token regenerate/copy, sender always-images, Gmail sign-in trigger, account remove, signature) all 200 + ACAO on old, all 403 on new with nothing changed (senders, signature, MCP settings, clipboard, browser stub untouched); no response carries ACAO. The real UI (offscreen quickshell) against the new backend: 39 logged requests, 0 refused; a second launch still detects the running backend. Missing `Host` is covered by unit tests (the sandbox probe for it was mis-written and sent the default host). R1.4 done in tree: per-launch session token (`src/http/session.rs`): 256 random bits, written at every backend start to `$XDG_RUNTIME_DIR/omalook/ui-<port>.token` (dir 0700, file 0600, temp + rename; `<config>/run/` without a runtime dir), handed to the UI in `OMALOOK_TOKEN`, sent by `Backend.qml` as `Authorization: Bearer …` on every request; the guard answers 401 without it (constant-time compare; after the 403 browser/Host checks). A launch that finds a running backend reads the file and gives its window the same token; `background::backend_listening` sends it and treats "no token file" as "no backend". Verified in the sandbox: token file 0600 in a 0700 dir, 64 hex chars, never in the backend log; 46 routes (24 GET, 22 POST incl. the review's 7 MCP-widening POSTs = probe Q3, background mode, token regenerate/copy, compose send, signature, senders, account remove, Gmail sign-in, `/fs/list`, `/sync/serial`) all 401 without the token, nothing changed (MCP still locked, background off, no senders, no signature, clipboard/browser stubs untouched); wrong token 401; Origin with the right token 403; right token 200. Real UI (offscreen) against the new backend: 79 requests, 0 refused, including a second launch that found the running backend and opened a window with its token. Curl debugging now: `curl -H "Authorization: Bearer $(cat $XDG_RUNTIME_DIR/omalook/ui-27182.token)" http://127.0.0.1:27182/…` (Host must stay `127.0.0.1:<port>`). Residual (accepted, review §4.2 Option A): same-uid processes can read the token file and the UI's environment (inherited by programs the UI starts); they can read the keyring and the DB too. Checked for R1.3: in a sandboxed run of the whole UI (122 requests, GET and POST, async and the sync draft save) QML XHR sent **no `Origin` header**, and `Host` was always `127.0.0.1:<port>`. R1.5 done in tree (OL-057, see there). R1.6 done in tree (OL-058, see there). R1 (all six steps) done and deployed 2026-11-13. R2 round 1 in tree (2.1-2.4, 2.6-2.8, 2.10, 2.11, 2.13); open: 2.5 supervisor, 2.9 401/Retry-After, 2.12 privacy policy. Follow-ups: daemons still put account ids in perf.log spans (R2.7 covered request lines only); Gmail purge rule duplicated in `email_daemon::deletion_is_believable` vs `Database::purge_unseen` (merge in R3.3).
 
 ### OL-057 — Any readable local file can be attached via `/compose/send` and `/drafts/save` (SEC-002) (open, security review 2026-11-12)
 - **Found:** High, Confirmed up to send (`main.rs:1322-1394`, `attach_spool.rs:53-132`). Same class: contact photo (`main.rs:1548-1568`) and import (`1603-1613`) read any path. Details: `docs/REVIEW-2026-11-12.md`.
@@ -35,15 +35,15 @@ IDs are stable (never reused). Status: `open` | `investigating` | `planned` | `i
 - **Fix plan:** Closed by OL-056; add per-route refusal tests.
 - **Progress (R1.3/R1.4, in tree):** signature, sender always-html/images, rules add, lists: 403 from browsers, 401 without the session token (sandbox probes, nothing saved). Per-route refusal tests in Rust wait for the typed router (R3.1); the sandbox probe list covers them meanwhile.
 
-### OL-061 — Qt HTML fallback fetches `style="…url(http…)"` despite images blocked (SEC-010) (open, security review 2026-11-12)
+### OL-061 — Qt HTML fallback fetches `style="…url(http…)"` despite images blocked (SEC-010) (fixed in tree 2026-11-13 by R2.1, needs `./build.sh --live`; not run live)
 - **Found:** Medium, Confirmed live (`qml/mail/format.js:240-242`; fallback forced by a 60,000-px mail; helper disabled for the session after 3 failures). Details: `docs/REVIEW-2026-11-12.md`.
 - **Fix plan:** Drop `url(` in style values; reset helper failure counter per message; sanitizer corpus tests (R2.1).
 
-### OL-062 — Qt HTML fallback opens any link scheme (`file:`, `data:`) (SEC-011) (open, security review 2026-11-12)
+### OL-062 — Qt HTML fallback opens any link scheme (`file:`, `data:`) (SEC-011) (fixed in tree 2026-11-13 by R2.2, needs `./build.sh --live`; not run live)
 - **Found:** Low, Confirmed (corpus S06/S08/S09; `MessagePreview.qml:898`, `:203`, `:756`). Details: `docs/REVIEW-2026-11-12.md`.
 - **Fix plan:** One QML `openExternal()` allow-list (http, https, mailto) for all 12 `Qt.openUrlExternally` sites (R2.2).
 
-### OL-063 — Remove account leaves 18 tables and per-account cache dirs (SEC-012) (open, security review 2026-11-12)
+### OL-063 — Remove account leaves 18 tables and per-account cache dirs (SEC-012) (fixed in tree 2026-11-13 by R2.3, needs `./build.sh --live`; not run live)
 - **Found:** Medium, Confirmed by failing test (`p3-review-tests.patch`, `review_sec012.rs`); contradicts `docs/privacy-policy.md:75-79`. 0 orphans today (latent). Details: `docs/REVIEW-2026-11-12.md`.
 - **Fix plan:** `ACCOUNT_TABLES` + `sqlite_master` test, delete in one transaction, remove cache dirs, secure delete (R2.3).
 
@@ -52,11 +52,11 @@ IDs are stable (never reused). Status: `open` | `investigating` | `planned` | `i
 - **Fix plan:** Exit loudly on bind failure, UI shows 'backend unavailable' (part of R1.4).
 - **Fix (R1.4):** `main` binds 127.0.0.1:<port> before anything else starts; on failure it prints why and exits 2, and no window is opened (so no UI ever talks to the squatter). The "already running?" probe only connects when this user's token file exists and only accepts a 200 with that token. Verified in the sandbox: a Python listener holding 27182 → OmaLook exit 2, quickshell never started, the squatter received 0 bytes.
 
-### OL-065 — Known-vulnerable dependencies: 15 RustSec advisories, no audit gate (SEC-007) (open, security review 2026-11-12)
+### OL-065 — Known-vulnerable dependencies: 15 RustSec advisories, no audit gate (SEC-007) (audit/deny gate in `scripts/verify.sh` 2026-11-13 by R2.11; 11 current advisories ignored by id in `scripts/audit-ignore.txt`, upgrades in R4.1)
 - **Found:** Medium as policy, Confirmed (`cargo audit` 0.23.0). Low exploitability (TLS client only, SQL bound). Details: `docs/REVIEW-2026-11-12.md`.
 - **Fix plan:** R2.11 `cargo audit` + `deny.toml` in `scripts/verify.sh`; R4.1 drop reqwest 0.11, update ureq/rustls, rusqlite ≥ fixed SQLite.
 
-### OL-066 — Any local process can abort Google sign-in with a bad callback (SEC-006) (open, security review 2026-11-12)
+### OL-066 — Any local process can abort Google sign-in with a bad callback (SEC-006) (fixed in tree 2026-11-13 by R2.8, needs `./build.sh --live`; not run live)
 - **Found:** Low, Likely (`google_auth.rs:257-268`). Details: `docs/REVIEW-2026-11-12.md`.
 - **Fix plan:** Answer 404 to mismatched `state` and keep waiting (R2.8).
 
@@ -77,7 +77,7 @@ IDs are stable (never reused). Status: `open` | `investigating` | `planned` | `i
 - **Fix plan:** R1.2 thread per connection; R3.3 open-once connections; R3.4 shared runtime.
 - **Progress (R1.2, in tree):** each connection has its own thread, and the inline provider/cache-scan reads (`GET /calendar/find`, `/compose/originals`, `/contacts/directory`, `/contacts/get`, `/drafts`, `/drafts/get`, `/rules`, `/rules/preview`, `/rules/filter-preview`, `/local-rules`) plus `/sync/serial` and `POST /perf` skip the dispatch lock, so they no longer hold up other requests. Every other route still runs one at a time (a slow write still delays other writes, as before). R3.3/R3.4 open.
 
-### OL-071 — Gmail delete-reconcile has no sanity cap (ARCH-S1) (open, security review 2026-11-12)
+### OL-071 — Gmail delete-reconcile has no sanity cap (ARCH-S1) (fixed in tree 2026-11-13 by R2.4, needs `./build.sh --live`; not run live)
 - **Found:** Low–Medium, Confirmed by failing test (`review_archs1.rs`: Ok([]) → 200 cached messages deleted). Details: `docs/REVIEW-2026-11-12.md`.
 - **Fix plan:** Reuse the Graph purge guard (R2.4).
 
@@ -98,15 +98,15 @@ IDs are stable (never reused). Status: `open` | `investigating` | `planned` | `i
 - **Found:** Low (debt), Confirmed: zero `#[test]` in `main.rs`; 29 Graph URL literals. Details: `docs/REVIEW-2026-11-12.md`.
 - **Fix plan:** Router tests from R1.4; typed router R3.1; injectable base URLs R3.8.
 
-### OL-076 — Config/cache dirs 0755, DB/settings/perf.log 0644 (HARD-1) (open, security review 2026-11-12)
+### OL-076 — Config/cache dirs 0755, DB/settings/perf.log 0644 (HARD-1) (fixed in tree 2026-11-13 by R2.6, needs `./build.sh --live`; not run live)
 - **Found:** Low, Confirmed (home is 0710 here). Details: `docs/REVIEW-2026-11-12.md`.
 - **Fix plan:** Create dirs 0700 at startup in one place, daemon `umask 077` (R2.6).
 
-### OL-077 — perf.log records full request lines (paths, search terms) (HARD-2) (open, security review 2026-11-12)
+### OL-077 — perf.log records full request lines (paths, search terms) (HARD-2) (fixed in tree 2026-11-13 by R2.7, needs `./build.sh --live`; not run live)
 - **Found:** Low, Confirmed. Details: `docs/REVIEW-2026-11-12.md`.
 - **Fix plan:** Log method + route name only (R2.7).
 
-### OL-078 — MCP server has no connection cap (HARD-3) (open, security review 2026-11-12)
+### OL-078 — MCP server has no connection cap (HARD-3) (fixed in tree 2026-11-13 by R2.13, needs `./build.sh --live`; not run live)
 - **Found:** Low, Confirmed (code) (`mcp/server.rs:142`). Details: `docs/REVIEW-2026-11-12.md`.
 - **Fix plan:** Add a cap (R2.13).
 
@@ -114,7 +114,7 @@ IDs are stable (never reused). Status: `open` | `investigating` | `planned` | `i
 - **Found:** Low, Confirmed (code) (`main.rs:2900-4177`, method-less arms 3006/3700/3965). Details: `docs/REVIEW-2026-11-12.md`.
 - **Fix plan:** Typed router; move route groups out of `main.rs` (R3.1).
 
-### OL-080 — Raw In-Reply-To/References; `Cf` chars (U+202E) kept in saved names (HARD-5) (open, security review 2026-11-12)
+### OL-080 — Raw In-Reply-To/References; `Cf` chars (U+202E) kept in saved names (HARD-5) (fixed in tree 2026-11-13 by R2.10, needs `./build.sh --live`; not run live)
 - **Found:** Low, Confirmed (code) (`compose.rs:797-801`, `attachments.rs:105-127`). Details: `docs/REVIEW-2026-11-12.md`.
 - **Fix plan:** Strip CR/LF and `Cf` characters (R2.10).
 
