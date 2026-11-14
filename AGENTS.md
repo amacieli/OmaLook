@@ -7,7 +7,7 @@ Renamed from "omarchylook" on 2026-10-12. `README.md` is the short entry point; 
 
 ## Layout
 - `src/` Rust: `main.rs` (launcher + HTTP backend), `email_daemon.rs` (sync), `providers/`, `db.rs` + `db/` (SQLite+FTS5),
-  `compose.rs`, `outbox.rs`, `search.rs`, `invites.rs`, `calendar_daemon.rs`, `sms_daemon.rs`, `qt_bridge/`.
+  `compose.rs`, `outbox.rs`, `search.rs`, `invites.rs`, `calendar_daemon.rs`, `sms_daemon.rs`.
 - `qml/` UI (`shell.qml`, `AppShell.qml`, `mail/ compose/ keys/ settings/ state/ views/ Ui/`); `plugin/omalook-compose/` C++ QML plugin.
 - `tools/render/` WebKitGTK helper process that renders HTML mail to PNG (Qt's own renderer is not used for HTML).
 - `docs/` plans and specs (KEYS.md, PLAN-*.md, TRACKER.md); `notes/` is **gitignored** personal notes.
@@ -54,4 +54,4 @@ Renamed from "omarchylook" on 2026-10-12. `README.md` is the short entry point; 
 
 ## Delegation
 Haiku is fine for docs, renames, QML plumbing with a stated check (`cargo check`, `qmllint`, tests). Keep on Sonnet: auth/token code, async/`Send` boundaries,
-cxx-qt/FFI, shared types, sync correctness, and anything where the root cause is unknown.
+shared types, sync correctness, and anything where the root cause is unknown.

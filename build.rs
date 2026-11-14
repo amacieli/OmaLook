@@ -19,9 +19,6 @@ fn client_from_json(path: &PathBuf) -> Option<(String, String)> {
 }
 
 fn main() {
-    // CXX-Qt build configuration is currently disabled: qmlscene runs in a separate process.
-    println!("cargo:rerun-if-changed=src/qt_bridge/mod.rs");
-
     println!("cargo:rerun-if-env-changed=OMALOOK_GOOGLE_CLIENT_ID");
     println!("cargo:rerun-if-env-changed=OMALOOK_GOOGLE_CLIENT_SECRET");
     let project_file = PathBuf::from("google_client.json");
