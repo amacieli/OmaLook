@@ -12,12 +12,33 @@ pub fn routes() -> Vec<Route> {
         Route::new("GET", Exact("/folders"), Lock::Exclusive, folders),
         Route::new("GET", Exact("/accounts"), Lock::Exclusive, accounts),
         Route::new("GET", Exact("/tasks"), Lock::Exclusive, tasks),
+        Route::new("POST", Exact("/settings/db/rebuild"), Lock::Exclusive, db_rebuild),
     ]
+}
+
+/// POST /settings/db/rebuild `{"cancel": false}` — rebuild messages.db at the next start (R3.9); the UI
+/// offers it when `/sync/health` says the database is damaged. `{"cancel": true}` withdraws the request.
+/// The rebuild keeps the old file and every readable row (see `db_health`), so this destroys nothing.
+fn db_rebuild(c: &Ctx) -> Response {
+    let body = match c.json_body(4 * 1024) {
+        Ok(v) => v,
+        Err(e) => return Response::json(serde_json::json!({ "ok": false, "error": e }).to_string()),
+    };
+    let cancel = body["cancel"].as_bool().unwrap_or(false);
+    match crate::db_health::request_rebuild(c.config_dir, cancel) {
+        Ok(()) => Response::json(serde_json::json!({ "ok": true, "requested": !cancel, "restart_required": !cancel }).to_string()),
+        Err(e) => {
+            warn!("POST /settings/db/rebuild: {}", e);
+            Response::json(serde_json::json!({ "ok": false, "error": "could not save the request" }).to_string())
+        }
+    }
 }
 
 /// GET /sync/health — per-thread supervisor state (restarts, last panic text). No DB access.
 fn sync_health(_: &Ctx) -> Response {
-    Response::json(crate::supervisor::health_json().to_string())
+    let mut v = crate::supervisor::health_json();
+    v["database"] = crate::db_health::json();
+    Response::json(v.to_string())
 }
 
 /// GET /sync/serial — cheap change counters the UI polls (no DB access).
