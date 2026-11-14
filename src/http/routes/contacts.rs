@@ -169,10 +169,8 @@ fn get_contact(c: &Ctx) -> Response {
             let account = d["account_id"].as_str().unwrap_or("").to_string();
             if d["ok"] == true && !account.is_empty() && !id.starts_with("local-") && signed_in(&account) {
                 let provider = crate::scheduler::contacts_provider_for(&account);
-                if let Ok(rt) = tokio::runtime::Builder::new_current_thread().enable_all().build() {
-                    if let Ok(list) = rt.block_on(provider.get_extended(&id, &crate::contacts_write::ext_ids())) {
-                        d["contact"]["singleValueExtendedProperties"] = Value::Array(list.into_iter().map(|(i, v)| serde_json::json!({ "id": i, "value": v })).collect());
-                    }
+                if let Ok(list) = crate::runtime::block_on(provider.get_extended(&id, &crate::contacts_write::ext_ids())) {
+                    d["contact"]["singleValueExtendedProperties"] = Value::Array(list.into_iter().map(|(i, v)| serde_json::json!({ "id": i, "value": v })).collect());
                 }
             }
             d.to_string()
@@ -202,10 +200,7 @@ fn directory(c: &Ctx) -> Response {
         return refused("that account is not signed in");
     }
     let provider = crate::scheduler::contacts_provider_for(&account);
-    let Ok(rt) = tokio::runtime::Builder::new_current_thread().enable_all().build() else {
-        return refused("could not start");
-    };
-    Response::json(match rt.block_on(provider.directory_search(&q)) {
+    Response::json(match crate::runtime::block_on(provider.directory_search(&q)) {
         Ok(list) => serde_json::json!({ "ok": true, "people": list }).to_string(),
         Err(e) => err_json(&crate::contacts_outbox::short_error(&e)),
     })
@@ -243,11 +238,10 @@ fn contact_photo_path(config_dir: &PathBuf, id: &str) -> String {
     let id = id.to_string();
     std::thread::spawn(move || {
         let provider = crate::scheduler::contacts_provider_for(&account);
-        let Ok(rt) = tokio::runtime::Builder::new_current_thread().enable_all().build() else { return };
         if let Some(dir) = file.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
-        match rt.block_on(provider.get_photo(&id)) {
+        match crate::runtime::block_on(provider.get_photo(&id)) {
             Ok(Some(bytes)) if !bytes.is_empty() => {
                 let _ = std::fs::write(&file, bytes);
                 let _ = std::fs::remove_file(&none_marker);
@@ -299,10 +293,7 @@ fn set_photo(config_dir: &PathBuf, id: &str, path: &str) -> String {
         return err_json("that account is not signed in");
     }
     let provider = crate::scheduler::contacts_provider_for(&account);
-    let Ok(rt) = tokio::runtime::Builder::new_current_thread().enable_all().build() else {
-        return err_json("could not start");
-    };
-    match rt.block_on(provider.set_photo(id, &bytes)) {
+    match crate::runtime::block_on(provider.set_photo(id, &bytes)) {
         Ok(_) => {
             let f = photo_cache_file(id);
             let _ = std::fs::write(&f, &bytes);
@@ -532,11 +523,7 @@ fn contacts_folder_call(config_dir: &PathBuf, action: &str, req: &Value) -> Stri
         Err(e) => return err_json(&format!("database: {}", e)),
     };
     let provider = crate::scheduler::contacts_provider_for(&account);
-    let rt = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
-        Ok(r) => r,
-        Err(e) => return err_json(&e.to_string()),
-    };
-    let out: Result<Value, crate::errors::OmarchyError> = rt.block_on(async {
+    let out: Result<Value, crate::errors::OmarchyError> = crate::runtime::block_on(async {
         match action {
             "create" => {
                 if name.is_empty() {

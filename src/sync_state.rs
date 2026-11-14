@@ -160,8 +160,7 @@ mod read_push_tests {
 
     #[test]
     fn request_read_push_wakes_a_waiting_daemon_and_bumps_the_serial() {
-        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
-        rt.block_on(async {
+        crate::runtime::block_on(async {
             let before = read_push_serial();
             let mut wake = Box::pin(read_push_requested());
             let _ = wake.as_mut().enable();
@@ -173,8 +172,7 @@ mod read_push_tests {
 
     #[test]
     fn request_mail_sync_wakes_a_waiting_daemon_and_bumps_the_serial() {
-        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
-        rt.block_on(async {
+        crate::runtime::block_on(async {
             let before = mail_sync_serial();
             let mut wake = Box::pin(mail_sync_requested());
             let _ = wake.as_mut().enable();

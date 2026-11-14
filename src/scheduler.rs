@@ -321,11 +321,7 @@ where
         Some(account_id.to_string()),
         move || flag.load(Ordering::SeqCst),
         move || {
-            let rt = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
-                Ok(rt) => rt,
-                Err(e) => return error!("{}: cannot create runtime: {}", name, e),
-            };
-            rt.block_on(async {
+            crate::runtime::block_on(async {
                 tokio::select! {
                     _ = make() => {}
                     _ = wake.notified() => {}
