@@ -65,6 +65,7 @@ pub mod rules;
 pub mod view_state;
 pub mod background;
 pub mod mcp;
+pub mod runtime;
 
 pub use auth::AuthManager;
 pub use db::Database;

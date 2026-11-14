@@ -1181,7 +1181,7 @@ mod delta_tests {
         (EmailDaemon::new(DaemonConfig::default(), db, fake.clone()), fake)
     }
     fn run<F: std::future::Future>(f: F) -> F::Output {
-        tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(f)
+        crate::runtime::block_on(f)
     }
     fn read_flag(d: &EmailDaemon, id: &str) -> Option<bool> {
         d.db.message_is_read(id).ok().flatten()
@@ -1393,7 +1393,7 @@ mod body_prefetch_tests {
         (EmailDaemon::new(DaemonConfig::default(), db, p.clone()), p)
     }
     fn run<F: std::future::Future>(f: F) -> F::Output {
-        tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(f)
+        crate::runtime::block_on(f)
     }
 
     #[test]
@@ -1506,7 +1506,7 @@ mod gmail_filter_tests {
         (EmailDaemon::new(DaemonConfig::default(), db, p.clone()), p)
     }
     fn run<F: std::future::Future>(f: F) -> F::Output {
-        tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(f)
+        crate::runtime::block_on(f)
     }
     fn ops(d: &EmailDaemon) -> Vec<(String, String)> {
         d.db.recent_rule_ops("gmail-aaaaaa", 60).unwrap().into_iter().rev().map(|o| (o.kind, o.state)).collect()

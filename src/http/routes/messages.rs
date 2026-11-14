@@ -272,11 +272,7 @@ fn invite_info_json(config_dir: &PathBuf, id: &str) -> String {
             return json.clone();
         }
     }
-    let rt = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
-        Ok(rt) => rt,
-        Err(e) => return err(&format!("runtime: {}", e)),
-    };
-    match rt.block_on(GraphEmailProvider::new(AuthManager::for_account(&account)).fetch_invite_info(id)) {
+    match crate::runtime::block_on(GraphEmailProvider::new(AuthManager::for_account(&account)).fetch_invite_info(id)) {
         Ok(info) => {
             let json = info.to_json().to_string();
             if let Err(e) = db.set_invite_info(id, &json) {
@@ -322,13 +318,9 @@ fn list_info_json(config_dir: &PathBuf, id: &str) -> String {
         Ok(Some(a)) => a,
         _ => return err("unknown message"),
     };
-    let rt = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
-        Ok(rt) => rt,
-        Err(e) => return err(&format!("runtime: {}", e)),
-    };
     let headers = match crate::accounts::provider_of(&account) {
-        "gmail" => rt.block_on(crate::providers::gmail::GmailProvider::new(&account, None).fetch_list_headers(id)),
-        "exchange" => rt.block_on(GraphEmailProvider::new(AuthManager::for_account(&account)).fetch_list_headers(id)),
+        "gmail" => crate::runtime::block_on(crate::providers::gmail::GmailProvider::new(&account, None).fetch_list_headers(id)),
+        "exchange" => crate::runtime::block_on(GraphEmailProvider::new(AuthManager::for_account(&account)).fetch_list_headers(id)),
         _ => return err("this account type cannot tell whether a message came from a list"),
     };
     match headers {
@@ -366,13 +358,9 @@ fn remove_cancelled_json(config_dir: &PathBuf, id: &str) -> String {
     if crate::accounts::provider_of(&account) != "exchange" {
         return err("removing cancelled meetings is only supported for Microsoft accounts");
     }
-    let rt = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
-        Ok(rt) => rt,
-        Err(e) => return err(&format!("runtime: {}", e)),
-    };
     let graph = GraphEmailProvider::new(AuthManager::for_account(&account));
     // Fresh lookup, never the cache: a stale answer here could delete the wrong thing.
-    let mut info = match rt.block_on(graph.fetch_invite_info(id)) {
+    let mut info = match crate::runtime::block_on(graph.fetch_invite_info(id)) {
         Ok(i) => i,
         Err(e) => {
             warn!("Invite lookup before removing failed for {}: {}", id, e);
@@ -384,7 +372,7 @@ fn remove_cancelled_json(config_dir: &PathBuf, id: &str) -> String {
     }
     let mut removed = false;
     if let Some(event_id) = info.event_id.clone().filter(|_| info.removable()) {
-        match rt.block_on(graph.delete_event(&event_id)) {
+        match crate::runtime::block_on(graph.delete_event(&event_id)) {
             Ok(()) => removed = true,
             // Already gone (removed in Outlook, or the server dropped it): the goal is met.
             Err(e) if status_of(&e.to_string()) == Some(404) => {}
@@ -406,7 +394,7 @@ fn remove_cancelled_json(config_dir: &PathBuf, id: &str) -> String {
         warn!("Could not cache invite info of {}: {}", id, e);
     }
     let note = if removed {
-        refresh_calendar_note(&rt, db_path.to_str().unwrap_or("messages.db"), &account, info.start_date())
+        refresh_calendar_note(db_path.to_str().unwrap_or("messages.db"), &account, info.start_date())
     } else {
         "refreshed".to_string()
     };
@@ -444,13 +432,9 @@ fn respond_invite_json(config_dir: &PathBuf, id: &str, choice: &str) -> String {
     if crate::accounts::provider_of(&account) != "exchange" {
         return err("responding to invitations is only supported for Microsoft accounts");
     }
-    let rt = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
-        Ok(rt) => rt,
-        Err(e) => return err(&format!("runtime: {}", e)),
-    };
     let graph = GraphEmailProvider::new(AuthManager::for_account(&account));
     // Always look the invitation up afresh: the cache may predate a cancellation.
-    let mut info = match rt.block_on(graph.fetch_invite_info(id)) {
+    let mut info = match crate::runtime::block_on(graph.fetch_invite_info(id)) {
         Ok(i) => i,
         Err(e) => {
             warn!("Invite lookup before responding failed for {}: {}", id, e);
@@ -464,7 +448,7 @@ fn respond_invite_json(config_dir: &PathBuf, id: &str, choice: &str) -> String {
             else { "this message is not an open invitation" };
         return err(&format!("cannot respond: {}", why));
     };
-    if let Err(e) = rt.block_on(graph.respond_to_event(&event_id, op)) {
+    if let Err(e) = crate::runtime::block_on(graph.respond_to_event(&event_id, op)) {
         warn!("Respond {} to {} failed: {}", op, id, e);
         return match status_of(&e.to_string()) {
             Some(403) => err("not allowed: grant Calendars.ReadWrite to this account (sign in again after the Azure consent)"),
@@ -478,7 +462,7 @@ fn respond_invite_json(config_dir: &PathBuf, id: &str, choice: &str) -> String {
         warn!("Could not cache invite info of {}: {}", id, e);
     }
     // Every answer changes the calendar: accept/tentative add or update the event, decline removes it.
-    let note = refresh_calendar_note(&rt, db_path.to_str().unwrap_or("messages.db"), &account, info.start_date());
+    let note = refresh_calendar_note(db_path.to_str().unwrap_or("messages.db"), &account, info.start_date());
     out["ok"] = serde_json::json!(true);
     out["calendar"] = serde_json::json!(note);
     out.to_string()
@@ -556,14 +540,10 @@ pub(crate) fn message_body_json(config_dir: &PathBuf, id: &str) -> String {
         Ok(Some(a)) => a,
         _ => return err("unknown message"),
     };
-    let rt = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
-        Ok(rt) => rt,
-        Err(e) => return err(&format!("runtime: {}", e)),
-    };
     let fetched = if crate::accounts::provider_of(&account) == "gmail" {
-        rt.block_on(crate::providers::GmailProvider::new(&account, None).fetch_message_body(id))
+        crate::runtime::block_on(crate::providers::GmailProvider::new(&account, None).fetch_message_body(id))
     } else {
-        rt.block_on(GraphEmailProvider::new(AuthManager::for_account(&account)).fetch_message_body(id))
+        crate::runtime::block_on(GraphEmailProvider::new(AuthManager::for_account(&account)).fetch_message_body(id))
     };
     match fetched {
         Ok((t, c)) => {
@@ -612,8 +592,7 @@ pub(crate) fn attachment_list(config_dir: &PathBuf, db: &Database, id: &str) -> 
         let _ = message_body_json(config_dir, id); // fetches and caches the body
     }
     let body = match db.cached_body(id) { Ok(Some((t, c))) if t == "html" => Some(c), _ => None };
-    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e| format!("runtime: {}", e))?;
-    match rt.block_on(provider.fetch_attachments(id, body.as_deref())) {
+    match crate::runtime::block_on(provider.fetch_attachments(id, body.as_deref())) {
         Ok(list) => {
             if let Err(e) = db.store_attachments(id, &list) {
                 warn!("Could not cache attachments of {}: {}", id, e);
@@ -661,14 +640,10 @@ fn save_attachments_json(config_dir: &PathBuf, id: &str, att: Option<&str>) -> S
     };
     if wanted.is_empty() { return err("no such attachment"); }
     let provider = match graph_for_message(&db, id) { Ok(p) => p, Err(e) => return err(&e) };
-    let rt = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
-        Ok(rt) => rt,
-        Err(e) => return err(&format!("runtime: {}", e)),
-    };
     let dir = crate::attachments::download_dir(&config_dir.join("settings.toml"));
     let (mut saved, mut failed) = (Vec::new(), Vec::new());
     for a in &wanted {
-        match rt.block_on(provider.download_attachment(id, a, &dir)) {
+        match crate::runtime::block_on(provider.download_attachment(id, a, &dir)) {
             Ok(path) => saved.push(serde_json::json!({ "id": a.id, "name": a.name, "path": path.display().to_string() })),
             Err(e) => {
                 warn!("Attachment save failed ({}): {}", a.name, e);
@@ -792,11 +767,10 @@ fn remote_body_ids(conn: &rusqlite::Connection, folder_id: Option<&str>, account
         let (ids, m) = match hit {
             Some((_, ids, m)) => (ids, m),
             None => {
-                let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e| format!("runtime: {e}"))?;
                 let found = if crate::accounts::provider_of(&acct) == "gmail" {
-                    rt.block_on(crate::providers::GmailProvider::new(&acct, None).search_message_ids(folder.as_deref(), term, REMOTE_SEARCH_CAP))
+                    crate::runtime::block_on(crate::providers::GmailProvider::new(&acct, None).search_message_ids(folder.as_deref(), term, REMOTE_SEARCH_CAP))
                 } else {
-                    rt.block_on(GraphEmailProvider::new(AuthManager::for_account(&acct)).search_message_ids(folder.as_deref(), term, REMOTE_SEARCH_CAP))
+                    crate::runtime::block_on(GraphEmailProvider::new(AuthManager::for_account(&acct)).search_message_ids(folder.as_deref(), term, REMOTE_SEARCH_CAP))
                 };
                 let (ids, m) = found.map_err(|e| {
                     warn!("fullbody search failed for {}: {}", acct, e);

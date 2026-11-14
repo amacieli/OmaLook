@@ -54,15 +54,15 @@ fn err(m: &str) -> String {
 
 /// Re-read the account's calendar around `date` after an invitation changed it. Returns
 /// `"refreshed"` or `"not refreshed: ..."`. (Also used by the invitation routes in `main.rs`.)
-pub fn refresh_calendar_note(rt: &tokio::runtime::Runtime, db_path: &str, account: &str, date: Option<chrono::NaiveDate>) -> String {
+pub fn refresh_calendar_note(db_path: &str, account: &str, date: Option<chrono::NaiveDate>) -> String {
     match Database::open_for_account(db_path, account) {
         Err(e) => format!("not refreshed: {}", e),
         Ok(cal_db) => {
             let provider = Arc::new(crate::providers::GraphCalendarProvider::new(AuthManager::for_account(account)));
             let cal = crate::calendar_daemon::CalendarDaemon::new(Default::default(), Arc::new(cal_db), provider);
-            let near = rt.block_on(cal.refresh_near_window());
+            let near = crate::runtime::block_on(cal.refresh_near_window());
             let around = match date {
-                Some(d) => rt.block_on(cal.refresh_around(d)).map(|_| ()),
+                Some(d) => crate::runtime::block_on(cal.refresh_around(d)).map(|_| ()),
                 None => Ok(()),
             };
             match near.map(|_| ()).and(around) {

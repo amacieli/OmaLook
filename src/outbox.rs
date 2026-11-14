@@ -231,7 +231,7 @@ mod tests {
     }
 
     fn block<F: std::future::Future>(f: F) -> F::Output {
-        tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(f)
+        crate::runtime::block_on(f)
     }
 
     #[test]
@@ -260,9 +260,8 @@ mod tests {
     fn zero_delay_is_sent_by_the_waking_worker_without_waiting_for_any_poll() {
         // The real loop: a worker idle on its long wait must send as soon as a message is queued.
         let (w, fake, db) = setup(vec![]);
-        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         let local = tokio::task::LocalSet::new();
-        local.block_on(&rt, async {
+        crate::runtime::handle().block_on(local.run_until(async {
             tokio::task::spawn_local(async move { w.run().await });
             tokio::time::sleep(Duration::from_millis(50)).await; // worker is idle: nothing queued
             let queued = std::time::Instant::now();
@@ -274,15 +273,14 @@ mod tests {
             }
             assert_eq!(fake.sent.lock().unwrap().len(), 1, "sent without waiting for the idle timeout");
             assert!(queued.elapsed() < Duration::from_secs(2));
-        });
+        }));
     }
 
     #[test]
     fn a_delayed_message_goes_out_when_its_time_comes_not_before() {
         let (w, fake, db) = setup(vec![]);
-        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         let local = tokio::task::LocalSet::new();
-        local.block_on(&rt, async {
+        crate::runtime::handle().block_on(local.run_until(async {
             tokio::task::spawn_local(async move { w.run().await });
             tokio::time::sleep(Duration::from_millis(50)).await;
             db.outbox_enqueue("o1", "a1", &payload("soon"), Database::now_ms() + 400).unwrap();
@@ -291,7 +289,7 @@ mod tests {
             assert!(fake.sent.lock().unwrap().is_empty(), "still inside the delay");
             tokio::time::sleep(Duration::from_millis(500)).await;
             assert_eq!(fake.sent.lock().unwrap().len(), 1, "sent once the delay ran out");
-        });
+        }));
     }
 
     #[test]

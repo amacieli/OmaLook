@@ -649,7 +649,6 @@ pub fn find_free_time(config_dir: &Path, req: &FindRequest) -> Result<Value, Str
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "that account has no email address yet".to_string())?
         .to_lowercase();
-    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e| e.to_string())?;
     let tz = local_time_zone();
     let start = req.from.and_hms_opt(0, 0, 0).expect("midnight");
     let end = req.to.and_hms_opt(0, 0, 0).expect("midnight");
@@ -672,7 +671,7 @@ pub fn find_free_time(config_dir: &Path, req: &FindRequest) -> Result<Value, Str
     // getSchedule in chunks of 20 mailboxes (Graph's limit per call is conservative here).
     let mut answers: HashMap<String, Result<ScheduleAnswer, String>> = HashMap::new();
     for chunk in addresses.chunks(20) {
-        let answered = rt.block_on(async {
+        let answered = crate::runtime::block_on(async {
             if google {
                 crate::providers::google_calendar_write::schedule(&google_api, chunk, start, end, GRID_MINUTES as u32).await
             } else {
@@ -720,7 +719,7 @@ pub fn find_free_time(config_dir: &Path, req: &FindRequest) -> Result<Value, Str
         Err(e) => {
             mode = "own";
             reason = Some(format!("free/busy for your account is not available ({}); showing your calendar only", e));
-            let events = rt.block_on(window_events(&req.account_id, req.from, req.to)).map_err(|e| e.to_string())?;
+            let events = crate::runtime::block_on(window_events(&req.account_id, req.from, req.to)).map_err(|e| e.to_string())?;
             own_busy = busy_from_events(&events);
         }
     }
@@ -740,7 +739,7 @@ pub fn find_free_time(config_dir: &Path, req: &FindRequest) -> Result<Value, Str
             other_unread.push(json!({"account_id": id, "reason": "free/busy for this account type is not built yet"}));
             continue;
         }
-        match rt.block_on(window_events(id, req.from, req.to)) {
+        match crate::runtime::block_on(window_events(id, req.from, req.to)) {
             Ok(events) => {
                 other_checked += 1;
                 own_busy.extend(busy_from_events(&events));

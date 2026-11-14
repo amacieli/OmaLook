@@ -310,12 +310,8 @@ fn drafts_discard_answer(c: &Ctx) -> String {
     } else {
         Arc::new(GraphEmailProvider::new(AuthManager::for_account(&row.account_id)))
     };
-    let rt = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
-        Ok(rt) => rt,
-        Err(e) => return err(&format!("runtime: {}", e)),
-    };
     let spool = crate::draft_sync::default_root();
-    match rt.block_on(crate::draft_sync::discard(&account_db, provider.as_ref(), &spool, &id)) {
+    match crate::runtime::block_on(crate::draft_sync::discard(&account_db, provider.as_ref(), &spool, &id)) {
         Ok(()) => serde_json::json!({ "ok": true, "discarded": true, "id": id }).to_string(),
         Err(e) => err(&e.to_string()),
     }
@@ -445,12 +441,10 @@ fn identities_for(db: &Database, account: &str, force: bool) -> Vec<crate::ident
             return list.clone();
         }
     }
-    let fetched: Option<Result<Vec<Identity>, String>> = tokio::runtime::Builder::new_current_thread().enable_all().build().ok().map(|rt| {
-        match crate::accounts::provider_of(account) {
-            "gmail" => rt.block_on(crate::providers::gmail::GmailProvider::new(account, None).fetch_identities(&email)).map_err(|e| e.to_string()),
-            "exchange" => rt.block_on(GraphEmailProvider::new(AuthManager::for_account(account)).fetch_identities(&email)).map_err(|e| e.to_string()),
-            _ => Ok(Vec::new()),
-        }
+    let fetched: Option<Result<Vec<Identity>, String>> = Some(match crate::accounts::provider_of(account) {
+        "gmail" => crate::runtime::block_on(crate::providers::gmail::GmailProvider::new(account, None).fetch_identities(&email)).map_err(|e| e.to_string()),
+        "exchange" => crate::runtime::block_on(GraphEmailProvider::new(AuthManager::for_account(account)).fetch_identities(&email)).map_err(|e| e.to_string()),
+        _ => Ok(Vec::new()),
     });
     match fetched {
         Some(Ok(list)) => {
@@ -484,9 +478,8 @@ fn compose_originals_json(config_dir: &PathBuf, id: &str) -> String {
     };
     let account = match db.message_account(id) { Ok(Some(a)) => a, _ => return err("unknown message") };
     let list: Result<Vec<(String, String, i64)>, String> = if crate::accounts::provider_of(&account) == "gmail" {
-        let rt = match tokio::runtime::Builder::new_current_thread().enable_all().build() { Ok(rt) => rt, Err(e) => return err(&format!("runtime: {}", e)) };
         let p = crate::providers::gmail::GmailProvider::new(&account, None);
-        rt.block_on(p.list_attachments(id)).map(|v| v.into_iter().map(|(i, n, s)| (i, n, s as i64)).collect()).map_err(|e| { warn!("Forward: attachment list failed for {}: {}", id, e); "could not read the original's attachments".to_string() })
+        crate::runtime::block_on(p.list_attachments(id)).map(|v| v.into_iter().map(|(i, n, s)| (i, n, s as i64)).collect()).map_err(|e| { warn!("Forward: attachment list failed for {}: {}", id, e); "could not read the original's attachments".to_string() })
     } else {
         attachment_list(config_dir, &db, id).map(|v| v.into_iter().filter(|a| !a.inline && a.saveable()).map(|a| (a.id, a.name, a.size)).collect())
     };

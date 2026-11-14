@@ -93,7 +93,7 @@ mod tests {
         async fn is_token_valid(&self) -> Result<bool> { Ok(true) }
     }
     fn task(id: &str, list: &str) -> Task { Task { id: id.into(), list_id: list.into(), title: id.into(), importance: "normal".into(), ..Default::default() } }
-    fn run<F: std::future::Future>(f: F) -> F::Output { tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(f) }
+    fn run<F: std::future::Future>(f: F) -> F::Output { crate::runtime::block_on(f) }
 
     #[test]
     fn a_failed_list_keeps_its_cached_tasks_and_the_others_update() {
