@@ -50,6 +50,9 @@ FocusScope {
   onAttachmentsChanged: if (root._ready) root.saveDraftNow("editing")
   property var missingNames: []              // draft attachments whose spool copy is gone (AttachStrip "!")
   property var listDir: null
+  // registerFiles(purpose, paths, cb(files, refused, error)) from the owner (R1.5, OL-057): the backend only
+  // accepts paths the UI registered, so every new local file is registered before it enters the list or the text.
+  property var registerFiles: null
   property string browseDir: ""
   property var recentDirs: []
 
@@ -289,6 +292,29 @@ FocusScope {
     root._pictureSeq += 1
     return "omalook-" + Date.now().toString(36) + "-" + root._pictureSeq + "@omalook"
   }
+  // Every new local file (picked, pasted, dropped, a clipboard picture) goes through here: it is registered with
+  // the backend first, and only the canonical paths the backend returned are added. asPicture is captured by the
+  // caller at pick time. doneText (optional) is function(addedCount) -> status line, shown after a successful add.
+  // Refused files are not added; their errors go in the status line.
+  function _addFiles(files, asPicture, doneText) {
+    if (files.length === 0) return
+    var prefix = asPicture ? "Not inserted: " : "Not attached: "
+    if (!root.registerFiles) { root.localStatus = prefix + "file access is not available"; return }
+    root.registerFiles("attach", files.map(function(f) { return f.path }), function(reg, refused, err) {
+      if (err !== "") { root.localStatus = prefix + err; return }
+      var m = Att.matchRegistered(files, reg, refused)
+      var st = ""
+      if (m.entries.length > 0) {
+        if (asPicture) root.insertPictures(m.entries)
+        else root.addAttachments(m.entries)
+        st = root.localStatus
+      }
+      if (typeof doneText === "function") { var t = doneText(m.entries.length); if (t !== "") st = t }
+      if (m.refusedMsg !== "") st = st !== "" ? st + " " + m.refusedMsg : m.refusedMsg
+      if (st !== "") root.localStatus = st
+    })
+  }
+
   // Files from the browser (insert mode) or the clipboard: [{ path, name, size }].
   function insertPictures(files) {
     var pics = files.filter(function(f) { return Att.isPicture(f.name) })
@@ -347,14 +373,7 @@ FocusScope {
   }
   function _pastedPicture(path) {
     if (path === "") { root.localStatus = "The clipboard picture could not be read."; return }
-    var f = { path: path, name: "pasted-picture.png", size: 0 }
-    var base = Att.baseName(path)
-    if (!root.listDir) { root.insertPictures([f]); return }
-    root.listDir(Att.dirName(path), true, function(r) {
-      var hit = (r && r.entries ? r.entries : []).filter(function(e) { return e.name === base })
-      f.size = hit.length > 0 ? (hit[0].size || 0) : 0
-      root.insertPictures([f])
-    })
+    root._addFiles([{ path: path, name: "pasted-picture.png", size: 0 }], true)
   }
   Process {
     id: pasteBody
@@ -371,9 +390,12 @@ FocusScope {
     var dirs = {}, files = [], skipped = 0, waiting = 0
     paths.forEach(function(p) { var d = Att.dirName(p); (dirs[d] = dirs[d] || []).push(p) })
     var finish = function() {
-      if (files.length > 0) root.addAttachments(files)
-      if (skipped > 0) root.localStatus = skipped + (skipped === 1 ? " item" : " items") + " on the clipboard could not be attached (folders, or not readable)."
-      else if (files.length > 0) root.localStatus = "Attached " + files.length + (files.length === 1 ? " file" : " files") + " from the clipboard."
+      var skipMsg = skipped > 0 ? skipped + (skipped === 1 ? " item" : " items") + " on the clipboard could not be attached (folders, or not readable)." : ""
+      if (files.length === 0) { root.localStatus = skipMsg; return }
+      root._addFiles(files, false, function(n) {
+        if (skipMsg !== "") return skipMsg
+        return n > 0 ? "Attached " + n + (n === 1 ? " file" : " files") + " from the clipboard." : ""
+      })
     }
     var names = Object.keys(dirs)
     if (!root.listDir) { skipped = paths.length; finish(); return }
@@ -874,8 +896,9 @@ else if (ctrl && !shift && e.key === Qt.Key_V) { root.startPaste(); e.accepted =
     baseBytes: root.attachedBytes
     attached: root.liveAttachments.map(function(a) { return a.path })
     onPicked: function(files) {
-      if (root._pictureMode) { root._pictureMode = false; root.insertPictures(files) }
-      else root.addAttachments(files)
+      var asPicture = root._pictureMode   // captured now: a toggle while the registration runs does not move the files
+      root._pictureMode = false
+      root._addFiles(files, asPicture)
     }
     onCanceled: { root._pictureMode = false; editor.forceActiveFocus() }
     onNavigated: function(d) { root.browsed(d) }

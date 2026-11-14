@@ -1379,6 +1379,28 @@ Item {
     })
   }
 
+  // R1.5 (OL-057): every local file the UI is about to attach, insert, import or use as a photo is
+  // registered first; the backend refuses any path it was not given this way. purpose: "attach" |
+  // "photo" | "import". callback(files, refused, error): files = [{ path (canonical), name, size }] in
+  // the order accepted, refused = [{ path (as sent), error }], error = "" on success.
+  // Long lists go in chunks of 256 (the backend's limit).
+  function registerFiles(purpose, paths, callback) {
+    if (!paths || paths.length === 0) { callback([], [], ""); return }
+    var first = paths.slice(0, 256), rest = paths.slice(256)
+    request("POST", "/files/register", function(xhr) {
+      var r = null
+      try { r = JSON.parse(xhr.responseText) } catch (e) {}
+      if (xhr.status !== 200 || !r || typeof r !== "object") { callback([], [], "could not reach the backend"); return }
+      if (r.ok !== true) { callback([], [], String(r.error || "files not registered")); return }
+      var files = r.files || [], refused = r.refused || []
+      if (rest.length === 0) { callback(files, refused, ""); return }
+      registerFiles(purpose, rest, function(files2, refused2, err) {
+        if (err !== "") { callback([], [], err); return }
+        callback(files.concat(files2), refused.concat(refused2), "")
+      })
+    }, JSON.stringify({ purpose: purpose, paths: first }))
+  }
+
   function closeCompose() { composing = false; composeStatus = ""; focusRequested() }
 
   // ---- Drafts folder (OL-048): Enter or `e` on a draft row opens it in the compose pane. A local draft

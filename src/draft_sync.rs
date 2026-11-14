@@ -255,6 +255,9 @@ async fn send_claimed(db: &Database, provider: &dyn EmailProvider, spool_root: &
     if !missing.is_empty() {
         return Err(OmarchyError::HttpError(format!("attachment missing from the saved draft: {}. Nothing was sent.", missing.join(", "))));
     }
+    // Only spooled copies are read here (OL-057). A draft send's copies sit in the outgoing spool
+    // (the outbox snapshot), so both spool roots count.
+    crate::picked::check_stored(&msg.attachments, &[spool_root.to_path_buf(), crate::attach_spool::default_root()]).map_err(OmarchyError::HttpError)?;
     match row.remote_id.clone() {
         // Never pushed: a plain send creates no copy anywhere but Sent.
         None => provider.send_message(msg, from).await?,
@@ -313,6 +316,18 @@ pub fn new_draft_id() -> String {
     format!("dr-{:x}-{:04x}", Database::now_ms(), COUNTER.fetch_add(1, Ordering::Relaxed) & 0xffff)
 }
 
+/// The attachments of the stored draft `draft_id`: empty for an empty id, no row, or an unreadable
+/// payload. Used by `save_local` and the `POST /drafts/save` check (what an earlier save stored).
+pub fn stored_attachments(db: &Database, draft_id: &str) -> Vec<OutgoingAttachment> {
+    if draft_id.is_empty() {
+        return Vec::new();
+    }
+    match db.draft_get(draft_id) {
+        Ok(Some(row)) => serde_json::from_str::<OutgoingMessage>(&row.payload_json).map(|m| m.attachments).unwrap_or_default(),
+        _ => Vec::new(),
+    }
+}
+
 /// Save what the compose pane holds as the local copy of a draft (`POST /drafts/save`). The new
 /// attachments are copied into the spool under the draft's id (`attach_spool::snapshot_draft`); an
 /// attachment that was already spooled and whose copy has gone stays in the list, so the UI shows
@@ -330,7 +345,7 @@ pub fn save_local(db: &Database, spool_root: &Path, msg: &mut OutgoingMessage, s
         }
         match db.draft_get(&msg.draft_id).map_err(|e| e.to_string())? {
             Some(row) if row.state == "sent" => return Err("this draft was already sent".into()),
-            Some(row) => serde_json::from_str::<OutgoingMessage>(&row.payload_json).map(|m| m.attachments).unwrap_or_default(),
+            Some(_) => stored_attachments(db, &msg.draft_id),
             None => Vec::new(),
         }
     };

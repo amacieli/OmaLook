@@ -159,3 +159,43 @@ function pictureFiles(attachments, liveCids) {
 }
 function baseName(p) { var i = String(p).lastIndexOf("/"); return i < 0 ? String(p) : String(p).slice(i + 1) }
 function dirName(p) { var i = String(p).lastIndexOf("/"); return i <= 0 ? "/" : String(p).slice(0, i) }
+
+// The answer of POST /files/register for the files the user picked: which of them were accepted, under
+// which canonical path, and which were refused. `inputs` are the picked entries [{ path, name, size }] in
+// the order they were sent; `reply` is { files, refused } from the backend (refused[i].path is the path as
+// sent). Returns { entries: [{ path, name, size }] (canonical path, the picked display name),
+// refusedMsg: "Not attached: NAME (ERROR); ..." or "" , error: "" or the backend's reason }.
+// Refused inputs are matched by the path as sent; accepted ones are zipped with `files` in order, and if
+// the counts disagree they are matched by base name instead.
+function matchRegistered(inputs, files, refused) {
+  var refusedErr = {}, refusedCount = {}, i
+  for (i = 0; i < refused.length; i++) {
+    var p = String(refused[i].path)
+    refusedCount[p] = (refusedCount[p] || 0) + 1
+    if (refusedErr[p] === undefined) refusedErr[p] = String(refused[i].error || "refused")
+  }
+  var accepted = [], refusedParts = []
+  for (i = 0; i < inputs.length; i++) {
+    var f = inputs[i], key = String(f.path)
+    if (refusedCount[key] > 0) {
+      refusedCount[key] -= 1
+      refusedParts.push(f.name + " (" + refusedErr[key] + ")")
+    } else accepted.push(f)
+  }
+  var entries = []
+  if (accepted.length === files.length) {
+    for (i = 0; i < accepted.length; i++)
+      entries.push({ path: files[i].path, name: accepted[i].name, size: files[i].size || 0 })
+  } else {
+    var used = {}
+    for (i = 0; i < accepted.length; i++) {
+      var want = baseName(accepted[i].path), hit = -1
+      for (var j = 0; j < files.length; j++)
+        if (!used[j] && files[j].name === want) { hit = j; break }
+      if (hit < 0) { refusedParts.push(accepted[i].name + " (not registered)"); continue }
+      used[hit] = true
+      entries.push({ path: files[hit].path, name: accepted[i].name, size: files[hit].size || 0 })
+    }
+  }
+  return { entries: entries, refusedMsg: refusedParts.length > 0 ? "Not attached: " + refusedParts.join("; ") : "" }
+}

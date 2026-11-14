@@ -96,6 +96,7 @@ RowLayout {
       item.largeAudience = Qt.binding(function() { return root.app.largeAudienceConfirm })
       item.status = Qt.binding(function() { return root.app.composeStatus })
       item.listDir = function(path, hidden, cb) { root.app.listDir(path, hidden, cb) }
+      item.registerFiles = function(purpose, paths, cb) { root.app.registerFiles(purpose, paths, cb) }
       item.browseDir = Qt.binding(function() { return root.app.attachBrowseDir })
       item.recentDirs = Qt.binding(function() { return root.app.attachRecentDirs })
       item.fetchLimits = function(accountId, cb) { root.app.attachLimits(accountId, cb) }

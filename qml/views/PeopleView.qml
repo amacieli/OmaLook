@@ -32,6 +32,9 @@ Item {
 
     // [{id, provider, email, signed_in}] from the app; "" = every account, else one account's email
     property var    appAccounts: []
+    // registerFiles(purpose, paths, cb(files, refused, error)) from the app (R1.5, OL-057): a path is sent to the
+    // backend only after it was registered, and only the canonical path it returns is sent.
+    property var    registerFiles: null
     property string accountFilter: ""
 
     // ── list state ─────────────────────────────────────────────────
@@ -323,16 +326,28 @@ Item {
             root.notice(r.ok === true ? "Saved " + r.count + " contact" + (r.count === 1 ? "" : "s") + " to " + r.path : (r.error || "not exported"))
         })
     }
+    // Registers one local path for `purpose` ("import" | "photo") and calls go(canonicalPath). On refusal or
+    // error it shows the reason and does not call go: the path is never sent unregistered.
+    function _registerOne(purpose, path, failText, go) {
+        if (!registerFiles) { root.notice(failText + ": file access is not available"); return }
+        registerFiles(purpose, [path], function(files, refused, err) {
+            if (err !== "") { root.notice(failText + ": " + err); return }
+            if (files.length !== 1) { root.notice(failText + ": " + (refused.length > 0 ? refused[0].error : "not registered")); return }
+            go(files[0].path)
+        })
+    }
     function importFile(path) {
-        var acct = selected ? selected.account_id : ""
-        if (acct === "") {
-            var w = appAccounts.filter(function(a) { return a.signed_in && a.provider !== "gmail" })
-            if (w.length > 0) acct = w[0].id
-        }
-        _postJson("/contacts/import", { path: path, account_id: acct, folder_id: selected ? selected.folder_id : "" }, function(r) {
-            if (r.ok !== true) { root.notice(r.error || "not imported"); return }
-            root.load()
-            root.notice("Imported " + r.created + (r.skipped_existing ? ", " + r.skipped_existing + " already there" : "") + (r.failed ? ", " + r.failed + " refused (" + r.first_error + ")" : "") + (r.dropped_fields ? ", " + r.dropped_fields + " fields did not fit" : ""))
+        _registerOne("import", path, "Not imported", function(canonical) {
+            var acct = selected ? selected.account_id : ""
+            if (acct === "") {
+                var w = appAccounts.filter(function(a) { return a.signed_in && a.provider !== "gmail" })
+                if (w.length > 0) acct = w[0].id
+            }
+            _postJson("/contacts/import", { path: canonical, account_id: acct, folder_id: selected ? selected.folder_id : "" }, function(r) {
+                if (r.ok !== true) { root.notice(r.error || "not imported"); return }
+                root.load()
+                root.notice("Imported " + r.created + (r.skipped_existing ? ", " + r.skipped_existing + " already there" : "") + (r.failed ? ", " + r.failed + " refused (" + r.first_error + ")" : "") + (r.dropped_fields ? ", " + r.dropped_fields + " fields did not fit" : ""))
+            })
         })
     }
     // ── directory (phase 6): people in the organisation who are not in your contacts yet ──
@@ -380,9 +395,12 @@ Item {
     Timer { id: photoRetry; interval: 2500; onTriggered: root.loadPhoto(false) }
     function setPhoto(path) {
         if (!selected) return
-        _postJson("/contacts/photo/set", { id: selected.id, path: path }, function(r) {
-            root.notice(r.ok === true ? "Photo set" : (r.error || "photo not set"))
-            if (r.ok === true) root.loadPhoto(false)
+        var id = selected.id
+        _registerOne("photo", path, "Photo not set", function(canonical) {
+            _postJson("/contacts/photo/set", { id: id, path: canonical }, function(r) {
+                root.notice(r.ok === true ? "Photo set" : (r.error || "photo not set"))
+                if (r.ok === true) root.loadPhoto(false)
+            })
         })
     }
 

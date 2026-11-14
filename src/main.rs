@@ -1049,6 +1049,40 @@ fn read_post_body(stream: &mut std::net::TcpStream, initial: &[u8], limit: usize
     String::from_utf8(data[header_end..header_end + len].to_vec()).map_err(|_| "message is not valid UTF-8".into())
 }
 
+/// POST /files/register — `{"purpose": "attach"|"photo"|"import", "paths": [...]}`. Each path the user
+/// picked, pasted, dropped or typed joins the allow-list (`picked::register`). Answers
+/// `{ok, files, refused}`; a refused entry echoes the path as sent and names no other file.
+fn files_register_response(stream: &mut std::net::TcpStream, initial: &[u8]) -> String {
+    use omalook::picked::{self, Purpose};
+    let err = |m: &str| serde_json::json!({ "ok": false, "error": m }).to_string();
+    let raw = match read_post_body(stream, initial, 256 * 1024) {
+        Ok(b) => b,
+        Err(e) => return err(&e),
+    };
+    let req: serde_json::Value = match serde_json::from_str(&raw) {
+        Ok(v) => v,
+        Err(_) => return err("unreadable request"),
+    };
+    let purpose = match Purpose::parse(req["purpose"].as_str().unwrap_or("")) {
+        Some(p) => p,
+        None => return err("unknown purpose"),
+    };
+    let Some(list) = req["paths"].as_array() else { return err("no files named") };
+    if list.len() > picked::MAX_PER_REQUEST {
+        return err("too many files in one request");
+    }
+    let mut files = Vec::new();
+    let mut refused = Vec::new();
+    for p in list {
+        let as_sent = p.as_str().unwrap_or("").to_string();
+        match picked::register(purpose, &as_sent) {
+            Ok(f) => files.push(f),
+            Err(e) => refused.push(serde_json::json!({ "path": as_sent, "error": e })),
+        }
+    }
+    serde_json::json!({ "ok": true, "files": files, "refused": refused }).to_string()
+}
+
 /// POST /drafts/save — the compose pane's draft (`OutgoingMessage` JSON). `draft_id` empty = a new
 /// draft. Writes the local copy (`draft_sync::save_local`); the draft worker pushes it to Drafts.
 /// Answers `{ok, id, state, attachments, missing}` or `{ok:false, error}`.
@@ -1072,6 +1106,12 @@ fn drafts_save_response(config_dir: &PathBuf, stream: &mut std::net::TcpStream, 
         Ok(db) => db,
         Err(e) => return err(&format!("database: {}", e)),
     };
+    // Only files the user picked, or copies we spooled, are read (OL-057). The draft's stored
+    // attachments count as trusted: they passed this check when they were saved.
+    let stored = omalook::draft_sync::stored_attachments(&db, &msg.draft_id);
+    if let Err(e) = omalook::picked::check_message_attachments(&msg.attachments, &stored) {
+        return err(&e);
+    }
     match omalook::draft_sync::save_local(&db, &omalook::draft_sync::default_root(), &mut msg, &state) {
         Ok(id) => serde_json::json!({
             "ok": true, "id": id, "state": state, "attachments": msg.attachments,
@@ -1372,6 +1412,10 @@ fn compose_send_response(config_dir: &PathBuf, stream: &mut std::net::TcpStream,
         Ok(r) => r,
         Err(e) => return err(&e),
     };
+    // Checked before validate() or anything else opens a file named in the message (OL-057).
+    if let Err(e) = omalook::picked::check_send(&msg.attachments) {
+        return err(&e);
+    }
     // Pictures the body does not show go, and so does any `<img>` that would not load for the
     // recipient (a local path); see `settle_inline`.
     msg.settle_inline();
@@ -1574,6 +1618,9 @@ fn contact_photo_path(config_dir: &PathBuf, id: &str) -> String {
 fn contact_photo_set(config_dir: &PathBuf, id: &str, path: &str) -> String {
     let err = |m: &str| serde_json::json!({ "ok": false, "error": m }).to_string();
     let expanded = if let Some(rest) = path.trim().strip_prefix("~/") { std::env::var("HOME").map(|h| format!("{h}/{rest}")).unwrap_or_default() } else { path.trim().to_string() };
+    if !omalook::picked::allowed(omalook::picked::Purpose::Photo, std::path::Path::new(&expanded)) {
+        return err("pick the picture again");
+    }
     let bytes = match std::fs::read(&expanded) { Ok(b) => b, Err(_) => return err("cannot read that file") };
     if bytes.len() > 4 * 1024 * 1024 { return err("the picture is larger than 4 MB"); }
     if !(bytes.len() > 3 && bytes[0] == 0xFF && bytes[1] == 0xD8) { return err("only JPEG pictures can be set (a .jpg file)"); }
@@ -1631,6 +1678,9 @@ fn contacts_route(config_dir: &PathBuf, stream: &mut std::net::TcpStream, initia
         let req: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
         let raw_path = req["path"].as_str().unwrap_or("").trim().to_string();
         let expanded = if let Some(rest) = raw_path.strip_prefix("~/") { std::env::var("HOME").map(|h| format!("{h}/{rest}")).unwrap_or(raw_path.clone()) } else { raw_path.clone() };
+        if !omalook::picked::allowed(omalook::picked::Purpose::Import, std::path::Path::new(&expanded)) {
+            return Some(serde_json::json!({ "ok": false, "error": "pick the file again" }).to_string());
+        }
         let (account, folder) = (req["account_id"].as_str().unwrap_or("").to_string(), req["folder_id"].as_str().unwrap_or("").to_string());
         return Some(contacts_write_call(config_dir, &account, |db| {
             let folder = if folder.is_empty() { db.default_contact_folder().ok().flatten().unwrap_or_default() } else { folder.clone() };
@@ -3335,6 +3385,17 @@ fn route_http_request(config_dir: &PathBuf, mut stream: std::net::TcpStream, raw
                         }
                         Err(e) => serde_json::json!({ "error": format!("database: {}", e) }).to_string(),
                     };
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                        body.len(), body
+                    );
+                    let _ = stream.write_all(response.as_bytes());
+                    return;
+                }
+
+                // ── POST /files/register {purpose, paths} — the files the user picked join the allow-list (OL-057) ──
+                if first_line.contains("POST /files/register") {
+                    let body = files_register_response(&mut stream, raw);
                     let response = format!(
                         "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                         body.len(), body
