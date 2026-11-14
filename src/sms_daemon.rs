@@ -203,7 +203,7 @@ const SEND_TIMEOUT: Duration = Duration::from_secs(120);
 
 fn address_value(addr: &str) -> Value<'static> {
     // KDE Connect wants ConversationAddress structs, D-Bus type "(s)"; plain strings are silently dropped.
-    Value::Structure(zbus::zvariant::StructureBuilder::new().add_field(addr.to_string()).build())
+    Value::Structure(zbus::zvariant::Structure::from((addr.to_string(),)))
 }
 
 /// Hand a text to the phone through KDE Connect. `thread` (a real thread id) replies in that
@@ -213,7 +213,7 @@ fn address_value(addr: &str) -> Value<'static> {
 pub fn send_text(device: &str, thread: Option<i64>, addresses: &[String], text: &str) -> Result<(), String> {
     let conn = Connection::session().map_err(|e| format!("no session bus: {}", e))?;
     let ids: Vec<String> = conn.call_method(Some(SERVICE), "/modules/kdeconnect", Some("org.kde.kdeconnect.daemon"), "devices", &(true, true))
-        .and_then(|m| m.body())
+        .and_then(|m| m.body().deserialize())
         .map_err(|_| "KDE Connect is not running".to_string())?;
     if !ids.iter().any(|d| d == device) { return Err("phone not reachable".into()); }
     let path = format!("{}{}", DEVICE_ROOT, device);
@@ -246,13 +246,13 @@ pub fn sync_read_to_phone(device: String, needles: Vec<String>) {
         let Ok(conn) = Connection::session() else { return };
         let base = format!("{}{}/notifications", DEVICE_ROOT, device);
         let ids: Vec<String> = match conn.call_method(Some(SERVICE), base.as_str(), Some("org.kde.kdeconnect.device.notifications"), "activeNotifications", &())
-            .and_then(|m| m.body()) { Ok(v) => v, Err(_) => return };
+            .and_then(|m| m.body().deserialize()) { Ok(v) => v, Err(_) => return };
         let digits = |s: &str| s.chars().filter(|c| c.is_ascii_digit()).collect::<String>();
         for id in ids {
             let path = format!("{}/{}", base, id);
             let get = |prop: &str| -> Option<zbus::zvariant::OwnedValue> {
                 conn.call_method(Some(SERVICE), path.as_str(), Some("org.freedesktop.DBus.Properties"), "Get",
-                                 &("org.kde.kdeconnect.device.notifications.notification", prop)).ok()?.body().ok()
+                                 &("org.kde.kdeconnect.device.notifications.notification", prop)).ok()?.body().deserialize().ok()
             };
             let s = |prop: &str| get(prop).and_then(|v| String::try_from(v).ok()).unwrap_or_default();
             let (app, title, internal) = (s("appName"), s("title"), s("internalId"));
@@ -409,7 +409,7 @@ impl Worker {
         let Some(conn) = self.conn.as_ref() else { return };
         let list = |reachable: bool| -> Option<Vec<String>> {
             conn.call_method(Some(SERVICE), "/modules/kdeconnect", Some("org.kde.kdeconnect.daemon"), "devices", &(reachable, true))
-                .and_then(|m| m.body()).ok()
+                .and_then(|m| m.body().deserialize()).ok()
         };
         let (Some(paired), Some(reachable)) = (list(false), list(true)) else { return };
         let missing: Vec<&String> = paired.iter().filter(|d| !reachable.contains(d)).collect();
@@ -425,7 +425,7 @@ impl Worker {
     fn discover(&mut self) -> Vec<(String, String)> {
         let Some(conn) = self.conn.as_ref() else { return vec![] };
         let ids: Vec<String> = match conn.call_method(Some(SERVICE), "/modules/kdeconnect", Some("org.kde.kdeconnect.daemon"),
-                                                      "devices", &(true, true)).and_then(|m| m.body()) {
+                                                      "devices", &(true, true)).and_then(|m| m.body().deserialize()) {
             Ok(v) => v,
             Err(e) => {
                 debug!("SMS daemon: kdeconnectd not available ({}); will retry", e);
@@ -442,7 +442,7 @@ impl Worker {
             if !has_sms { continue; }
             let name = conn.call_method(Some(SERVICE), path.as_str(), Some("org.freedesktop.DBus.Properties"), "Get",
                                         &("org.kde.kdeconnect.device", "name"))
-                .and_then(|m| m.body::<zbus::zvariant::OwnedValue>())
+                .and_then(|m| m.body().deserialize::<zbus::zvariant::OwnedValue>())
                 .ok().and_then(|v| String::try_from(v).ok()).unwrap_or_default();
             out.push((id, name));
         }
@@ -461,7 +461,8 @@ impl Worker {
         let Some(conn) = self.conn.as_ref() else { return vec![] };
         let reply = conn.call_method(Some(SERVICE), format!("{}{}", DEVICE_ROOT, device), Some(IFACE), "activeConversations", &());
         let Ok(reply) = reply else { return vec![] };
-        let Ok(items) = reply.body::<Vec<Value>>() else { return vec![] };
+        let body = reply.body();
+        let Ok(items) = body.deserialize::<Vec<Value>>() else { return vec![] };
         items.iter().filter_map(|v| parse_message(device, v)).map(|m| m.thread_id).collect()
     }
 
@@ -607,7 +608,7 @@ impl Worker {
 /// The match rule for every device's signals (path namespace) on `conn`.
 fn signal_iter(conn: &Connection) -> Result<MessageIterator, String> {
     let rule = MatchRule::builder()
-        .msg_type(zbus::MessageType::Signal)
+        .msg_type(zbus::message::Type::Signal)
         .sender(SERVICE).map_err(|e| e.to_string())?
         .interface(IFACE).map_err(|e| e.to_string())?
         .build();
@@ -618,25 +619,25 @@ fn signal_iter(conn: &Connection) -> Result<MessageIterator, String> {
 fn listen(iter: MessageIterator, tx: Sender<Ev>) {
     for msg in iter {
         let Ok(msg) = msg else { continue };
-        let Ok(header) = msg.header() else { continue };
-        let (Ok(Some(path)), Ok(Some(member))) = (header.path(), header.member()) else { continue };
+        let header = msg.header();
+        let (Some(path), Some(member)) = (header.path(), header.member()) else { continue };
         let Some(device) = device_of_path(path.as_str()) else { continue };
         let ev = match member.as_str() {
             "conversationCreated" | "conversationUpdated" => {
-                match msg.body::<Value>().ok().and_then(|v| parse_message(&device, &v)) {
+                match msg.body().deserialize::<Value>().ok().and_then(|v| parse_message(&device, &v)) {
                     Some(m) => Ev::Msg(m),
                     None => { debug!("SMS: unparseable {} signal", member); continue }
                 }
             }
-            "conversationLoaded" => match msg.body::<(i64, u64)>() {
+            "conversationLoaded" => match msg.body().deserialize::<(i64, u64)>() {
                 Ok((thread, count)) => Ev::Loaded { device, thread, count: count as i64 },
                 Err(_) => continue,
             },
-            "attachmentReceived" => match msg.body::<(String, String)>() {
+            "attachmentReceived" => match msg.body().deserialize::<(String, String)>() {
                 Ok((path, name)) => Ev::Attachment { device, path, name },
                 Err(_) => continue,
             },
-            "conversationRemoved" => match msg.body::<i64>() {
+            "conversationRemoved" => match msg.body().deserialize::<i64>() {
                 Ok(thread) => Ev::Removed { device, thread },
                 Err(_) => continue,
             },
@@ -674,19 +675,25 @@ mod tests {
     use zbus::zvariant::StructureBuilder;
 
     fn tuple(event: i32, body: &str, addrs: &[&str], date: i64, typ: i32, read: i32, thread: i64, uid: i32, atts: usize) -> Value<'static> {
-        let mut addr_arr = Array::new(zbus::zvariant::Signature::from_str_unchecked("(s)"));
+        let mut addr_arr = Array::new(&zbus::zvariant::Signature::try_from("(s)").unwrap());
         for a in addrs {
-            addr_arr.append(Value::Structure(StructureBuilder::new().add_field(a.to_string()).build())).unwrap();
+            addr_arr.append(Value::Structure(StructureBuilder::new().add_field(a.to_string()).build().unwrap())).unwrap();
         }
-        let mut att_arr = Array::new(zbus::zvariant::Signature::from_str_unchecked("(xsss)"));
+        let mut att_arr = Array::new(&zbus::zvariant::Signature::try_from("(xsss)").unwrap());
         for i in 0..atts {
             att_arr.append(Value::Structure(StructureBuilder::new()
-                .add_field(i as i64).add_field("image/jpeg".to_string()).add_field("pv".to_string()).add_field("PART_1.jpg".to_string()).build())).unwrap();
+                .add_field(i as i64).add_field("image/jpeg".to_string()).add_field("pv".to_string()).add_field("PART_1.jpg".to_string()).build().unwrap())).unwrap();
         }
         Value::Structure(StructureBuilder::new()
             .add_field(event).add_field(body.to_string()).append_field(Value::Array(addr_arr))
             .add_field(date).add_field(typ).add_field(read).add_field(thread).add_field(uid).add_field(7i64)
-            .append_field(Value::Array(att_arr)).build())
+            .append_field(Value::Array(att_arr)).build().unwrap())
+    }
+
+    #[test]
+    fn address_is_a_one_field_string_struct() {
+        // KDE Connect expects ConversationAddress as "(s)"; the signature is what the phone checks.
+        assert_eq!(address_value("+155****0001").value_signature().to_string(), "(s)");
     }
 
     #[test]
@@ -712,7 +719,7 @@ mod tests {
     #[test]
     fn rejects_malformed_payloads() {
         assert!(parse_message("d", &Value::I32(3)).is_none());
-        assert!(parse_message("d", &Value::Structure(StructureBuilder::new().add_field(1i32).build())).is_none());
+        assert!(parse_message("d", &Value::Structure(StructureBuilder::new().add_field(1i32).build().unwrap())).is_none());
     }
 
     #[test]

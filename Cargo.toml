@@ -31,7 +31,7 @@ chrono = { version = "0.4", features = ["serde"] }
 notify = "6.1"
 
 # D-Bus (KDE Connect SMS); already in the tree via keyring
-zbus = "3.15"
+zbus = "5.19"
 
 # Logging
 log = "0.4"
