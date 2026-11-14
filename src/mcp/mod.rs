@@ -23,6 +23,9 @@ pub mod server;
 pub mod shim;
 pub mod token;
 
+#[cfg(test)]
+mod read_snapshot_tests;
+
 use std::path::{Path, PathBuf};
 
 /// Default port of the MCP listener (the UI's HTTP server is 27182). `OMALOOK_MCP_PORT` overrides.

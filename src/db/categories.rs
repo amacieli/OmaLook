@@ -151,3 +151,21 @@ impl Database {
         Ok(())
     }
 }
+
+/// One category definition of an account (R3.5 MCP read).
+pub struct McpCategoryRow {
+    pub account_id: String,
+    pub name: String,
+    pub color: String,
+}
+
+impl Database {
+    /// Category definitions of the given accounts.
+    pub fn mcp_category_defs(&self, accounts: &[String]) -> rusqlite::Result<Vec<McpCategoryRow>> {
+        let mut a: Vec<rusqlite::types::Value> = vec![];
+        let cond = account_in("account_id", accounts, &mut a);
+        let mut st = self.conn.prepare(&format!("SELECT account_id, name, color FROM category_defs WHERE {} ORDER BY account_id, lower(name)", cond))?;
+        let rows = st.query_map(rusqlite::params_from_iter(a.iter()), |r| Ok(McpCategoryRow { account_id: r.get(0)?, name: r.get(1)?, color: r.get(2)? }))?;
+        Ok(rows.flatten().collect())
+    }
+}

@@ -161,3 +161,64 @@ impl Database {
         Ok(events)
     }
 }
+
+/// One cached calendar event as the MCP calendar tools read it (R3.5).
+pub struct McpEventRow {
+    pub id: String,
+    pub subject: String,
+    pub body: Option<String>,
+    pub start: String,
+    pub end: String,
+    pub is_all_day: bool,
+    pub time_zone: String,
+    pub account_id: String,
+    pub account_email: String,
+}
+
+const MCP_EV_COLS: &str = "e.id, e.subject, e.body, e.start_at, e.end_at, e.is_all_day, COALESCE(e.time_zone,''), COALESCE(e.account_id,''), COALESCE(a.email,'')";
+
+fn mcp_event_row(r: &rusqlite::Row) -> rusqlite::Result<McpEventRow> {
+    Ok(McpEventRow {
+        id: r.get(0)?, subject: r.get(1)?, body: r.get(2)?, start: r.get(3)?, end: r.get(4)?, is_all_day: r.get(5)?,
+        time_zone: r.get(6)?, account_id: r.get(7)?, account_email: r.get(8)?,
+    })
+}
+
+impl Database {
+    /// Events overlapping `[from_ts, to_ts)` (ISO local date-times) of the given accounts, one page.
+    pub fn mcp_events(&self, accounts: &[String], from_ts: &str, to_ts: &str, limit: i64, offset: i64) -> rusqlite::Result<Vec<McpEventRow>> {
+        let mut a: Vec<rusqlite::types::Value> = vec![from_ts.to_string().into(), to_ts.to_string().into()];
+        let acc = account_in("e.account_id", accounts, &mut a);
+        a.push((limit + 1).into());
+        a.push(offset.into());
+        let sql = format!(
+            "SELECT {} FROM calendar_events e LEFT JOIN accounts a ON a.id = e.account_id \
+             WHERE e.start_at < ?2 AND e.end_at >= ?1 AND e.event_type != 'seriesMaster' AND {} ORDER BY e.start_at LIMIT ?{} OFFSET ?{}",
+            MCP_EV_COLS, acc, a.len() - 1, a.len());
+        let mut st = self.conn.prepare(&sql)?;
+        let rows = st.query_map(rusqlite::params_from_iter(a.iter()), mcp_event_row)?;
+        Ok(rows.flatten().collect())
+    }
+
+    /// One event by id, whatever its account (the caller checks the account).
+    pub fn mcp_event(&self, id: &str) -> rusqlite::Result<Option<McpEventRow>> {
+        let sql = format!("SELECT {} FROM calendar_events e LEFT JOIN accounts a ON a.id = e.account_id WHERE e.id = ?1", MCP_EV_COLS);
+        self.conn.query_row(&sql, [id], mcp_event_row).optional()
+    }
+
+    /// `(account_id, event_type)` of a cached event, for the single-event write checks.
+    pub fn mcp_event_kind(&self, id: &str) -> rusqlite::Result<Option<(String, String)>> {
+        self.conn.query_row("SELECT account_id, COALESCE(event_type, '') FROM calendar_events WHERE id = ?1", [id], |r| Ok((r.get(0)?, r.get(1)?))).optional()
+    }
+}
+
+impl Database {
+    /// The account and the event type of one cached event (`""` when the type is unknown).
+    pub fn cal_event_kind(&self, id: &str) -> rusqlite::Result<Option<(String, String)>> {
+        match self.conn.query_row("SELECT account_id, COALESCE(event_type, '') FROM calendar_events WHERE id = ?1", [id], |r| Ok((r.get(0)?, r.get(1)?))) {
+            Ok(v) => Ok(Some(v)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+}

@@ -553,3 +553,82 @@ impl Database {
         Ok(messages)
     }
 }
+
+/// One cached message as the MCP mail tools read it (R3.5). `body` is `None` only if the stored
+/// value is NULL; the service decides whether that matters for the answer.
+pub struct McpMessageRow {
+    pub id: String,
+    pub subject: String,
+    pub from_email: String,
+    pub from_name: Option<String>,
+    pub received_at: String,
+    pub is_read: bool,
+    pub account_id: String,
+    pub account_email: String,
+    pub folder_id: String,
+    pub importance: Option<String>,
+    pub has_attachments: Option<bool>,
+    pub categories: Option<String>,
+    pub body: Option<String>,
+    pub to_text: Option<String>,
+    pub cc_text: Option<String>,
+    pub bcc_text: Option<String>,
+    pub sent_at: Option<String>,
+    pub conversation_id: Option<String>,
+}
+
+const MCP_MSG_COLS: &str = "m.id, m.subject, m.from_email, m.from_name, m.received_at, m.is_read, COALESCE(m.account_id,''), COALESCE(a.email,''), \
+    COALESCE(m.folder_id,''), m.importance, COALESCE((SELECT c.has_real FROM attachment_cache c WHERE c.message_id = m.id), m.has_attachments), \
+    m.categories, m.body, m.to_text, m.cc_text, m.bcc_text, m.sent_at, m.conversation_id";
+
+fn mcp_message_row(r: &rusqlite::Row) -> rusqlite::Result<McpMessageRow> {
+    Ok(McpMessageRow {
+        id: r.get(0)?, subject: r.get(1)?, from_email: r.get(2)?, from_name: r.get(3)?, received_at: r.get(4)?,
+        is_read: r.get(5)?, account_id: r.get(6)?, account_email: r.get(7)?, folder_id: r.get(8)?,
+        importance: r.get(9)?, has_attachments: r.get(10)?, categories: r.get(11)?, body: r.get(12)?,
+        to_text: r.get(13)?, cc_text: r.get(14)?, bcc_text: r.get(15)?, sent_at: r.get(16)?, conversation_id: r.get(17)?,
+    })
+}
+
+impl Database {
+    /// Cached messages of the given accounts, newest first, one page (`limit + 1` rows are fetched
+    /// so the caller can tell whether there is a next page). `folder` is a folder id or a kind
+    /// such as "inbox", across the given accounts.
+    pub fn mcp_messages(&self, accounts: &[String], folder: Option<&str>, unread_only: bool,
+                        search: Option<&crate::search::Query>, limit: i64, offset: i64) -> rusqlite::Result<Vec<McpMessageRow>> {
+        let mut a: Vec<rusqlite::types::Value> = vec![];
+        let mut conds = vec![account_in("m.account_id", accounts, &mut a), "m.action_pending IS NULL".to_string()];
+        if let Some(f) = folder {
+            a.push(f.to_string().into());
+            let n = a.len();
+            let acc = account_in("account_id", accounts, &mut a);
+            conds.push(format!("m.folder_id IN (SELECT id FROM folders WHERE (id = ?{n} OR lower(well_known_name) = lower(?{n})) AND {acc})"));
+        }
+        if unread_only { conds.push("m.is_read = 0".into()); }
+        if let Some(q) = search { conds.extend(q.to_sql(&mut a)); }
+        a.push((limit + 1).into());
+        a.push(offset.into());
+        let sql = format!(
+            "SELECT {} FROM messages m LEFT JOIN accounts a ON a.id = m.account_id WHERE {} ORDER BY m.received_at DESC LIMIT ?{} OFFSET ?{}",
+            MCP_MSG_COLS, conds.join(" AND "), a.len() - 1, a.len());
+        let mut st = self.conn.prepare(&sql)?;
+        let rows = st.query_map(rusqlite::params_from_iter(a.iter()), mcp_message_row)?;
+        Ok(rows.flatten().collect())
+    }
+
+    /// One message by id, whatever its account (the caller checks the account).
+    pub fn mcp_message(&self, id: &str) -> rusqlite::Result<Option<McpMessageRow>> {
+        let sql = format!("SELECT {} FROM messages m LEFT JOIN accounts a ON a.id = m.account_id WHERE m.id = ?1", MCP_MSG_COLS);
+        self.conn.query_row(&sql, [id], mcp_message_row).optional()
+    }
+
+    /// Account of a message that is not waiting on a queued provider action.
+    pub fn mcp_message_account(&self, id: &str) -> rusqlite::Result<Option<String>> {
+        self.conn.query_row("SELECT COALESCE(account_id, '') FROM messages WHERE id = ?1 AND action_pending IS NULL", [id], |r| r.get(0)).optional()
+    }
+
+    /// Stored preview text of a message.
+    pub fn mcp_message_body(&self, id: &str) -> rusqlite::Result<Option<String>> {
+        self.conn.query_row("SELECT body FROM messages WHERE id = ?1", [id], |r| r.get(0)).optional()
+    }
+}

@@ -80,6 +80,13 @@ fn shared_connection(path: &str) -> Result<std::rc::Rc<Connection>> {
 }
 
 impl Database {
+    /// Read-only handle for the MCP read tools (R3.5): no schema setup, no writes.
+    pub fn open_read_only(path: &str) -> rusqlite::Result<Self> {
+        let conn = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX)?;
+        let _ = conn.busy_timeout(std::time::Duration::from_secs(3));
+        Ok(Self { conn: std::rc::Rc::new(conn), account_id: DEFAULT_ACCOUNT.to_string() })
+    }
+
     /// Open or create database at the given path
     pub fn open(path: &str) -> Result<Self> {
         Self::open_for_account(path, DEFAULT_ACCOUNT)

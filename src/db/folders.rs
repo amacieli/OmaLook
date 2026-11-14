@@ -67,3 +67,33 @@ impl Database {
         Ok(folders)
     }
 }
+
+/// One folder as the MCP mail tools show it (R3.5).
+pub struct McpFolderRow {
+    pub id: String,
+    pub display_name: String,
+    pub unread: i64,
+    pub total: i64,
+    pub well_known: String,
+    pub account_id: String,
+    pub account_email: String,
+}
+
+impl Database {
+    /// Folders of the given accounts, sorted as the MCP tool lists them.
+    pub fn mcp_folders(&self, accounts: &[String]) -> rusqlite::Result<Vec<McpFolderRow>> {
+        let mut a: Vec<rusqlite::types::Value> = vec![];
+        let cond = account_in("f.account_id", accounts, &mut a);
+        let sql = format!(
+            "SELECT f.id, f.display_name, COALESCE(f.unread_item_count,0), COALESCE(f.total_item_count,0), COALESCE(f.well_known_name,''), \
+                    COALESCE(f.account_id,''), COALESCE(x.email,'') \
+             FROM folders f LEFT JOIN accounts x ON x.id = f.account_id WHERE {} \
+             ORDER BY f.account_id, f.sort_order, f.display_name", cond);
+        let mut st = self.conn.prepare(&sql)?;
+        let rows = st.query_map(rusqlite::params_from_iter(a.iter()), |r| Ok(McpFolderRow {
+            id: r.get(0)?, display_name: r.get(1)?, unread: r.get(2)?, total: r.get(3)?,
+            well_known: r.get(4)?, account_id: r.get(5)?, account_email: r.get(6)?,
+        }))?;
+        Ok(rows.flatten().collect())
+    }
+}
