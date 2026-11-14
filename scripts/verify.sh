@@ -56,6 +56,40 @@ else
     echo "WARN: node not found, JS tests skipped"
 fi
 
+# Supply-chain gates. Known advisories live in scripts/audit-ignore.txt (and deny.toml); a NEW one fails.
+# Offline-tolerant: if the advisory DB cannot be fetched, retry with the cached DB (WARN); no DB at all = WARN.
+AUDIT_IGNORES=()
+while read -r id _; do
+    case $id in RUSTSEC-*) AUDIT_IGNORES+=(--ignore "$id");; esac
+done < scripts/audit-ignore.txt
+
+net_gate() {  # net_gate <name> <no-fetch-flag> <cmd...>: run; on fetch failure retry with the flag
+    local name=$1 nofetch=$2; shift 2
+    if "$@" >"$LOG/$name.log" 2>&1; then echo "ok:   $name"; return; fi
+    if grep -qiE "fetch|network|resolve|connect|timed out|unable to update|git operation|failed to load advisory|couldn't" "$LOG/$name.log"; then
+        local cmd=("$@"); if [ "$name" = deny ]; then cmd=(cargo deny "$nofetch" "${@:3}"); else cmd+=("$nofetch"); fi
+        if "${cmd[@]}" >"$LOG/$name.log" 2>&1; then
+            echo "WARN: $name used cached advisory DB"; return
+        elif grep -qiE "no such file|not found|no advisory|failed to load advisory|couldn't" "$LOG/$name.log" \
+             && ! grep -qE "^(error\[|Crate:|ID:)|vulnerabilit" "$LOG/$name.log"; then
+            echo "WARN: $name skipped, no advisory DB available"; return
+        fi
+    fi
+    echo "FAIL: $name"; grep -E "^ *(ID|Crate|Version|Title):|^error" "$LOG/$name.log" | head -n 12 | sed 's/^/      /'; FAILED=1
+}
+
+if command -v cargo-audit >/dev/null 2>&1; then
+    net_gate audit --no-fetch cargo audit "${AUDIT_IGNORES[@]}"
+else
+    echo "WARN: cargo-audit not installed, audit skipped"
+fi
+if command -v cargo-deny >/dev/null 2>&1; then
+    # cargo deny takes --offline before `check`; net_gate special-cases that.
+    net_gate deny --offline cargo deny check advisories bans licenses sources
+else
+    echo "WARN: cargo-deny not installed, deny skipped"
+fi
+
 echo "info: uncommitted files: $(git status --short | wc -l)"
 [ $FAILED -eq 0 ] && echo "RESULT: all gates passed" || echo "RESULT: FAILED"
 exit $FAILED

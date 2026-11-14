@@ -1,0 +1,22 @@
+# Known advisories accepted until the dependency upgrades (docs/REVIEW-2026-11-12.md SEC-007). One id per line; text after the id is the reason.
+# A NEW advisory is not listed here and fails the audit/deny gates. Keep in sync with deny.toml [advisories].ignore.
+RUSTSEC-2026-0258 h2 0.3.27 (reqwest 0.11 stack); upgrade in R4.1
+RUSTSEC-2026-0459 libsqlite3-sys 0.27 (rusqlite 0.30 bundled SQLite); upgrade in R4.1
+RUSTSEC-2026-0346 rustls 0.21.12 / 0.23.45; upgrade in R4.1
+RUSTSEC-2026-0347 rustls 0.23.45 (ureq stack); upgrade in R4.1
+RUSTSEC-2026-0348 rustls 0.23.45 (ureq stack); upgrade in R4.1
+RUSTSEC-2026-0349 rustls 0.21.12 / 0.23.45; upgrade in R4.1
+RUSTSEC-2026-0104 rustls-webpki 0.101.7; upgrade in R4.1
+RUSTSEC-2026-0382 rustls-webpki 0.101.7 / 0.103.15; upgrade in R4.1
+RUSTSEC-2026-0098 rustls-webpki 0.101.7; upgrade in R4.1
+RUSTSEC-2026-0099 rustls-webpki 0.101.7; upgrade in R4.1
+RUSTSEC-2026-0381 webpki-roots 0.25.4 / 1.0.9; upgrade in R4.1
+# Warnings (unmaintained/unsound, not vulnerabilities; cargo audit does not fail on these, cargo deny reports them as warnings)
+RUSTSEC-2024-0388 derivative unmaintained; upgrade in R4.1
+RUSTSEC-2024-0384 instant unmaintained; upgrade in R4.1
+RUSTSEC-2025-0134 rustls-pemfile unmaintained; upgrade in R4.1
+RUSTSEC-2026-0371 zbus_names unmaintained (zbus 3.x); upgrade in R4.1
+RUSTSEC-2026-0370 zvariant unmaintained (zbus 3.x); upgrade in R4.1
+RUSTSEC-2026-0372 zvariant_derive unmaintained (zbus 3.x); upgrade in R4.1
+RUSTSEC-2026-0486 rustix unsound; upgrade in R4.1
+RUSTSEC-2026-0386 tokio AsyncFd unsound; upgrade in R4.1
