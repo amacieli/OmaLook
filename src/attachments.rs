@@ -99,13 +99,47 @@ pub fn any_real(list: &[Attachment]) -> bool {
     list.iter().any(|a| !a.inline)
 }
 
-/// A name that is safe as one file name inside the download folder: no path separators or
-/// control characters (so `../../x` cannot escape), no leading dots (no hidden files), at most
-/// ~200 bytes with the extension kept, never empty.
+/// Unicode general category `Cf` (format characters), Unicode 15.1 ranges, inclusive. Hard-coded
+/// because the crate tree has no category table. Includes bidi overrides (U+202A..U+202E, the
+/// `invoice\u{202E}fdp.exe` trick), zero-width characters, the BOM and the soft hyphen.
+const CF_RANGES: &[(u32, u32)] = &[
+    (0x00AD, 0x00AD),
+    (0x0600, 0x0605),
+    (0x061C, 0x061C),
+    (0x06DD, 0x06DD),
+    (0x070F, 0x070F),
+    (0x0890, 0x0891),
+    (0x08E2, 0x08E2),
+    (0x180E, 0x180E),
+    (0x200B, 0x200F),
+    (0x202A, 0x202E),
+    (0x2060, 0x2064),
+    (0x2066, 0x206F),
+    (0xFEFF, 0xFEFF),
+    (0xFFF9, 0xFFFB),
+    (0x110BD, 0x110BD),
+    (0x110CD, 0x110CD),
+    (0x13430, 0x1343F),
+    (0x1BCA0, 0x1BCA3),
+    (0x1D173, 0x1D17A),
+    (0xE0001, 0xE0001),
+    (0xE0020, 0xE007F),
+];
+
+fn is_format_char(c: char) -> bool {
+    let u = c as u32;
+    CF_RANGES.iter().any(|&(lo, hi)| (lo..=hi).contains(&u))
+}
+
+/// A name that is safe as one file name inside the download folder: no path separators, control
+/// or format (`Cf`) characters (so `../../x` cannot escape and `invoice\u{202E}fdp.exe` cannot
+/// look like `invoiceexe.pdf`), no leading dots (no hidden files), at most ~200 bytes with the
+/// extension kept, never empty (`attachment`).
 pub fn sanitize_name(raw: &str) -> String {
     let cleaned: String = raw
         .chars()
-        .map(|c| if c == '/' || c == '\\' || c.is_control() { '_' } else { c })
+        .filter(|c| !c.is_ascii_control() && !is_format_char(*c))
+        .map(|c| if c == '/' || c == '\\' { '_' } else { c })
         .collect();
     let cleaned = cleaned.trim().trim_start_matches('.').trim().to_string();
     if cleaned.is_empty() {
@@ -241,8 +275,19 @@ mod tests {
         assert_eq!(sanitize_name("..."), "attachment");
         assert_eq!(sanitize_name(""), "attachment");
         assert_eq!(sanitize_name("   "), "attachment");
-        assert_eq!(sanitize_name("tab\tname\n.pdf"), "tab_name_.pdf");
+        assert_eq!(sanitize_name("tab\tname\n.pdf"), "tabname.pdf");
         assert_eq!(sanitize_name("Résumé 2026.pdf"), "Résumé 2026.pdf");
+    }
+
+    #[test]
+    fn sanitize_strips_control_and_format_characters() {
+        assert_eq!(sanitize_name("invoice\u{202E}fdp.exe"), "invoicefdp.exe");
+        assert!(!sanitize_name("invoice\u{202E}fdp.exe").contains('\u{202E}'));
+        assert_eq!(sanitize_name("a\u{200B}b\u{200D}c\u{FEFF}d\u{00AD}e.txt"), "abcde.txt");
+        assert_eq!(sanitize_name("x\u{2066}\u{2069}y\u{E0041}.pdf"), "xy.pdf");
+        assert_eq!(sanitize_name("\u{200B}\u{202E}..\u{FEFF}"), "attachment");
+        assert_eq!(sanitize_name("日本語.pdf"), "日本語.pdf");
+        assert_eq!(sanitize_name("café.pdf"), "café.pdf");
     }
 
     #[test]

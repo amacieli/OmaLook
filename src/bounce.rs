@@ -12,7 +12,7 @@
 //!     would fail after the changes and a receipt would go to the author).
 //! The recipient therefore sees a message from the user with the original's subject, body and files.
 
-use crate::compose::{is_valid_email, Address};
+use crate::compose::{header_value_safe, is_valid_email, Address};
 
 /// Headers that belong to the original transport, or that the bounce replaces (case-insensitive).
 const DROP: &[&str] = &[
@@ -72,12 +72,12 @@ fn value(h: &(String, Vec<u8>)) -> String {
 fn addr_line(list: &[Address]) -> String {
     list.iter()
         .map(|a| {
-            let n: String = a.name.chars().filter(|c| !matches!(c, '"' | '\r' | '\n' | '<' | '>' | '\\')).collect();
+            let n: String = header_value_safe(&a.name).chars().filter(|c| !matches!(c, '"' | '<' | '>' | '\\')).collect();
             // A non-ASCII name would need RFC 2047 encoding; the bare address is always right.
             if n.trim().is_empty() || !n.is_ascii() {
-                a.email.trim().to_string()
+                header_value_safe(a.email.trim())
             } else {
-                format!("\"{}\" <{}>", n.trim(), a.email.trim())
+                format!("\"{}\" <{}>", n.trim(), header_value_safe(a.email.trim()))
             }
         })
         .collect::<Vec<_>>()
@@ -118,29 +118,29 @@ pub fn rewrite(raw: &[u8], from: &str, to: &[Address], cc: &[Address], date: &st
         let r = get("Reply-To");
         if r.is_empty() { orig_from.clone() } else { r }
     };
-    let one_line = |s: String| s.replace(['\r', '\n'], " ");
+    let one_line = |s: String| header_value_safe(&s);
 
     let mut out: Vec<u8> = Vec::with_capacity(raw.len() + 512);
     let mut put = |s: String| {
         out.extend_from_slice(s.as_bytes());
         out.extend_from_slice(b"\r\n");
     };
-    put(format!("From: {}", from.trim()));
+    put(format!("From: {}", one_line(from.trim().to_string())));
     put(format!("To: {}", addr_line(to)));
     if !cc.is_empty() {
         put(format!("Cc: {}", addr_line(cc)));
     }
-    put(format!("Date: {}", date));
-    put(format!("Message-ID: {}", message_id));
+    put(format!("Date: {}", one_line(date.to_string())));
+    put(format!("Message-ID: {}", one_line(message_id.to_string())));
     if !reply_to.is_empty() {
         put(format!("Reply-To: {}", one_line(reply_to)));
     }
     if !orig_from.is_empty() {
         put(format!("X-Original-From: {}", one_line(orig_from)));
     }
-    put(format!("Resent-From: {}", from.trim()));
+    put(format!("Resent-From: {}", one_line(from.trim().to_string())));
     put(format!("Resent-To: {}", addr_line(&to.iter().chain(cc).cloned().collect::<Vec<_>>())));
-    put(format!("Resent-Date: {}", date));
+    put(format!("Resent-Date: {}", one_line(date.to_string())));
     for h in hs.iter().filter(|h| !dropped(&h.0)) {
         out.extend_from_slice(&h.1);
         out.extend_from_slice(b"\r\n");

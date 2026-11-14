@@ -729,9 +729,16 @@ fn b64_wrapped(bytes: &[u8]) -> String {
     out
 }
 
+/// Make a header value safe to write on one line: every ASCII control character (CR, LF, NUL, tab,
+/// DEL, ...) becomes a space, so provider or user text cannot end the header block and start a
+/// new header (`<a@b>\r\nBcc: x@evil` stays one line).
+pub(crate) fn header_value_safe(s: &str) -> String {
+    s.chars().map(|c| if c.is_ascii_control() { ' ' } else { c }).collect()
+}
+
 /// RFC 2047 encoded-word text for a header value; ASCII passes through untouched.
 fn encode_header_text(s: &str) -> String {
-    let s = s.replace(['\r', '\n'], " ");
+    let s = header_value_safe(s);
     if s.is_ascii() {
         return s;
     }
@@ -751,13 +758,13 @@ fn encode_header_text(s: &str) -> String {
 }
 
 fn format_address(a: &Address) -> String {
-    let email = a.email.trim().replace(['\r', '\n', '<', '>'], "");
+    let email = header_value_safe(a.email.trim()).replace(['<', '>'], "");
     let name = a.name.trim();
     if name.is_empty() {
         return email;
     }
     if name.is_ascii() {
-        let quoted = name.replace('\\', "\\\\").replace('"', "\\\"").replace(['\r', '\n'], " ");
+        let quoted = header_value_safe(name).replace('\\', "\\\\").replace('"', "\\\"");
         format!("\"{}\" <{}>", quoted, email)
     } else {
         format!("{} <{}>", encode_header_text(name), email)
@@ -774,13 +781,14 @@ fn mime_headers(msg: &OutgoingMessage, from: &str, reply: Option<&ReplyHeaders>,
     fn line(h: &mut String, k: &str, v: &str) {
         h.push_str(k);
         h.push_str(": ");
-        h.push_str(v);
+        // Every value goes through here, so no caller can add a line break to the block.
+        h.push_str(&header_value_safe(v));
         h.push_str("\r\n");
     }
     // A send-as alias chosen in the compose pane replaces the account address (OL-051).
     let from = if msg.from.trim().is_empty() { from } else { msg.from.as_str() };
     if !from.trim().is_empty() {
-        line(&mut h, "From", &from.trim().replace(['\r', '\n', '<', '>'], ""));
+        line(&mut h, "From", &from.trim().replace(['<', '>'], ""));
     }
     if !msg.to.is_empty() {
         line(&mut h, "To", &address_list(&msg.to));
@@ -795,9 +803,9 @@ fn mime_headers(msg: &OutgoingMessage, from: &str, reply: Option<&ReplyHeaders>,
     line(&mut h, "Date", date);
     if let Some(r) = reply {
         if !r.message_id.is_empty() {
-            line(&mut h, "In-Reply-To", &r.message_id);
+            line(&mut h, "In-Reply-To", &header_value_safe(&r.message_id));
             let refs = if r.references.is_empty() { r.message_id.clone() } else { format!("{} {}", r.references, r.message_id) };
-            line(&mut h, "References", &refs);
+            line(&mut h, "References", &header_value_safe(&refs));
         }
     }
     line(&mut h, "MIME-Version", "1.0");
@@ -1490,6 +1498,24 @@ mod tests {
         assert!(raw.contains("--BND--\r\n--BND-mixed\r\n"), "the alternative is closed before the file starts");
         assert!(decode_part(&raw, "text/plain").starts_with("On Oct 7 & Pat Lee"));
         assert_eq!(attachment_parts_of(&raw)[0].1, b"data");
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn header_values_cannot_break_the_header_block() {
+        assert_eq!(header_value_safe("<a@b>\r\nBcc: x@evil"), "<a@b>  Bcc: x@evil");
+        assert!(!header_value_safe("a\u{0}b\u{7f}c\td").chars().any(|c| c.is_ascii_control()));
+        let d = tmpdir("mi");
+        let a = disk_file(&d, "a.txt", b"data");
+        let r = ReplyHeaders { message_id: "<a@b>\r\nBcc: x@evil".into(), references: "<m1@x>\r\nBcc: y@evil".into() };
+        let mut m = msg("text", "re", "system");
+        m.kind = "reply".into();
+        m.subject = "Hi\r\nBcc: z@evil".into();
+        m.to = vec![addr("me@x.org", "Evil\r\nBcc: w@evil")];
+        let raw = mime_with(&m, &[a], Some(&r));
+        assert!(!raw.lines().any(|l| l.starts_with("Bcc:")), "{}", raw);
+        assert!(raw.contains("In-Reply-To: <a@b>  Bcc: x@evil\r\n"), "{}", raw);
+        assert!(raw.contains("References: <m1@x>  Bcc: y@evil <a@b>  Bcc: x@evil\r\n"), "{}", raw);
         std::fs::remove_dir_all(&d).ok();
     }
 
