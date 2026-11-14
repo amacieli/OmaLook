@@ -9,29 +9,29 @@ description = "Omarchy-style QML Outlook clone using Microsoft Graph (Rust backe
 [dependencies]
 # HTTP & networking
 ureq = { version = "2.9", features = ["json"] }  # Sync HTTP client
-reqwest = { version = "0.11", features = ["json"] }  # Async HTTP client
+reqwest = { version = "0.13", default-features = false, features = ["json", "native-tls", "charset", "http2", "system-proxy"] }  # Async HTTP client (native-tls, as in 0.11)
 serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 
 # OAuth2
-oauth2 = "4.4"
+oauth2 = { version = "5.0", default-features = false }
 url = "2.5"
 
 # Keyring (Linux SecretService)
-keyring = "2.1"
+keyring = { version = "3", features = ["sync-secret-service", "crypto-rust"] }  # Linux Secret Service, sync API (v2 default); without a store feature keyring 3 silently uses the mock
 
 # Configuration (TOML)
 toml = "0.8"
 
 # SQLite with FTS5
-rusqlite = { version = "0.30", features = ["bundled", "chrono"] }
+rusqlite = { version = "0.42", features = ["bundled", "chrono"] }
 chrono = { version = "0.4", features = ["serde"] }
 
 # File watching (for settings file)
 notify = "6.1"
 
 # D-Bus (KDE Connect SMS); already in the tree via keyring
-zbus = "3.15"
+zbus = "5.19"
 
 # Logging
 log = "0.4"

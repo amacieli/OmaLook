@@ -54,7 +54,7 @@ pub fn cache_token(token_json: &str) -> Result<()> {
 pub fn clear_cache() -> Result<()> {
     match keyring::Entry::new(SERVICE_NAME, ACCOUNT_NAME) {
         Ok(entry) => {
-            match entry.delete_password() {
+            match entry.delete_credential() {
                 Ok(_) => {
                     debug!("Cleared cached token from keyring");
                     Ok(())
@@ -73,5 +73,21 @@ pub fn clear_cache() -> Result<()> {
             warn!("Could not initialize keyring entry: {}", e);
             Err(OmarchyError::KeyringError(e.to_string()))
         }
+    }
+}
+
+#[cfg(test)]
+mod default_store_tests {
+    /// keyring 3 has no default store unless a store feature is enabled, and then it silently uses
+    /// an in-memory mock (`EntryOnly`): every saved sign-in would vanish. The Linux default must be
+    /// the Secret Service store (`UntilDelete`, the same store keyring 2 used). This only builds the
+    /// builder; it never opens the Secret Service or touches the user's keyring.
+    #[test]
+    fn default_store_is_secret_service_not_the_mock() {
+        let persistence = keyring::default::default_credential_builder().persistence();
+        assert!(
+            matches!(persistence, keyring::credential::CredentialPersistence::UntilDelete),
+            "keyring default store is not the Secret Service: check the keyring features in Cargo.toml"
+        );
     }
 }
