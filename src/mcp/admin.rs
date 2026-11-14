@@ -135,9 +135,8 @@ fn save(config_dir: &Path, s: &McpSettings) -> Result<(), String> {
 }
 
 fn account_ids(config_dir: &Path) -> Vec<String> {
-    let Ok(c) = rusqlite::Connection::open_with_flags(config_dir.join("messages.db"), rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY) else { return vec![] };
-    let Ok(mut st) = c.prepare("SELECT id FROM accounts") else { return vec![] };
-    st.query_map([], |r| r.get::<_, String>(0)).map(|it| it.flatten().collect()).unwrap_or_default()
+    let Ok(db) = crate::db::Database::open_read_only(config_dir.join("messages.db").to_str().unwrap_or("messages.db")) else { return vec![] };
+    db.account_ids_emails().map(|v| v.into_iter().map(|(id, _)| id).collect()).unwrap_or_default()
 }
 
 fn apply(config_dir: &Path, route: &str, q: &dyn Fn(&str) -> Option<String>) -> Result<(), String> {

@@ -122,3 +122,10 @@ mod account_delete_tests;
 #[cfg(test)]
 #[path = "db/tests_event_version.rs"]
 mod event_version_tests;
+
+/// `col IN (?n, ...)` over `accounts`, pushing the values onto `args`. The MCP read queries bind
+/// their filters this way so placeholder numbers stay in step with the parameter list (R3.5).
+pub(crate) fn account_in(col: &str, accounts: &[String], args: &mut Vec<rusqlite::types::Value>) -> String {
+    let marks: Vec<String> = accounts.iter().map(|a| { args.push(a.clone().into()); format!("?{}", args.len()) }).collect();
+    format!("{} IN ({})", col, marks.join(","))
+}

@@ -218,3 +218,12 @@ impl Database {
         }
     }
 }
+
+impl Database {
+    /// `(id, email)` of every account; email is empty when unset. MCP scoping reads this (R3.5).
+    pub fn account_ids_emails(&self) -> rusqlite::Result<Vec<(String, String)>> {
+        let mut st = self.conn.prepare("SELECT id, COALESCE(email, '') FROM accounts")?;
+        let rows = st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+        Ok(rows.flatten().collect())
+    }
+}
