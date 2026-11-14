@@ -202,22 +202,74 @@ impl Database {
     }
 
 
-    /// Apply one change-feed page in ONE transaction: insert new messages, update the read flag
-    /// and folder of existing ones (a message with an unpushed local read change keeps its local
-    /// flag), delete removed ones from `folder_id`. `progress` (the page's next link) is stored
-    /// in the same transaction so an interrupted first enumeration resumes where it stopped.
-    /// Returns (rows inserted or changed, rows deleted).
-    pub fn apply_delta_page(
+    // ───────────────────────────── Gmail history position ─────────────────────────────
+
+    /// The mailbox historyId the account's changes were applied up to; None = never seeded.
+    pub fn history_position(&self) -> Result<Option<String>> {
+        match self.conn.query_row(
+            "SELECT history_id FROM mail_history WHERE account_id = ?1",
+            params![self.account_id],
+            |r| r.get::<_, String>(0),
+        ) {
+            Ok(v) => Ok(Some(v)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// Apply the changes of one history walk in ONE transaction, and move the position to
+    /// `position` in the same transaction (None keeps it). `upserts` are full message details
+    /// (folder already chosen by the provider); `removed` are scoped ids to delete from every
+    /// folder. Explicit server deletions, so no purge guard applies. Returns (rows changed, rows
+    /// removed).
+    pub fn apply_history(
         &self,
-        folder_id: &str,
-        page: &crate::models::DeltaPage,
-        progress: Option<&str>,
+        upserts: &[crate::models::EmailMessage],
+        removed: &[String],
+        position: Option<&str>,
     ) -> Result<(usize, usize)> {
         self.conn.execute_batch("BEGIN")?;
         let result = (|| -> Result<(usize, usize)> {
-            let now = Utc::now();
-            let mut changed = 0usize;
+            let changed = self.upsert_messages(upserts)?;
+            let mut deleted = 0usize;
             {
+                let mut del = self.conn.prepare_cached("DELETE FROM messages WHERE id = ?1 AND account_id = ?2")?;
+                for id in removed {
+                    deleted += del.execute(params![id, self.account_id])?;
+                }
+            }
+            if let Some(p) = position {
+                self.conn.execute(
+                    "INSERT INTO mail_history (account_id, history_id, updated_at) VALUES (?1, ?2, CURRENT_TIMESTAMP)
+                     ON CONFLICT(account_id) DO UPDATE SET history_id = ?2, updated_at = CURRENT_TIMESTAMP",
+                    params![self.account_id, p],
+                )?;
+            }
+            Ok((changed, deleted))
+        })();
+        match result {
+            Ok(v) => { self.conn.execute_batch("COMMIT")?; Ok(v) }
+            Err(e) => { let _ = self.conn.execute_batch("ROLLBACK"); Err(e) }
+        }
+    }
+
+    /// Record the position a seeding walk started from (no rows touched).
+    pub fn set_history_position(&self, history_id: &str) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO mail_history (account_id, history_id, updated_at) VALUES (?1, ?2, CURRENT_TIMESTAMP)
+             ON CONFLICT(account_id) DO UPDATE SET history_id = ?2, updated_at = CURRENT_TIMESTAMP",
+            params![self.account_id, history_id],
+        )?;
+        Ok(())
+    }
+
+    /// Insert or update message rows (shared by delta pages and history applies). A message keeps
+    /// an unpushed local read change; folder, details and categories follow the provider.
+    /// Returns rows inserted or changed.
+    fn upsert_messages(&self, upserts: &[crate::models::EmailMessage]) -> Result<usize> {
+        let now = Utc::now();
+        let mut changed = 0usize;
+        {
                 let mut up = self.conn.prepare_cached(
                     "INSERT INTO messages (id, subject, from_email, body, received_at, is_read, cached_at, folder_id, account_id,
                             from_name, to_text, cc_text, bcc_text, categories, categories_synced, sent_at, importance, has_attachments, conversation_id, meta_ok)
@@ -242,12 +294,29 @@ impl Database {
                         OR messages.folder_id IS NOT excluded.folder_id
                         OR (excluded.meta_ok = 1 AND messages.meta_ok = 0)
                         OR (excluded.meta_ok = 1 AND messages.categories_synced IS NOT excluded.categories)")?;
-                for e in &page.upserts {
+                for e in upserts {
                     changed += up.execute(params![e.id, e.subject, e.from, e.body, e.received, e.is_read, now, e.folder_id, self.account_id,
                         e.from_name, e.to_text, e.cc_text, e.bcc_text, categories_json(&e.categories),
                         e.sent_at, e.importance, e.has_attachments, e.conversation_id, e.meta])?;
                 }
-            }
+        }
+        Ok(changed)
+    }
+
+    /// Apply one change-feed page in ONE transaction: insert new messages, update the read flag
+    /// and folder of existing ones (a message with an unpushed local read change keeps its local
+    /// flag), delete removed ones from `folder_id`. `progress` (the page's next link) is stored
+    /// in the same transaction so an interrupted first enumeration resumes where it stopped.
+    /// Returns (rows inserted or changed, rows deleted).
+    pub fn apply_delta_page(
+        &self,
+        folder_id: &str,
+        page: &crate::models::DeltaPage,
+        progress: Option<&str>,
+    ) -> Result<(usize, usize)> {
+        self.conn.execute_batch("BEGIN")?;
+        let result = (|| -> Result<(usize, usize)> {
+            let changed = self.upsert_messages(&page.upserts)?;
             let mut deleted = 0usize;
             {
                 // Only from THIS folder: a message that was moved keeps its row via the other folder's feed.

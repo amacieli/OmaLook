@@ -44,7 +44,7 @@ pub use categories::*;
 /// account-scoped; see db/sms.rs), `messages_fts` (cleared with `messages`), and the tables in
 /// `MESSAGE_KEYED_TABLES`.
 pub const ACCOUNT_TABLES: &[&str] = &[
-    "messages", "folders", "mail_delta",
+    "messages", "folders", "mail_delta", "mail_history",
     "category_defs", "account_flags", "category_state",
     "outbox", "drafts",
     "calendar_events", "calendar_outbox",

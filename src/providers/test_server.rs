@@ -55,13 +55,29 @@ pub struct FakeServer {
 
 impl FakeServer {
     pub fn start(script: Vec<Reply>) -> Self {
+        let mut script = script.into_iter();
+        Self::spawn(move |_| script.next().unwrap_or_else(|| Reply::new(599, "unscripted request")))
+    }
+
+    /// Replies chosen by request (method + path with query), for tests whose requests run
+    /// concurrently and so cannot rely on arrival order.
+    pub fn start_routed<F>(route: F) -> Self
+    where
+        F: FnMut(&Seen) -> Reply + Send + 'static,
+    {
+        Self::spawn(route)
+    }
+
+    fn spawn<F>(mut respond: F) -> Self
+    where
+        F: FnMut(&Seen) -> Reply + Send + 'static,
+    {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind 127.0.0.1:0");
         let addr = listener.local_addr().expect("local addr");
         let seen = Arc::new(Mutex::new(Vec::new()));
         let stop = Arc::new(AtomicBool::new(false));
         let (seen_t, stop_t) = (Arc::clone(&seen), Arc::clone(&stop));
         let thread = std::thread::spawn(move || {
-            let mut script = script.into_iter();
             for stream in listener.incoming() {
                 if stop_t.load(Ordering::SeqCst) {
                     break;
@@ -69,8 +85,8 @@ impl FakeServer {
                 let Ok(mut stream) = stream else { continue };
                 let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
                 let Some(request) = read_request(&mut stream) else { continue };
-                seen_t.lock().unwrap_or_else(|p| p.into_inner()).push(request);
-                let reply = script.next().unwrap_or_else(|| Reply::new(599, "unscripted request"));
+                seen_t.lock().unwrap_or_else(|p| p.into_inner()).push(request.clone());
+                let reply = respond(&request);
                 let _ = write_reply(&mut stream, &reply);
             }
         });

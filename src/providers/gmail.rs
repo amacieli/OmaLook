@@ -21,6 +21,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 mod extras;
+mod history;
 const BASE: &str = "https://gmail.googleapis.com/gmail/v1/users/me";
 const PAGE_SIZE: usize = 100;
 /// Concurrent `messages.get` calls (Gmail allows ~50/s per user; this stays far below).
@@ -87,6 +88,14 @@ fn header<'a>(msg: &'a serde_json::Value, name: &str) -> Option<&'a str> {
     msg["payload"]["headers"].as_array()?.iter().find_map(|h| {
         h["name"].as_str().filter(|n| n.eq_ignore_ascii_case(name)).and_then(|_| h["value"].as_str())
     })
+}
+
+/// Metadata request for one raw message id (the headers `parse_message` reads).
+pub(crate) fn metadata_url(raw_id: &str) -> String {
+    format!(
+        "{}/messages/{}?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=To&metadataHeaders=Cc&metadataHeaders=Bcc&metadataHeaders=Date&metadataHeaders=Importance&metadataHeaders=X-Priority",
+        BASE, urlencoding::encode(raw_id)
+    )
 }
 
 /// Gmail message resource (format=metadata) → `EmailMessage` stored under `folder_id`.
@@ -344,10 +353,7 @@ impl GmailProvider {
             for id in chunk {
                 let api = Arc::clone(&self.api);
                 let raw_id = id.clone();
-                let url = format!(
-                    "{}/messages/{}?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=To&metadataHeaders=Cc&metadataHeaders=Bcc&metadataHeaders=Date&metadataHeaders=Importance&metadataHeaders=X-Priority",
-                    BASE, urlencoding::encode(id)
-                );
+                let url = metadata_url(id);
                 set.spawn(async move { (raw_id, api.get(&url).await) });
             }
             let labels = self.labels.lock().unwrap_or_else(|p| p.into_inner()).clone();
@@ -481,6 +487,18 @@ impl GmailProvider {
 
 #[async_trait]
 impl super::EmailProvider for GmailProvider {
+    fn supports_history(&self) -> bool {
+        true
+    }
+
+    async fn current_history_id(&self) -> Result<String> {
+        self.history_id_now().await
+    }
+
+    async fn fetch_history(&self, start: &str) -> Result<crate::providers::HistoryFetch> {
+        self.fetch_history_changes(start).await
+    }
+
     async fn fetch_body(&self, id: &str) -> Result<(String, String)> {
         self.fetch_message_body(id).await
     }

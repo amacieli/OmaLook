@@ -8,9 +8,9 @@
 //! - Respects token validity and retries on auth failure
 
 use crate::db::Database;
-use crate::models::Settings;
-use crate::providers::EmailProvider;
-use crate::errors::Result;
+use crate::models::{MailFolder, Settings};
+use crate::providers::{EmailProvider, HistoryFetch};
+use crate::errors::{OmarchyError, Result};
 use crate::perf;
 use crate::sync_state;
 use log::{debug, error, info, warn};
@@ -280,12 +280,34 @@ impl EmailDaemon {
             return self.sync_folder_messages("inbox", is_initial).await;
         }
 
+        let cycle = self.sync_cycle.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+
+        // Gmail: apply the changes since the stored historyId (users.history.list). Listing
+        // every label is only the seed, the first walk or the recovery after a too-old id.
+        if self.provider.supports_history() {
+            if let Some(start) = self.db.history_position()? {
+                match self.apply_history(&start).await? {
+                    HistoryOutcome::Applied(n) => {
+                        sync_state::open_gate(self.db.account_id());
+                        if cycle % 5 == 0 {
+                            self.safety_net_reconcile(&folders).await;
+                        }
+                        return Ok(n);
+                    }
+                    HistoryOutcome::Expired => info!(
+                        "Mail history for {} is too old for the server: walking the mailbox again",
+                        self.db.account_id()
+                    ),
+                }
+            }
+            return self.seed_from_walk(&folders).await;
+        }
+
         // Read flags first: one cheap request per folder, so they are right within seconds
         // of launch instead of after the full paginated sync of every folder.
         {
             let _t = perf::span(format!("mail[{}] reconcile_read_state x{} folders", perf::acct_tag(self.db.account_id()), folders.len()));
             // Deletions made on other clients: every 5th cycle (and the first), ids only.
-            let cycle = self.sync_cycle.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             for folder in &folders {
                 self.reconcile_read_state(&folder.id, &folder.display_name).await;
                 if cycle % 5 == 0 {
@@ -307,6 +329,60 @@ impl EmailDaemon {
             }
         }
         Ok(total)
+    }
+
+    /// Gmail first sync (or recovery): list every folder completely, then store the historyId the
+    /// walk started from. The id is read BEFORE the walk, so changes made during it are replayed
+    /// by history on the next poll. The position is stored only when every folder walked: a
+    /// transient failure leaves it unset (the next poll walks again). A folder the server refuses
+    /// for good (not transient) is logged and skipped, so one dead label cannot force a walk on
+    /// every poll.
+    async fn seed_from_walk(&self, folders: &[MailFolder]) -> Result<usize> {
+        let acct = self.db.account_id().to_string();
+        let start = self.provider.current_history_id().await?;
+        sync_state::open_gate(&acct);
+        let mut total = 0usize;
+        for folder in folders {
+            let _t = perf::span(format!("mail[{}] walk '{}'", perf::acct_tag(&acct), folder.display_name));
+            match self.sync_folder_messages(&folder.id, true).await {
+                Ok(n) => total += n,
+                Err(e) if crate::compose::is_transient(&e) => {
+                    return Err(OmarchyError::HttpError(format!("mail walk of {} incomplete: {}", folder.display_name, e)));
+                }
+                Err(e) => error!("Skipping folder {} in the mail walk: {}", folder.display_name, e),
+            }
+        }
+        self.db.set_history_position(&start)?;
+        info!("Mail history for {} seeded at {}", acct, start);
+        self.safety_net_reconcile(folders).await;
+        Ok(total)
+    }
+
+    /// Apply one history walk: stored in one transaction together with its position.
+    async fn apply_history(&self, start: &str) -> Result<HistoryOutcome> {
+        match self.provider.fetch_history(start).await? {
+            HistoryFetch::Expired => Ok(HistoryOutcome::Expired),
+            HistoryFetch::Changes { upserts, removed, position } => {
+                let (changed, deleted) = self.db.apply_history(&upserts, &removed, position.as_deref())?;
+                if changed + deleted > 0 {
+                    // Unread/total counts come from the folder list.
+                    if let Err(e) = self.sync_folders().await {
+                        warn!("Could not refresh folder counts after history: {}", e);
+                    }
+                    sync_state::bump_mail(&format!("history: {} changed, {} deleted", changed, deleted));
+                }
+                Ok(HistoryOutcome::Applied(changed + deleted))
+            }
+        }
+    }
+
+    /// Periodic full read-state and deletion check (every 5th cycle): the safety net for changes
+    /// the history feed did not report.
+    async fn safety_net_reconcile(&self, folders: &[MailFolder]) {
+        for folder in folders {
+            self.reconcile_read_state(&folder.id, &folder.display_name).await;
+            self.reconcile_deleted(&folder.id, &folder.display_name).await;
+        }
     }
 
     /// Change-feed sync of every folder (Inbox first: folders come sorted). The first walk of a
@@ -987,6 +1063,17 @@ impl EmailDaemon {
             if let Err(e) = self.sync_folder_delta(&inbox.id, &inbox.display_name).await {
                 warn!("Inbox quick poll failed: {}", e);
             }
+        } else if self.provider.supports_history() {
+            // Gmail: the changes since the stored position. Without one, the full sync seeds it.
+            match self.db.history_position() {
+                Ok(Some(start)) => match self.apply_history(&start).await {
+                    Ok(_) => {}
+                    Err(e) => warn!("Inbox quick poll failed: {}", e),
+                },
+                Ok(None) => {}
+                Err(e) => warn!("Inbox quick poll failed: {}", e),
+            }
+            self.run_local_rules().await;
         } else {
             match self.sync_folder_messages(&inbox.id, false).await {
                 Ok(_) => {
@@ -1051,14 +1138,22 @@ impl EmailDaemon {
                 tokio::task::yield_now().await;
             }
 
-            if let Ok(Err(e)) = fetch_handle.await {
-                error!("Paginated fetch error for {}: {}", folder_id, e);
-            }
+            let fetch_error = match fetch_handle.await {
+                Ok(Ok(_)) => None,
+                Ok(Err(e)) => {
+                    error!("Paginated fetch error for {}: {}", folder_id, e);
+                    Some(e)
+                }
+                Err(e) => Some(OmarchyError::HttpError(format!("mail walk task failed: {}", e))),
+            };
             if inserted > 0 {
                 sync_state::bump_mail(&format!("crawl stored {} older/new messages", inserted));
             }
-
-            Ok(inserted)
+            // Rows stored so far are kept; the error tells the caller the walk is not complete.
+            match fetch_error {
+                Some(e) => Err(e),
+                None => Ok(inserted),
+            }
         } else {
             // Incremental: 50 most recent
             debug!("Incremental sync for folder: {}", folder_id);
@@ -1095,6 +1190,14 @@ impl EmailDaemon {
             Err(e) => error!("Could not store recent mail for {}: {}", acct, e),
         }
     }
+}
+
+/// What one history walk did.
+enum HistoryOutcome {
+    /// Changes applied (rows changed + removed).
+    Applied(usize),
+    /// The stored position is too old: the caller walks the mailbox again.
+    Expired,
 }
 
 /// Trigger an immediate email sync (used by HTTP trigger)
@@ -1601,5 +1704,160 @@ mod gmail_filter_tests {
         assert_eq!(ops(&d).last().unwrap().1, "done");
         assert_eq!(froms(&p), vec!["b@y.org".to_string()]);
         let _ = gf::fingerprint(&json!({}));
+    }
+}
+
+#[cfg(test)]
+mod history_sync_tests {
+    use super::*;
+    use crate::models::{EmailMessage, MailFolder};
+    use crate::providers::{EmailProvider, HistoryFetch};
+    use async_trait::async_trait;
+    use std::sync::Mutex;
+
+    /// Gmail-shaped provider: a fixed mailbox walk, a seed id, and scripted history responses
+    /// (`Err` = a provider error message).
+    struct HistFake {
+        seed: String,
+        walk: Vec<EmailMessage>,
+        walk_error: Option<String>,
+        history: Mutex<Vec<std::result::Result<HistoryFetch, String>>>,
+        starts_seen: Mutex<Vec<String>>,
+        walks: Mutex<usize>,
+    }
+
+    #[async_trait]
+    impl EmailProvider for HistFake {
+        async fn fetch_inbox(&self, _l: usize) -> Result<Vec<EmailMessage>> { Ok(vec![]) }
+        async fn fetch_folder_messages(&self, _f: &str, _l: usize) -> Result<Vec<EmailMessage>> { Ok(vec![]) }
+        async fn fetch_all_folder_messages(&self, _f: &str, tx: tokio::sync::mpsc::Sender<Vec<EmailMessage>>) -> Result<usize> {
+            *self.walks.lock().unwrap() += 1;
+            if let Some(e) = &self.walk_error {
+                return Err(OmarchyError::HttpError(e.clone()));
+            }
+            let n = self.walk.len();
+            if n > 0 {
+                tx.send(self.walk.clone()).await.unwrap();
+            }
+            Ok(n)
+        }
+        async fn fetch_folders(&self) -> Result<Vec<MailFolder>> { Ok(vec![]) }
+        async fn is_token_valid(&self) -> Result<bool> { Ok(true) }
+        fn supports_history(&self) -> bool { true }
+        async fn current_history_id(&self) -> Result<String> { Ok(self.seed.clone()) }
+        async fn fetch_history(&self, start: &str) -> Result<HistoryFetch> {
+            self.starts_seen.lock().unwrap().push(start.to_string());
+            match self.history.lock().unwrap().remove(0) {
+                Ok(h) => Ok(h),
+                Err(e) => Err(OmarchyError::HttpError(e)),
+            }
+        }
+    }
+
+    fn msg(id: &str) -> EmailMessage {
+        EmailMessage { id: id.into(), from: "a@b.c".into(), subject: format!("s{id}"), received: "2026-10-06T12:00:00Z".into(),
+                       body: "p".into(), folder_id: Some("F".into()), is_read: false, ..Default::default() }
+    }
+
+    fn setup(seed: &str, walk: Vec<EmailMessage>, walk_error: Option<&str>, history: Vec<std::result::Result<HistoryFetch, String>>) -> (EmailDaemon, Arc<HistFake>) {
+        let db = Arc::new(Database::open_for_account(":memory:", "gmail-h1").unwrap());
+        db.upsert_folder(&MailFolder { id: "F".into(), display_name: "Inbox".into(), parent_folder_id: None,
+                                       unread_item_count: None, total_item_count: None, well_known_name: Some("inbox".into()) }).unwrap();
+        let fake = Arc::new(HistFake {
+            seed: seed.into(), walk, walk_error: walk_error.map(String::from), history: Mutex::new(history),
+            starts_seen: Mutex::new(vec![]), walks: Mutex::new(0),
+        });
+        (EmailDaemon::new(DaemonConfig::default(), db, fake.clone()), fake)
+    }
+
+    fn changes(upserts: Vec<EmailMessage>, removed: Vec<&str>, position: Option<&str>) -> std::result::Result<HistoryFetch, String> {
+        Ok(HistoryFetch::Changes { upserts, removed: removed.into_iter().map(String::from).collect(), position: position.map(String::from) })
+    }
+
+    fn cached(d: &EmailDaemon) -> Vec<String> {
+        let mut ids: Vec<String> = d.db.get_messages_for_folder("F", 10_000).unwrap().into_iter().map(|m| m.id).collect();
+        ids.sort();
+        ids
+    }
+
+    fn run<F: std::future::Future>(f: F) -> F::Output {
+        crate::runtime::block_on(f)
+    }
+
+    #[test]
+    fn first_sync_walks_the_mailbox_then_stores_the_position_it_started_from() {
+        let (d, fake) = setup("100", vec![msg("m1"), msg("m2")], None, vec![]);
+        assert!(run(d.sync_messages(true)).is_ok());
+        assert_eq!(cached(&d), vec!["m1", "m2"]);
+        assert_eq!(d.db.history_position().unwrap().as_deref(), Some("100"));
+        assert!(fake.starts_seen.lock().unwrap().is_empty(), "no history call before a position exists");
+        assert_eq!(*fake.walks.lock().unwrap(), 1);
+    }
+
+    #[test]
+    fn later_syncs_apply_history_changes_and_do_not_walk_again() {
+        let (d, fake) = setup("100", vec![msg("m1")], None, vec![
+            changes(vec![msg("m3")], vec!["m1"], Some("120")),
+        ]);
+        run(d.sync_messages(true)).unwrap();
+        run(d.sync_messages(false)).unwrap();
+        assert_eq!(*fake.starts_seen.lock().unwrap(), vec!["100".to_string()]);
+        assert_eq!(*fake.walks.lock().unwrap(), 1, "the walk ran once: the second sync was history");
+        assert_eq!(cached(&d), vec!["m3"], "added m3 stored, deleted m1 removed");
+        assert_eq!(d.db.history_position().unwrap().as_deref(), Some("120"));
+    }
+
+    #[test]
+    fn an_empty_history_page_changes_nothing_and_moves_the_position() {
+        let (d, _fake) = setup("100", vec![msg("m1")], None, vec![changes(vec![], vec![], Some("130"))]);
+        run(d.sync_messages(true)).unwrap();
+        run(d.sync_messages(false)).unwrap();
+        assert_eq!(cached(&d), vec!["m1"]);
+        assert_eq!(d.db.history_position().unwrap().as_deref(), Some("130"));
+    }
+
+    #[test]
+    fn a_failed_history_request_changes_nothing_and_keeps_the_position() {
+        let (d, _fake) = setup("100", vec![msg("m1")], None, vec![Err("Google API error: 400 Bad Request — nope".into())]);
+        run(d.sync_messages(true)).unwrap();
+        assert!(run(d.sync_messages(false)).is_err());
+        assert_eq!(cached(&d), vec!["m1"]);
+        assert_eq!(d.db.history_position().unwrap().as_deref(), Some("100"), "not advanced past a failed walk");
+    }
+
+    #[test]
+    fn a_too_old_position_walks_again_and_reseeds() {
+        let (d, fake) = setup("200", vec![msg("m1"), msg("m9")], None, vec![Ok(HistoryFetch::Expired)]);
+        d.db.set_history_position("1").unwrap();
+        run(d.sync_messages(false)).unwrap();
+        assert_eq!(*fake.starts_seen.lock().unwrap(), vec!["1".to_string()]);
+        assert_eq!(*fake.walks.lock().unwrap(), 1, "expired: a full walk");
+        assert_eq!(cached(&d), vec!["m1", "m9"]);
+        assert_eq!(d.db.history_position().unwrap().as_deref(), Some("200"), "reseeded from the new start");
+    }
+
+    #[test]
+    fn a_transient_failure_during_the_walk_leaves_the_position_unset() {
+        let (d, _fake) = setup("100", vec![], Some("Google API error: 503 Service Unavailable — busy"), vec![]);
+        assert!(run(d.sync_messages(true)).is_err());
+        assert_eq!(d.db.history_position().unwrap(), None, "the next poll walks again");
+    }
+
+    #[test]
+    fn the_quick_poll_applies_history_once_seeded() {
+        let (d, fake) = setup("100", vec![msg("m1")], None, vec![changes(vec![msg("m4")], vec![], Some("110"))]);
+        run(d.sync_messages(true)).unwrap();
+        run(d.poll_inbox());
+        assert_eq!(*fake.starts_seen.lock().unwrap(), vec!["100".to_string()]);
+        assert_eq!(cached(&d), vec!["m1", "m4"]);
+        assert_eq!(d.db.history_position().unwrap().as_deref(), Some("110"));
+    }
+
+    #[test]
+    fn the_quick_poll_waits_for_the_first_sync_to_seed() {
+        let (d, fake) = setup("100", vec![msg("m1")], None, vec![]);
+        run(d.poll_inbox());
+        assert!(fake.starts_seen.lock().unwrap().is_empty(), "no position yet: the poll does nothing");
+        assert_eq!(*fake.walks.lock().unwrap(), 0);
     }
 }

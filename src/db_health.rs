@@ -18,7 +18,7 @@ use std::sync::Mutex;
 
 /// Sync positions that are never copied: without them each account re-walks from the start, which
 /// refetches anything a damaged cache table lost (and a position past lost rows would hide them for good).
-pub const DROPPED_CURSORS: &[&str] = &["mail_delta", "contact_sync"];
+pub const DROPPED_CURSORS: &[&str] = &["mail_delta", "mail_history", "contact_sync"];
 
 /// File the UI's "rebuild on next start" leaves in the config dir.
 pub const MARKER: &str = "db-rebuild-requested";
