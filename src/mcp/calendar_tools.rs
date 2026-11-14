@@ -1,16 +1,19 @@
-//! MCP calendar tools (OL-021 track D). `calendar_find_times` is a read: the finder's ranked slots
-//! (`calendar_finder::find_free_time`). `calendar_create_event`, `calendar_update_event` and
-//! `calendar_cancel_event` are writes: each is queued in the account's calendar outbox and waits the send
-//! delay (the undo window) before the worker sends it, so no invitation goes out at once. `dry_run` answers
-//! what would be sent and queues nothing.
+//! MCP calendar tools (OL-021 track D). `calendar_find_times` is a read: the finder's ranked slots.
+//! `calendar_create_event`, `calendar_update_event` and `calendar_cancel_event` are writes: each is
+//! queued in the account's calendar outbox and waits the send delay (the undo window) before the
+//! worker sends it, so no invitation goes out at once. `dry_run` answers what would be sent and
+//! queues nothing.
+//!
+//! This module parses the MCP arguments and scopes the account. The draft checks, the single-event
+//! rule and the outbox queueing are in `crate::app::calendar` (R3.5).
 //!
 //! Domain level, tool mode (off / ask / allow) and account scope are applied by `rpc::call_tool` and the
 //! policy before a handler runs. The account check here is a second gate on the `account` argument.
 
 use super::Ctx;
-use crate::accounts::{is_personal_microsoft, personal_refusal, PersonalLimit};
-use crate::calendar_finder::{find_free_time, FindRequest};
-use crate::calendar_write::{invitee_count, looks_like_address, EventDraft};
+use crate::app::calendar::{self as cal, EventInput};
+use crate::calendar_finder::FindRequest;
+use crate::calendar_write::looks_like_address;
 use chrono::{NaiveDate, Utc};
 use serde_json::{json, Value};
 
@@ -72,74 +75,42 @@ fn open_db(ctx: &Ctx) -> Result<crate::db::Database, String> {
     crate::db::Database::open(p.to_str().ok_or("bad database path")?).map_err(|e| format!("database: {}", e))
 }
 
-/// The editor's request JSON (what `EventDraft::from_request` reads), built from the MCP arguments.
-/// Attendees are `required` unless listed in `optional`.
-fn editor_json(args: &Value, account: &str) -> Result<Value, String> {
+fn open_ro(ctx: &Ctx) -> Result<crate::db::Database, String> {
+    let p = ctx.config_dir.join("messages.db");
+    crate::db::Database::open_read_only(p.to_str().ok_or("bad database path")?).map_err(|e| e.to_string())
+}
+
+/// The MCP arguments as a typed event. Attendees are `required` unless listed in `optional`.
+fn event_input(args: &Value, account: &str) -> Result<EventInput, String> {
     let start = text(args, "start").ok_or("missing start (local time, YYYY-MM-DDTHH:MM)")?;
     let end = text(args, "end").ok_or("missing end (local time, YYYY-MM-DDTHH:MM)")?;
-    let mut people: Vec<Value> = Vec::new();
-    for e in addresses(args, "attendees")? {
-        people.push(json!({ "email": e, "name": "", "role": "required" }));
-    }
-    for e in addresses(args, "optional")? {
-        people.push(json!({ "email": e, "name": "", "role": "optional" }));
-    }
-    Ok(json!({
-        "account_id": account,
-        "subject": text(args, "subject").unwrap_or(""),
-        "body": text(args, "body").unwrap_or(""),
-        "start": start,
-        "end": end,
-        "time_zone": text(args, "time_zone").map(str::to_string).unwrap_or_else(|| crate::providers::calendar::local_time_zone()),
-        "all_day": args.get("all_day").and_then(|v| v.as_bool()).unwrap_or(false),
-        "location": text(args, "location").unwrap_or(""),
-        "attendees": people,
-        "reminder_minutes": args.get("reminder_minutes").cloned().unwrap_or(Value::Null),
-        "show_as": text(args, "show_as").unwrap_or("busy"),
-    }))
+    let mut attendees: Vec<(String, bool)> = addresses(args, "attendees")?.into_iter().map(|a| (a, true)).collect();
+    attendees.extend(addresses(args, "optional")?.into_iter().map(|a| (a, false)));
+    Ok(EventInput {
+        account_id: account.to_string(),
+        subject: text(args, "subject").unwrap_or("").to_string(),
+        body: text(args, "body").unwrap_or("").to_string(),
+        start: start.to_string(),
+        end: end.to_string(),
+        time_zone: text(args, "time_zone").map(str::to_string).unwrap_or_else(crate::providers::calendar::local_time_zone),
+        all_day: args.get("all_day").and_then(|v| v.as_bool()).unwrap_or(false),
+        location: text(args, "location").unwrap_or("").to_string(),
+        attendees,
+        reminder_minutes: args.get("reminder_minutes").and_then(|v| v.as_u64()),
+        show_as: text(args, "show_as").unwrap_or("busy").to_string(),
+    })
 }
 
-/// The draft for a write, checked: it must validate, and a personal Microsoft account gets no attendees.
-fn checked_draft(args: &Value, account: &str, tx: &str) -> Result<(EventDraft, Value), String> {
-    let v = editor_json(args, account)?;
-    let draft = EventDraft::from_request(&v, tx)?;
-    draft.validate().map_err(|e| e.to_string())?;
-    if !draft.attendees.is_empty() {
-        if let Some(m) = personal_refusal(account, PersonalLimit::Invite) {
-            return Err(m.into());
-        }
-    }
-    Ok((draft, v))
-}
-
-/// The account and type of a cached event, read-only. Only single events can be changed over MCP for now:
-/// recurring series and their occurrences need an edit scope this tool does not take.
+/// The account and type of a cached event must match; see `app::calendar::check_single_event`.
 fn single_event(ctx: &Ctx, account: &str, id: &str) -> Result<(), String> {
-    let conn = rusqlite::Connection::open_with_flags(
-        ctx.config_dir.join("messages.db"),
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-    )
-    .map_err(|e| e.to_string())?;
-    let (acc, kind): (String, String) = conn
-        .query_row("SELECT account_id, COALESCE(event_type, '') FROM calendar_events WHERE id = ?1", [id], |r| {
-            Ok((r.get(0)?, r.get(1)?))
-        })
-        .map_err(|_| "no such event in this account".to_string())?;
-    if acc != account {
-        return Err("no such event in this account".into());
-    }
-    if matches!(kind.as_str(), "seriesMaster" | "occurrence" | "exception") {
-        return Err("only single (non-recurring) events can be changed over MCP yet".into());
-    }
-    Ok(())
+    let db = open_ro(ctx)?;
+    cal::check_single_event(&db, account, id)
 }
 
 /// `calendar_find_times`: ranked free slots for the attendees. Work and school accounts only.
 pub fn find_times(ctx: &Ctx, args: &Value) -> Result<Value, String> {
     let account = account_of(ctx, args)?;
-    if let Some(m) = personal_refusal(&account, PersonalLimit::Finder) {
-        return Err(m.into());
-    }
+    cal::check_finder_allowed(&account)?;
     let from = day(args, "from")?;
     let to = day(args, "to")?;
     let duration_min = args.get("duration").and_then(|v| v.as_i64()).ok_or("missing duration (minutes)")?;
@@ -151,8 +122,7 @@ pub fn find_times(ctx: &Ctx, args: &Value) -> Result<Value, String> {
     }
     let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(5).clamp(1, 20) as usize;
     let req = FindRequest { account_id: account, attendees, other_accounts, from, to, duration_min, limit };
-    req.validate()?;
-    find_free_time(&ctx.config_dir, &req)
+    cal::find_times(&ctx.config_dir, &req)
 }
 
 /// `calendar_create_event`: queues a new event behind the undo window.
@@ -160,19 +130,16 @@ pub fn create_event(ctx: &Ctx, args: &Value) -> Result<Value, String> {
     let account = account_of(ctx, args)?;
     let now = now_ms();
     let tx = format!("mcp-{:x}", now);
-    let (draft, v) = checked_draft(args, &account, &tx)?;
-    let graph = draft.to_graph_json().map_err(|e| e.to_string())?;
-    let invitees = invitee_count(&draft.attendees);
+    let checked = cal::check_draft(&event_input(args, &account)?, &tx)?;
+    let graph = checked.create_graph()?;
     if dry_run(args) {
-        return Ok(json!({ "ok": true, "dry_run": true, "invitees": invitees, "graph": graph }));
+        return Ok(json!({ "ok": true, "dry_run": true, "invitees": checked.invitees, "graph": graph }));
     }
     let delay = crate::settings::read_send_delay(&ctx.settings_path());
     let db = open_db(ctx)?;
     let id = format!("mcp-co-{:x}", now);
-    db.cal_outbox_enqueue(&id, &account, "create", &v.to_string(), invitees, &tx, now + delay as i64 * 1000)
-        .map_err(|e| format!("could not queue the event: {}", e))?;
-    crate::sync_state::request_cal_outbox_run();
-    Ok(json!({ "ok": true, "queued": true, "id": id, "delay_secs": delay, "invitees": invitees }))
+    cal::queue_create(&db, &id, &checked, &account, &tx, now + delay as i64 * 1000)?;
+    Ok(json!({ "ok": true, "queued": true, "id": id, "delay_secs": delay, "invitees": checked.invitees }))
 }
 
 /// `calendar_update_event`: replaces a single event's fields (the same arguments as create), queued.
@@ -182,18 +149,15 @@ pub fn update_event(ctx: &Ctx, args: &Value) -> Result<Value, String> {
     single_event(ctx, &account, id)?;
     let now = now_ms();
     let tx = format!("mcp-{:x}", now);
-    let (draft, v) = checked_draft(args, &account, &tx)?;
-    let invitees = invitee_count(&draft.attendees);
+    let checked = cal::check_draft(&event_input(args, &account)?, &tx)?;
     if dry_run(args) {
-        let patch = draft.to_graph_patch_json(false).map_err(|e| e.to_string())?;
-        return Ok(json!({ "ok": true, "dry_run": true, "id": id, "invitees": invitees, "graph": patch }));
+        return Ok(json!({ "ok": true, "dry_run": true, "id": id, "invitees": checked.invitees, "graph": checked.update_graph()? }));
     }
     let delay = crate::settings::read_send_delay(&ctx.settings_path());
     let db = open_db(ctx)?;
     let outbox_id = format!("mcp-cu-{:x}", now);
-    db.cal_queue_event_change(&outbox_id, "update", id, &v, invitees, now + delay as i64 * 1000)?;
-    crate::sync_state::request_cal_outbox_run();
-    Ok(json!({ "ok": true, "queued": true, "id": outbox_id, "delay_secs": delay, "invitees": invitees }))
+    cal::queue_update(&db, &outbox_id, id, &checked, now + delay as i64 * 1000)?;
+    Ok(json!({ "ok": true, "queued": true, "id": outbox_id, "delay_secs": delay, "invitees": checked.invitees }))
 }
 
 /// `calendar_cancel_event`: `kind` = `cancel` (organiser's cancel, optional message to attendees) or `delete`
@@ -202,17 +166,9 @@ pub fn cancel_event(ctx: &Ctx, args: &Value) -> Result<Value, String> {
     let account = account_of(ctx, args)?;
     let id = text(args, "id").ok_or("missing id")?;
     let kind = text(args, "kind").unwrap_or("cancel");
-    if kind != "cancel" && kind != "delete" {
-        return Err("kind must be cancel or delete".into());
-    }
     let comment = text(args, "comment").unwrap_or("");
-    if kind == "cancel" && !comment.is_empty() {
-        if let Some(m) = personal_refusal(&account, PersonalLimit::CancelWithMessage) {
-            return Err(m.into());
-        }
-    }
+    let op = cal::cancel_op(&account, kind, comment)?;
     single_event(ctx, &account, id)?;
-    let op = if kind == "delete" || is_personal_microsoft(&account) { "delete" } else { "cancel" };
     if dry_run(args) {
         return Ok(json!({ "ok": true, "dry_run": true, "id": id, "op": op, "comment": comment }));
     }
@@ -220,9 +176,7 @@ pub fn cancel_event(ctx: &Ctx, args: &Value) -> Result<Value, String> {
     let delay = crate::settings::read_send_delay(&ctx.settings_path());
     let db = open_db(ctx)?;
     let outbox_id = format!("mcp-cc-{:x}", now);
-    let payload = json!({ "account_id": account, "comment": comment });
-    db.cal_queue_event_change(&outbox_id, op, id, &payload, 0, now + delay as i64 * 1000)?;
-    crate::sync_state::request_cal_outbox_run();
+    cal::queue_cancel(&db, &outbox_id, op, id, &account, comment, now + delay as i64 * 1000)?;
     Ok(json!({ "ok": true, "queued": true, "id": outbox_id, "op": op, "delay_secs": delay }))
 }
 

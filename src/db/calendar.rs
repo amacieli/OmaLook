@@ -211,3 +211,14 @@ impl Database {
         self.conn.query_row("SELECT account_id, COALESCE(event_type, '') FROM calendar_events WHERE id = ?1", [id], |r| Ok((r.get(0)?, r.get(1)?))).optional()
     }
 }
+
+impl Database {
+    /// The account and the event type of one cached event (`""` when the type is unknown).
+    pub fn cal_event_kind(&self, id: &str) -> rusqlite::Result<Option<(String, String)>> {
+        match self.conn.query_row("SELECT account_id, COALESCE(event_type, '') FROM calendar_events WHERE id = ?1", [id], |r| Ok((r.get(0)?, r.get(1)?))) {
+            Ok(v) => Ok(Some(v)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+}
