@@ -17,9 +17,66 @@ static LOG: OnceLock<Mutex<Option<File>>> = OnceLock::new();
 pub fn init(config_dir: &std::path::Path) {
     let _ = START.set(Instant::now());
     let _ = std::fs::create_dir_all(config_dir);
-    let file = File::create(config_dir.join("perf.log")).ok();
+    let path = config_dir.join("perf.log");
+    let file = File::create(&path).ok();
+    if file.is_some() {
+        // Owner-only even if the umask was not set (R2.6). Regular file check via symlink_metadata.
+        if std::fs::symlink_metadata(&path).map(|m| m.file_type().is_file()).unwrap_or(false) {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+        }
+    }
     let _ = LOG.set(Mutex::new(file));
     mark("process start");
+}
+
+/// Route name for logging: `METHOD /path` with no query string, fragment, or request target
+/// beyond the path. Segments that look like ids (digits, long mixed tokens) or contain anything
+/// outside `[A-Za-z0-9_.-]` (emails, encoded data) become `:id`. Anything unparseable is `?`.
+/// R2.7: perf.log must never carry search terms, file paths, account ids or addresses.
+pub fn route_name(request_line: &str) -> String {
+    const MAX_ROUTE: usize = 120;
+    let mut parts = request_line.split_whitespace();
+    let method = parts.next().unwrap_or("");
+    let target = parts.next().unwrap_or("");
+    let method = if !method.is_empty() && method.len() <= 10 && method.bytes().all(|b| b.is_ascii_uppercase()) {
+        method
+    } else {
+        "?"
+    };
+    if !target.starts_with('/') {
+        return format!("{} ?", method);
+    }
+    let path = target.split(|c| c == '?' || c == '#').next().unwrap_or("");
+    let mut route = String::new();
+    for seg in path.split('/').skip(1) {
+        route.push('/');
+        if is_id_segment(seg) {
+            route.push_str(":id");
+        } else {
+            route.push_str(seg);
+        }
+        if route.len() > MAX_ROUTE {
+            route.truncate(MAX_ROUTE);
+            route.push_str("...");
+            break;
+        }
+    }
+    if route.is_empty() {
+        route.push('/');
+    }
+    format!("{} {}", method, route)
+}
+
+fn is_id_segment(seg: &str) -> bool {
+    if seg.is_empty() {
+        return false;
+    }
+    if !seg.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-' || b == b'.') {
+        return true;
+    }
+    let has_digit = seg.bytes().any(|b| b.is_ascii_digit());
+    seg.bytes().all(|b| b.is_ascii_digit()) || (has_digit && seg.len() >= 12)
 }
 
 /// Milliseconds since `init` (0.0 if `init` was never called).
@@ -53,5 +110,55 @@ pub fn span(label: impl Into<String>) -> Span {
 impl Drop for Span {
     fn drop(&mut self) {
         mark(&format!("{} done in {:.1}ms", self.label, self.t.elapsed().as_secs_f64() * 1000.0));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::route_name;
+
+    #[test]
+    fn drops_query_string_fs_list() {
+        assert_eq!(route_name("GET /fs/list?path=/home/x HTTP/1.1"), "GET /fs/list");
+    }
+
+    #[test]
+    fn drops_search_terms_and_account() {
+        assert_eq!(route_name("GET /messages?q=secret&account=a@b HTTP/1.1"), "GET /messages");
+    }
+
+    #[test]
+    fn drops_fragment_and_keeps_plain_routes() {
+        assert_eq!(route_name("GET /sync/serial#x HTTP/1.1"), "GET /sync/serial");
+        assert_eq!(route_name("POST /perf?m=label HTTP/1.1"), "POST /perf");
+    }
+
+    #[test]
+    fn id_like_segments_become_placeholder() {
+        assert_eq!(route_name("GET /messages/12345/attachments HTTP/1.1"), "GET /messages/:id/attachments");
+        assert_eq!(route_name("DELETE /x/0123456789abcdef HTTP/1.1"), "DELETE /x/:id");
+        assert_eq!(route_name("GET /a/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA-1 HTTP/1.1"), "GET /a/:id");
+    }
+
+    #[test]
+    fn email_or_encoded_segment_becomes_placeholder() {
+        assert_eq!(route_name("GET /user/a@b.com HTTP/1.1"), "GET /user/:id");
+        assert_eq!(route_name("GET /file/%2Fhome%2Fx HTTP/1.1"), "GET /file/:id");
+    }
+
+    #[test]
+    fn unparseable_lines_are_marked() {
+        assert_eq!(route_name(""), "? ?");
+        assert_eq!(route_name("get /x HTTP/1.1"), "? /x");
+        assert_eq!(route_name("GET http://h/x HTTP/1.1"), "GET ?");
+        assert_eq!(route_name("GET / HTTP/1.1"), "GET /");
+    }
+
+    #[test]
+    fn very_long_route_is_capped() {
+        let long = format!("GET /{} HTTP/1.1", "abc/".repeat(100));
+        let r = route_name(&long);
+        assert!(r.len() <= 4 + 120 + 3, "{}", r.len());
+        assert!(!r.contains('?'));
     }
 }

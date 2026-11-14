@@ -52,6 +52,9 @@ fn url_decode(s: &str) -> String {
 }
 
 fn main() {
+    // R2.6: owner-only files and dirs from here on. Before anything else creates a file.
+    omalook::fsperm::set_private_umask();
+
     // `omalook mcp`: stdio MCP forwarder to the running daemon. Not a backend; stdout is the protocol.
     if env::args().nth(1).as_deref() == Some("mcp") {
         omalook::mcp::shim::run(&get_config_dir());
@@ -61,6 +64,14 @@ fn main() {
     // Initialize logging
     init_logging();
     let config_dir = get_config_dir();
+    // R2.6: tighten existing config/cache dirs and files (never follows symlinks). Failure is not
+    // fatal: the backend still runs, and the umask above covers anything it creates.
+    {
+        let cache_dir = dirs::cache_dir().unwrap_or_else(|| PathBuf::from("/tmp")).join("omalook");
+        if let Err(e) = omalook::fsperm::harden_permissions(&config_dir, &cache_dir) {
+            warn!("could not tighten permissions on config/cache dirs: {}", e);
+        }
+    }
 
     // A backend left running in the background (Settings → General) already serves the UI:
     // just open a window against it instead of starting a second backend. Its session token is in
@@ -3031,7 +3042,7 @@ fn route_http_request(config_dir: &PathBuf, mut stream: std::net::TcpStream, raw
                     return;
                 }
                 if !first_line.contains("POST /perf") {
-                    omalook::perf::mark(&format!("http <- {}", first_line.split(" HTTP").next().unwrap_or("").chars().take(60).collect::<String>()));
+                    omalook::perf::mark(&format!("http <- {}", omalook::perf::route_name(first_line)));
                 }
 
                 // ── POST /perf?m=label — a mark from the QML side (shares this timeline)

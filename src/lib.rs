@@ -21,6 +21,7 @@ pub mod account_ops;
 pub mod models;
 pub mod errors;
 pub mod perf;
+pub mod fsperm;
 pub mod sync_state;
 pub mod qt_bridge;
 pub mod email_daemon;
