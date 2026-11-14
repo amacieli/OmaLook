@@ -10,7 +10,18 @@ use chrono::{Local, NaiveDate, TimeZone, Utc};
 use log::{debug, error};
 use tokio::sync::Mutex;
 
-const SELECT: &str = "id,subject,body,start,end,isAllDay,type,seriesMasterId,location,attendees,organizer,isOrganizer,responseStatus,showAs,isOnlineMeeting,onlineMeeting,onlineMeetingProvider,isReminderOn,reminderMinutesBeforeStart,webLink,sensitivity,recurrence,categories";
+const SELECT: &str = "id,subject,body,start,end,isAllDay,type,seriesMasterId,location,attendees,organizer,isOrganizer,responseStatus,showAs,isOnlineMeeting,onlineMeeting,onlineMeetingProvider,isReminderOn,reminderMinutesBeforeStart,webLink,sensitivity,recurrence,categories,changeKey";
+
+/// Version of a Graph event for `If-Match`: `@odata.etag` (`W/"<changeKey>"`), else built from `changeKey`.
+pub(crate) fn graph_etag(ev: &serde_json::Value) -> String {
+    match ev["@odata.etag"].as_str() {
+        Some(e) if !e.is_empty() => e.to_string(),
+        _ => match ev["changeKey"].as_str() {
+            Some(k) if !k.is_empty() => format!("W/\"{}\"", k),
+            _ => String::new(),
+        },
+    }
+}
 
 /// Graph attendees -> `[{name,email,role,response}]` JSON ("" when there are none).
 pub(crate) fn attendees_json(attendees: &serde_json::Value) -> String {
@@ -60,12 +71,13 @@ pub trait CalendarProvider: Send + Sync {
 
     /// Edit an event (plan section 4, phase 3). `target` is the occurrence id (the provider makes an exception)
     /// or, when `series`, the series master id (the whole series changes). Attendees receive the update.
-    async fn update_event(&self, _target: &str, _draft: &crate::calendar_write::EventDraft, _series: bool) -> Result<crate::calendar_write::CreatedEvent> {
+    /// `if_match`: the version the change is based on; the provider refuses (412) if the event changed since.
+    async fn update_event(&self, _target: &str, _draft: &crate::calendar_write::EventDraft, _series: bool, _if_match: Option<&str>) -> Result<crate::calendar_write::CreatedEvent> {
         Err(OmarchyError::HttpError("editing events is not supported for this account type yet".to_string()))
     }
 
     /// Delete a personal entry, or one occurrence of one (nobody is told). Missing already = done.
-    async fn delete_event(&self, _target: &str) -> Result<()> {
+    async fn delete_event(&self, _target: &str, _if_match: Option<&str>) -> Result<()> {
         Err(OmarchyError::HttpError("deleting events is not supported for this account type yet".to_string()))
     }
 
@@ -122,10 +134,18 @@ impl GraphCalendarProvider {
 
     /// One Graph call that must succeed; the body of the answer (possibly empty) comes back.
     async fn graph_call(&self, method: reqwest::Method, path: &str, body: Option<serde_json::Value>, time_zone: Option<&str>) -> Result<String> {
+        self.graph_call_if(method, path, body, time_zone, None).await
+    }
+
+    /// `graph_call` that only applies while the event still has version `if_match` (412 otherwise).
+    async fn graph_call_if(&self, method: reqwest::Method, path: &str, body: Option<serde_json::Value>, time_zone: Option<&str>, if_match: Option<&str>) -> Result<String> {
         let token = self.get_token().await?;
         let mut req = super::http_client()
             .request(method, format!("https://graph.microsoft.com/v1.0/{}", path))
             .header("Authorization", format!("Bearer {}", token));
+        if let Some(v) = if_match.map(super::clean_header_value).filter(|v| !v.is_empty()) {
+            req = req.header("If-Match", v);
+        }
         if let Some(tz) = time_zone {
             req = req.header("Prefer", format!("outlook.timezone=\"{}\", outlook.body-content-type=\"text\"", tz));
         }
@@ -208,6 +228,7 @@ impl GraphCalendarProvider {
             recurrence_json: if ev["recurrence"].is_object() { ev["recurrence"].to_string() } else { String::new() },
             calendar_id: String::new(),
             tags: crate::calendar_tags::from_graph(&ev["categories"]),
+            etag: graph_etag(ev),
         }
     }
 
@@ -383,9 +404,9 @@ impl CalendarProvider for GraphCalendarProvider {
         })
     }
 
-    async fn update_event(&self, target: &str, draft: &crate::calendar_write::EventDraft, series: bool) -> Result<crate::calendar_write::CreatedEvent> {
+    async fn update_event(&self, target: &str, draft: &crate::calendar_write::EventDraft, series: bool, if_match: Option<&str>) -> Result<crate::calendar_write::CreatedEvent> {
         let body = draft.to_graph_patch_json(series).map_err(|e| OmarchyError::HttpError(format!("Invalid event: {}", e)))?;
-        let text = self.graph_call(reqwest::Method::PATCH, &format!("me/events/{}", urlencoding::encode(target)), Some(body), Some(&draft.time_zone)).await?;
+        let text = self.graph_call_if(reqwest::Method::PATCH, &format!("me/events/{}", urlencoding::encode(target)), Some(body), Some(&draft.time_zone), if_match).await?;
         let raw: serde_json::Value = serde_json::from_str(&text).unwrap_or(serde_json::Value::Null);
         Ok(crate::calendar_write::CreatedEvent {
             id: raw["id"].as_str().unwrap_or(target).to_string(),
@@ -396,8 +417,8 @@ impl CalendarProvider for GraphCalendarProvider {
         })
     }
 
-    async fn delete_event(&self, target: &str) -> Result<()> {
-        match self.graph_call(reqwest::Method::DELETE, &format!("me/events/{}", urlencoding::encode(target)), None, None).await {
+    async fn delete_event(&self, target: &str, if_match: Option<&str>) -> Result<()> {
+        match self.graph_call_if(reqwest::Method::DELETE, &format!("me/events/{}", urlencoding::encode(target)), None, None, if_match).await {
             Ok(_) => Ok(()),
             // Already gone (deleted from another client): the state the user asked for is there.
             Err(e) if e.to_string().contains("404") => Ok(()),
@@ -470,6 +491,14 @@ pub fn local_time_zone() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_graph_version_is_the_etag_else_built_from_change_key() {
+        assert_eq!(graph_etag(&serde_json::json!({"@odata.etag": "W/\"abc\"", "changeKey": "zzz"})), "W/\"abc\"");
+        assert_eq!(graph_etag(&serde_json::json!({"changeKey": "abc"})), "W/\"abc\"");
+        assert_eq!(graph_etag(&serde_json::json!({"id": "x"})), "");
+        assert!(SELECT.contains("changeKey"));
+    }
 
     #[test]
     fn window_url_encodes_offsets_and_selects_type_fields() {

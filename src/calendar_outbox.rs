@@ -32,6 +32,15 @@ pub struct CalendarOutboxWorker {
     settings_path: Option<std::path::PathBuf>,
 }
 
+/// What the user sees when a change is refused because the event changed elsewhere (HTTP 412).
+pub const CONFLICT_MESSAGE: &str = "changed on the server since you opened it; nothing was written. Open it again to see the new version";
+
+/// The version a provider returned for an event we just wrote (Graph `@odata.etag`/`changeKey`, Google `etag`).
+fn new_etag(raw: &serde_json::Value) -> String {
+    let graph = crate::providers::calendar::graph_etag(raw);
+    if !graph.is_empty() { graph } else { raw["etag"].as_str().unwrap_or_default().to_string() }
+}
+
 /// The human part of a provider error: Graph wraps it in JSON.
 fn short_error(e: &crate::errors::OmarchyError) -> String {
     let full = e.to_string();
@@ -186,9 +195,9 @@ impl CalendarOutboxWorker {
             return match op {
                 "update" => {
                     let draft = EventDraft::from_request(v, tx).map_err(bad)?;
-                    self.provider.update_event(master, &draft, true).await.map(|_| Some(draft))
+                    self.provider.update_event(master, &draft, true, None).await.map(|_| Some(draft))
                 }
-                _ => self.provider.delete_event(master).await.map(|_| None),
+                _ => self.provider.delete_event(master, None).await.map(|_| None),
             };
         }
         let end = series_end_recurrence(&rec, occ).map_err(bad)?;
@@ -217,18 +226,29 @@ impl CalendarOutboxWorker {
         let series = v["series"].as_bool().unwrap_or(false);
         let day = v["start"].as_str().and_then(|s| s.get(..10)).and_then(|d| chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").ok());
         let comment = v["comment"].as_str().unwrap_or_default().to_string();
+        // R3.6: the version the user's change was based on ("" for queue entries from before it was kept).
+        let etag = v["etag"].as_str().unwrap_or_default().to_string();
+        let if_match = Some(etag.as_str()).filter(|e| !e.is_empty());
         // `Some(draft)` for an update, which changes the cache by its new time; `None` for the removals.
         let following = v["following"].as_bool() == Some(true);
         let outcome: crate::errors::Result<Option<EventDraft>> = if following && (op == "update" || op == "delete") {
             self.run_following(op, &v, tx, &target).await
         } else { match op {
             "update" => match EventDraft::from_request(&v, tx) {
-                Ok(draft) => self.provider.update_event(&target, &draft, series).await.map(|_| Some(draft)),
+                Ok(draft) => match self.provider.update_event(&target, &draft, series, if_match).await {
+                    Ok(done) => {
+                        // Our own write made a new version: keep it, so a next edit before the next sync is not refused.
+                        let fresh = new_etag(&done.raw);
+                        if let Err(e) = self.db.set_event_etag(&target, &fresh) { warn!("Calendar outbox {}: new version not kept: {}", self.account_id, e); }
+                        Ok(Some(draft))
+                    }
+                    Err(e) => Err(e),
+                },
                 Err(e) => Err(crate::errors::OmarchyError::HttpError(format!("the queued event could not be read: {e}"))),
             },
             "cancel" => self.provider.cancel_event(&target, &comment).await.map(|_| None),
             "decline" => self.provider.decline_event(&target, &comment).await.map(|_| None),
-            "delete" => self.provider.delete_event(&target).await.map(|_| None),
+            "delete" => self.provider.delete_event(&target, if_match).await.map(|_| None),
             other => Err(crate::errors::OmarchyError::HttpError(format!("unknown operation: {other}"))),
         } };
         match outcome {
@@ -247,6 +267,16 @@ impl CalendarOutboxWorker {
                 let wait = retry_delay_secs(attempt);
                 warn!("Calendar outbox {}: {} of {} not done ({}); retrying in {}s", self.account_id, op, id, e, wait);
                 let _ = self.db.cal_outbox_mark_retry(id, &short_error(&e), Database::now_ms() + wait * 1000);
+            }
+            Err(e) if crate::providers::is_precondition_failed(&e) => {
+                // Changed elsewhere since the user's edit (R3.6): nothing was written. Not retried; the cache is
+                // refreshed so the event shows the other version, and the user can edit again from it.
+                warn!("Calendar outbox {}: {} of {} refused: the event changed on the server", self.account_id, op, id);
+                let _ = self.db.cal_outbox_mark_failed(id, CONFLICT_MESSAGE);
+                match day {
+                    Some(day) => self.refresh_cache(day, series).await,
+                    None => sync_state::bump_mail("calendar event conflict"),
+                }
             }
             Err(e) => {
                 error!("Calendar outbox {}: {} of {} failed: {}", self.account_id, op, id, e);
@@ -497,19 +527,25 @@ mod tests {
     // ── edit, cancel, decline, delete (plan phase 3) ──
 
     #[derive(Default)]
-    struct ChangeFake { script: Mutex<Vec<Result<()>>>, seen: Mutex<Vec<String>> }
+    struct ChangeFake { script: Mutex<Vec<Result<()>>>, seen: Mutex<Vec<String>>, if_matches: Mutex<Vec<Option<String>>>, fresh_etag: Mutex<String> }
     #[async_trait]
     impl CalendarProvider for ChangeFake {
         async fn fetch_events(&self, _l: usize) -> Result<Vec<CalendarEvent>> { Ok(vec![]) }
         async fn fetch_all_events(&self, _tx: tokio::sync::mpsc::Sender<Vec<CalendarEvent>>) -> Result<usize> { Ok(0) }
         async fn fetch_window(&self, _f: chrono::NaiveDate, _t: chrono::NaiveDate) -> Result<Vec<CalendarEvent>> { Ok(vec![]) }
         async fn is_token_valid(&self) -> Result<bool> { Ok(true) }
-        async fn update_event(&self, target: &str, d: &EventDraft, series: bool) -> Result<crate::calendar_write::CreatedEvent> {
+        async fn update_event(&self, target: &str, d: &EventDraft, series: bool, if_match: Option<&str>) -> Result<crate::calendar_write::CreatedEvent> {
             self.seen.lock().unwrap().push(format!("update {target} series={series} subject={}", d.subject));
+            self.if_matches.lock().unwrap().push(if_match.map(String::from));
             self.script.lock().unwrap().remove(0)?;
-            Ok(crate::calendar_write::CreatedEvent { id: target.into(), ..Default::default() })
+            let raw = serde_json::json!({ "id": target, "@odata.etag": self.fresh_etag.lock().unwrap().clone() });
+            Ok(crate::calendar_write::CreatedEvent { id: target.into(), raw, ..Default::default() })
         }
-        async fn delete_event(&self, target: &str) -> Result<()> { self.seen.lock().unwrap().push(format!("delete {target}")); self.script.lock().unwrap().remove(0) }
+        async fn delete_event(&self, target: &str, if_match: Option<&str>) -> Result<()> {
+            self.seen.lock().unwrap().push(format!("delete {target}"));
+            self.if_matches.lock().unwrap().push(if_match.map(String::from));
+            self.script.lock().unwrap().remove(0)
+        }
         async fn cancel_event(&self, target: &str, comment: &str) -> Result<()> { self.seen.lock().unwrap().push(format!("cancel {target} [{comment}]")); self.script.lock().unwrap().remove(0) }
         async fn decline_event(&self, target: &str, _c: &str) -> Result<()> { self.seen.lock().unwrap().push(format!("decline {target}")); self.script.lock().unwrap().remove(0) }
         async fn create_event(&self, d: &EventDraft) -> Result<crate::calendar_write::CreatedEvent> {
@@ -541,6 +577,49 @@ mod tests {
         db.upsert_event(&ev("S", "singleInstance", None)).unwrap();
         let fake = Arc::new(ChangeFake { script: Mutex::new(script), ..Default::default() });
         (CalendarOutboxWorker::new("exchange-test", db.clone(), fake.clone(), None), fake, db)
+    }
+
+    // ── R3.6: edits and deletes carry the version they are based on ──
+
+    #[tokio::test]
+    async fn an_edit_sends_the_cached_version_and_keeps_the_new_one() {
+        let (w, fake, db) = change_setup(vec![Ok(()), Ok(())]);
+        db.set_event_etag("S", "W/\"v1\"").unwrap();
+        *fake.fresh_etag.lock().unwrap() = "W/\"v2\"".into();
+        db.cal_queue_event_change("e1", "update", "S", &change_payload("A"), 0, 0).unwrap();
+        assert_eq!(w.drain().await, 1);
+        assert_eq!(fake.if_matches.lock().unwrap().as_slice(), &[Some("W/\"v1\"".to_string())]);
+        assert_eq!(db.event_etag("S"), "W/\"v2\"", "our own write's version is kept for the next edit");
+        db.cal_queue_event_change("e2", "update", "S", &change_payload("B"), 0, 0).unwrap();
+        assert_eq!(w.drain().await, 1);
+        assert_eq!(fake.if_matches.lock().unwrap()[1].as_deref(), Some("W/\"v2\""), "a second edit before any sync is not refused");
+    }
+
+    #[tokio::test]
+    async fn a_changed_event_is_a_conflict_that_is_not_retried() {
+        let (w, fake, db) = change_setup(vec![Err(OmarchyError::HttpError("Graph API error: 412 Precondition Failed — {}".into()))]);
+        db.set_event_etag("S", "W/\"old\"").unwrap();
+        db.cal_queue_event_change("c1", "update", "S", &change_payload("Mine"), 0, 0).unwrap();
+        w.drain().await;
+        let (state, err, _) = db.cal_outbox_status("c1").unwrap().unwrap();
+        assert_eq!((state.as_str(), err.as_deref()), ("failed", Some(CONFLICT_MESSAGE)));
+        assert_eq!(w.drain().await, 0, "not retried");
+        assert_eq!(fake.seen.lock().unwrap().len(), 1);
+        assert_eq!(db.event_etag("S"), "W/\"old\"");
+    }
+
+    #[tokio::test]
+    async fn a_delete_carries_the_version_and_an_unknown_version_sends_none() {
+        let (w, fake, db) = change_setup(vec![Ok(()), Ok(())]);
+        db.set_event_etag("S", "\"g1\"").unwrap();
+        db.cal_queue_event_change("d1", "delete", "S", &serde_json::json!({}), 0, 0).unwrap();
+        db.cal_queue_event_change("u1", "update", "O1", &change_payload("X"), 0, 0).unwrap();
+        w.drain().await;
+        let seen: Vec<_> = fake.seen.lock().unwrap().clone();
+        let im: Vec<_> = fake.if_matches.lock().unwrap().clone();
+        let of = |p: &str| im[seen.iter().position(|s| s.starts_with(p)).unwrap()].clone();
+        assert_eq!(of("delete S"), Some("\"g1\"".to_string()));
+        assert_eq!(of("update O1"), None, "never synced with a version: unconditional, as before");
     }
 
     fn change_payload(subject: &str) -> serde_json::Value {

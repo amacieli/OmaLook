@@ -512,7 +512,7 @@ impl Database {
             ("online_url", "TEXT NOT NULL DEFAULT ''"), ("reminder_minutes", "INTEGER"),
             ("web_link", "TEXT NOT NULL DEFAULT ''"), ("sensitivity", "TEXT NOT NULL DEFAULT ''"),
             ("recurrence_json", "TEXT NOT NULL DEFAULT ''"), ("calendar_id", "TEXT NOT NULL DEFAULT ''"),
-            ("tags_json", "TEXT NOT NULL DEFAULT ''"),
+            ("tags_json", "TEXT NOT NULL DEFAULT ''"), ("etag", "TEXT NOT NULL DEFAULT ''"),
         ] {
             let has: bool = self.conn.query_row(
                 "SELECT COUNT(*) FROM pragma_table_info('calendar_events') WHERE name = ?1",
@@ -1435,6 +1435,9 @@ impl Database {
         if pending > 0 { return Err("a change to this event is already waiting".into()) }
         let mut p = payload.clone();
         p["target"] = serde_json::json!(target);
+        // The version the user's change is based on (R3.6): the provider refuses the write (412) if the
+        // event changed since. Empty (never synced with versions) = unconditional, as before.
+        p["etag"] = serde_json::json!(self.event_etag(target));
         self.cal_outbox_enqueue(outbox_id, &self.account_id, op, &p.to_string(), attendees, outbox_id, due_ms).map_err(|e| e.to_string())
     }
 
@@ -2365,9 +2368,9 @@ impl Database {
                                           event_type, series_master_id,
                                           location, organizer_name, organizer_email, is_organizer, attendees_json, my_response,
                                           show_as, online_provider, online_url, reminder_minutes, web_link, sensitivity,
-                                          recurrence_json, calendar_id, tags_json)
+                                          recurrence_json, calendar_id, tags_json, etag)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, CURRENT_TIMESTAMP, ?8, ?9, ?10,
-                     ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)
+                     ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26)
              ON CONFLICT(id) DO UPDATE SET
                subject    = excluded.subject,
                body       = excluded.body,
@@ -2385,6 +2388,9 @@ impl Database {
                web_link = excluded.web_link, sensitivity = excluded.sensitivity,
                recurrence_json = excluded.recurrence_json, calendar_id = excluded.calendar_id,
                tags_json = excluded.tags_json,
+               -- an answer without a version keeps the known one: a stale etag can only cause a
+               -- refused write (412), never an overwrite
+               etag = CASE WHEN excluded.etag <> '' THEN excluded.etag ELSE calendar_events.etag END,
                cached_at  = CURRENT_TIMESTAMP",
             params![
                 ev.id, ev.subject, ev.body, ev.start, ev.end, ev.is_all_day, ev.time_zone, self.account_id,
@@ -2394,8 +2400,24 @@ impl Database {
                 ev.show_as, ev.online_provider, ev.online_url, ev.reminder_minutes, ev.web_link, ev.sensitivity,
                 ev.recurrence_json, ev.calendar_id,
                 if ev.tags.is_empty() { String::new() } else { serde_json::to_string(&ev.tags).unwrap_or_default() },
+                ev.etag,
             ],
         )?;
+        Ok(())
+    }
+
+    /// Version (etag) of a cached event; "" when unknown or not cached.
+    pub fn event_etag(&self, event_id: &str) -> String {
+        self.conn
+            .query_row("SELECT etag FROM calendar_events WHERE id = ?1 AND account_id = ?2", params![event_id, self.account_id], |r| r.get::<_, String>(0))
+            .unwrap_or_default()
+    }
+
+    /// Remember the version a successful write of ours returned, so our next change to the same event
+    /// is not refused as a conflict before the next sync.
+    pub fn set_event_etag(&self, event_id: &str, etag: &str) -> Result<()> {
+        if etag.is_empty() { return Ok(()) }
+        self.conn.execute("UPDATE calendar_events SET etag = ?3 WHERE id = ?1 AND account_id = ?2", params![event_id, self.account_id, etag])?;
         Ok(())
     }
 
@@ -2486,6 +2508,7 @@ impl Database {
                     recurrence_json:  row.get(23)?,
                     calendar_id:      row.get(24)?,
                     tags:             serde_json::from_str::<Vec<String>>(&row.get::<_, String>(25)?).unwrap_or_default(),
+                    etag:             String::new(), // the version stays in the backend (used for If-Match only)
                 }, row.get(9)?, row.get(10)?))
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -3338,3 +3361,33 @@ pub fn body_snippet(text: &str) -> String {
 #[cfg(test)]
 #[path = "db/account_delete_tests.rs"]
 mod account_delete_tests;
+
+#[cfg(test)]
+mod event_version_tests {
+    use super::*;
+
+    #[test]
+    fn an_answer_without_a_version_keeps_the_known_one() {
+        let dir = std::env::temp_dir().join(format!("omalook-etag-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = Database::open_for_account(dir.join("m.db").to_str().unwrap(), "acct").unwrap();
+        let mut ev = CalendarEvent { id: "e".into(), subject: "s".into(), start: "2026-10-05T09:00:00".into(), end: "2026-10-05T10:00:00".into(), etag: "v1".into(), ..Default::default() };
+        db.upsert_event(&ev).unwrap();
+        assert_eq!(db.event_etag("e"), "v1");
+        ev.etag = String::new();
+        db.upsert_event(&ev).unwrap();
+        assert_eq!(db.event_etag("e"), "v1");
+        ev.etag = "v2".into();
+        db.upsert_event(&ev).unwrap();
+        assert_eq!(db.event_etag("e"), "v2");
+        db.set_event_etag("e", "").unwrap();
+        assert_eq!(db.event_etag("e"), "v2", "an empty version is never stored over a known one");
+        assert_eq!(db.event_etag("missing"), "");
+        // the queued change records it
+        db.cal_queue_event_change("q", "delete", "e", &serde_json::json!({}), 0, 0).unwrap();
+        let payload: String = db.conn.query_row("SELECT payload_json FROM calendar_outbox WHERE id = 'q'", [], |r| r.get(0)).unwrap();
+        assert_eq!(serde_json::from_str::<serde_json::Value>(&payload).unwrap()["etag"], "v2");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

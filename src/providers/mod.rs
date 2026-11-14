@@ -235,6 +235,16 @@ pub fn http_client() -> reqwest::Client {
 }
 
 pub mod graph;
+
+/// A provider value (etag) made safe to send as a header value: no CR/LF or other controls (HARD-5).
+pub fn clean_header_value(v: &str) -> String {
+    v.chars().filter(|c| !c.is_control()).collect()
+}
+
+/// A provider refused a conditional write because the resource changed since the version we sent (412).
+pub fn is_precondition_failed(e: &crate::errors::OmarchyError) -> bool {
+    contacts::error_status(e) == Some(412)
+}
 pub use graph::GraphEmailProvider;
 
 pub mod retry;

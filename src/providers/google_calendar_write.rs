@@ -297,17 +297,18 @@ pub async fn create(api: &GoogleApi, account_id: &str, draft: &EventDraft) -> Re
 }
 
 /// Edit an event. `series` says the target is the master (the whole series changes).
-pub async fn update(api: &GoogleApi, account_id: &str, target: &str, draft: &EventDraft, series: bool) -> Result<CreatedEvent> {
+/// `if_match` = the version the edit is based on (Google answers 412 if the event changed since).
+pub async fn update(api: &GoogleApi, account_id: &str, target: &str, draft: &EventDraft, series: bool, if_match: Option<&str>) -> Result<CreatedEvent> {
     let body = patch_body(draft, series).map_err(|e| OmarchyError::HttpError(format!("Invalid event: {e}")))?;
-    let raw = api.patch(&patch_url(account_id, target, draft), &body).await?;
+    let raw = api.patch_if(&patch_url(account_id, target, draft), &body, if_match).await?;
     Ok(created(account_id, raw))
 }
 
 /// Delete an event (or one occurrence, or a whole series when given the master). `notify` = tell the attendees.
 /// Already gone counts as done.
-pub async fn delete(api: &GoogleApi, account_id: &str, target: &str, notify: bool) -> Result<()> {
+pub async fn delete(api: &GoogleApi, account_id: &str, target: &str, notify: bool, if_match: Option<&str>) -> Result<()> {
     let url = format!("{EVENTS}/{}?sendUpdates={}", enc(unscoped(account_id, target)), if notify { "all" } else { "none" });
-    match api.delete(&url).await {
+    match api.delete_if(&url, if_match).await {
         Ok(_) => Ok(()),
         Err(e) if is_gone(&e) => Ok(()),
         Err(e) => Err(e),
@@ -316,12 +317,20 @@ pub async fn delete(api: &GoogleApi, account_id: &str, target: &str, notify: boo
 
 /// Attendee: decline (the owner is told). Reads the event first, so the guest list is the live one.
 pub async fn decline(api: &GoogleApi, account_id: &str, target: &str, comment: &str) -> Result<()> {
+    // Read-modify-write of the guest list: the PATCH carries the version just read, so a guest list changed
+    // in between is not overwritten; that case (412) reads again, once.
     let id = enc(unscoped(account_id, target));
-    let event = api.get(&format!("{EVENTS}/{id}")).await?;
-    let body = decline_body(&event, comment)
-        .ok_or_else(|| OmarchyError::HttpError("you are not on this event's guest list".to_string()))?;
-    api.patch(&format!("{EVENTS}/{id}?sendUpdates=all"), &body).await?;
-    Ok(())
+    let mut tries = 0;
+    loop {
+        tries += 1;
+        let event = api.get(&format!("{EVENTS}/{id}")).await?;
+        let body = decline_body(&event, comment)
+            .ok_or_else(|| OmarchyError::HttpError("you are not on this event's guest list".to_string()))?;
+        match api.patch_if(&format!("{EVENTS}/{id}?sendUpdates=all"), &body, event["etag"].as_str()).await {
+            Err(e) if tries < 2 && crate::providers::is_precondition_failed(&e) => continue,
+            r => return r.map(|_| ()),
+        }
+    }
 }
 
 /// Local wall-clock -> UTC instant (a time that does not exist in this zone is read as UTC).
