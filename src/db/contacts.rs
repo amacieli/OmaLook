@@ -136,19 +136,21 @@ impl Database {
     /// One page of a delta read: store the contacts, drop the removed ones. Rows that are not `ok`
     /// (a write of ours is in flight) are left alone either way. Returns (stored, removed).
     pub fn apply_contact_delta_page(&self, page: &ContactDeltaPage) -> Result<(usize, usize)> {
-        let mut stored = 0;
-        for c in &page.upserts {
-            self.upsert_contact(c)?;
-            stored += 1;
-        }
-        let mut removed = 0;
-        for id in &page.removed {
-            removed += self.conn.execute(
-                "DELETE FROM contacts WHERE id = ?1 AND account_id = ?2 AND sync_state = 'ok'",
-                params![id, self.account_id],
-            )?;
-        }
-        Ok((stored, removed))
+        self.in_transaction(|| {
+            let mut stored = 0;
+            for c in &page.upserts {
+                self.upsert_contact(c)?;
+                stored += 1;
+            }
+            let mut removed = 0;
+            for id in &page.removed {
+                removed += self.conn.execute(
+                    "DELETE FROM contacts WHERE id = ?1 AND account_id = ?2 AND sync_state = 'ok'",
+                    params![id, self.account_id],
+                )?;
+            }
+            Ok((stored, removed))
+        })
     }
 
     pub fn get_contact_record(&self, id: &str) -> Result<Option<ContactRecord>> {

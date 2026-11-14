@@ -230,10 +230,21 @@ impl ContactsDaemon {
             while let Some(batch) = rx.recv().await {
                 for c in &batch {
                     seen.insert(c.id.clone());
-                    match self.db.upsert_contact(c) {
-                        Ok(()) => written += 1,
-                        Err(e) => error!("Failed to store contact {}: {}", c.id, e),
+                }
+                // One transaction per batch; a row that fails is logged and skipped, the rest commit.
+                let stored = self.db.in_transaction(|| {
+                    let mut ok = 0usize;
+                    for c in &batch {
+                        match self.db.upsert_contact(c) {
+                            Ok(()) => ok += 1,
+                            Err(e) => error!("Failed to store contact {}: {}", c.id, e),
+                        }
                     }
+                    Ok(ok)
+                });
+                match stored {
+                    Ok(n) => written += n,
+                    Err(e) => error!("Failed to store a batch of {} contacts (folder {}): {}", batch.len(), folder_id, e),
                 }
                 tokio::task::yield_now().await;
             }
@@ -248,10 +259,12 @@ impl ContactsDaemon {
             Ok(written)
         } else {
             let contacts = self.provider.fetch_folder_contacts(folder_id, 50).await?;
-            for c in &contacts {
-                self.db.upsert_contact(c)?;
-            }
-            Ok(contacts.len())
+            self.db.in_transaction(|| {
+                for c in &contacts {
+                    self.db.upsert_contact(c)?;
+                }
+                Ok(contacts.len())
+            })
         }
     }
 }

@@ -219,11 +219,20 @@ impl CalendarDaemon {
 
             let mut written = 0usize;
             while let Some(batch) = rx.recv().await {
-                for ev in &batch {
-                    match self.db.upsert_event(ev) {
-                        Ok(()) => written += 1,
-                        Err(e) => error!("Failed to store event {}: {}", ev.id, e),
+                // One transaction per batch; a row that fails is logged and skipped, the rest commit.
+                let stored = self.db.in_transaction(|| {
+                    let mut ok = 0usize;
+                    for ev in &batch {
+                        match self.db.upsert_event(ev) {
+                            Ok(()) => ok += 1,
+                            Err(e) => error!("Failed to store event {}: {}", ev.id, e),
+                        }
                     }
+                    Ok(ok)
+                });
+                match stored {
+                    Ok(n) => written += n,
+                    Err(e) => error!("Failed to store a batch of {} events: {}", batch.len(), e),
                 }
                 tokio::task::yield_now().await;
             }
@@ -237,12 +246,12 @@ impl CalendarDaemon {
         } else {
             debug!("Incremental calendar sync");
             let events = self.provider.fetch_events(50).await?;
-            let mut written = 0;
-            for ev in &events {
-                self.db.upsert_event(ev)?;
-                written += 1;
-            }
-            Ok(written)
+            self.db.in_transaction(|| {
+                for ev in &events {
+                    self.db.upsert_event(ev)?;
+                }
+                Ok(events.len())
+            })
         }
     }
 }
