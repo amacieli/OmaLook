@@ -998,17 +998,34 @@ impl EmailDaemon {
     }
 
     /// Drop cached messages of a folder that were deleted/moved on another client.
+    /// The listing is vetted by `deletion_is_believable` (same rule as the Graph purge) first.
     async fn reconcile_deleted(&self, folder_id: &str, folder_name: &str) {
-        match self.provider.fetch_all_ids(folder_id).await {
-            Ok(live) => match self.db.reconcile_deleted(folder_id, &live) {
-                Ok(0) => {}
-                Ok(n) => {
-                    debug!("Deleted elsewhere: {} message(s) removed from {}", n, folder_name);
-                    sync_state::bump_mail("messages deleted elsewhere");
-                }
-                Err(e) => error!("Delete reconcile failed for {}: {}", folder_name, e),
-            },
-            Err(e) => warn!("Could not list ids for {}: {}", folder_name, e),
+        let live = match self.provider.fetch_all_ids(folder_id).await {
+            Ok(l) => l,
+            Err(e) => { warn!("Could not list ids for {}: {}", folder_name, e); return; }
+        };
+        let cached: Vec<String> = match self.db.get_messages_for_folder(folder_id, i32::MAX as usize) {
+            Ok(c) => c.into_iter().map(|m| m.id).collect(),
+            Err(e) => { error!("Delete reconcile failed for {}: {}", folder_name, e); return; }
+        };
+        let live_set: std::collections::HashSet<&String> = live.iter().collect();
+        let candidates = cached.iter().filter(|id| !live_set.contains(id)).count();
+        if candidates == 0 { return; }
+        let server_total = self.db.get_folders().ok()
+            .and_then(|f| f.into_iter().find(|f| f.id == folder_id))
+            .and_then(|f| f.total_item_count);
+        if !deletion_is_believable(cached.len(), candidates, live.len(), server_total.map(i64::from)) {
+            warn!("Not removing {} of {} cached rows in {}: the listing ({} ids) is not trustworthy (provider count {:?})",
+                  candidates, cached.len(), folder_name, live.len(), server_total);
+            return;
+        }
+        match self.db.reconcile_deleted(folder_id, &live) {
+            Ok(0) => {}
+            Ok(n) => {
+                debug!("Deleted elsewhere: {} message(s) removed from {}", n, folder_name);
+                sync_state::bump_mail("messages deleted elsewhere");
+            }
+            Err(e) => error!("Delete reconcile failed for {}: {}", folder_name, e),
         }
     }
 
@@ -1103,6 +1120,19 @@ pub async fn trigger_sync(daemon: &EmailDaemon) {
     }
 }
 
+/// Provider-neutral sanity check before deleting cached rows the server no longer lists
+/// (same rule as `Database::purge_unseen`): an empty listing never deletes; with a provider
+/// count the listing must match it (within 2%, min 3); without one, at most 20% may go.
+pub(crate) fn deletion_is_believable(cached: usize, candidates: usize, listed: usize, server_total: Option<i64>) -> bool {
+    if listed == 0 {
+        return false;
+    }
+    match server_total {
+        Some(t) => (listed as i64 - t).abs() <= (t / 50).max(3),
+        None => candidates * 5 <= cached,
+    }
+}
+
 #[cfg(test)]
 mod delta_tests {
     use super::*;
@@ -1153,6 +1183,45 @@ mod delta_tests {
     }
     fn read_flag(d: &EmailDaemon, id: &str) -> Option<bool> {
         d.db.message_is_read(id).ok().flatten()
+    }
+
+    struct Listing(Vec<String>);
+    #[async_trait]
+    impl EmailProvider for Listing {
+        async fn fetch_inbox(&self, _l: usize) -> Result<Vec<EmailMessage>> { Ok(vec![]) }
+        async fn fetch_folder_messages(&self, _f: &str, _l: usize) -> Result<Vec<EmailMessage>> { Ok(vec![]) }
+        async fn fetch_all_ids(&self, _f: &str) -> Result<Vec<String>> { Ok(self.0.clone()) }
+        async fn fetch_folders(&self) -> Result<Vec<MailFolder>> { Ok(vec![]) }
+        async fn is_token_valid(&self) -> Result<bool> { Ok(true) }
+    }
+    fn reconcile_setup(n: usize, listing: Vec<String>) -> EmailDaemon {
+        let db = Arc::new(Database::open_for_account(":memory:", "gmail-t1").unwrap());
+        for i in 0..n { db.insert_email(&msg(&format!("m{i}"), false)).unwrap(); }
+        EmailDaemon::new(DaemonConfig::default(), db, Arc::new(Listing(listing)))
+    }
+    fn cached(d: &EmailDaemon) -> usize { d.db.get_messages_for_folder("F", 10_000).unwrap().len() }
+
+    #[test]
+    fn review_archs1_empty_listing_wipes_nothing() {
+        let d = reconcile_setup(200, vec![]);
+        run(d.reconcile_deleted("F", "Inbox"));
+        assert_eq!(cached(&d), 200);
+    }
+
+    #[test]
+    fn reconcile_refuses_to_delete_over_the_cap() {
+        let d = reconcile_setup(10, vec!["m0".into()]);
+        run(d.reconcile_deleted("F", "Inbox"));
+        assert_eq!(cached(&d), 10);
+    }
+
+    #[test]
+    fn reconcile_applies_a_small_legitimate_deletion() {
+        let live: Vec<String> = (0..9).map(|i| format!("m{i}")).collect();
+        let d = reconcile_setup(10, live);
+        run(d.reconcile_deleted("F", "Inbox"));
+        assert_eq!(cached(&d), 9);
+        assert!(!d.db.email_exists("m9").unwrap());
     }
 
     #[test]
