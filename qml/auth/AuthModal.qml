@@ -4,6 +4,7 @@ import qs.Commons
 import qs.Commons as Commons
 import qs.Ui
 import "../common"
+import "../common/links.js" as Links
 
 // Login overlay: Microsoft device code, or Gmail (address entry, then browser sign-in). Same visual recipe as the kit's ConfirmDialog
 // (scrim + accent-bordered card); its content is ours because ConfirmDialog
@@ -125,7 +126,7 @@ Item {
             text: "Browser didn't open? Open sign-in page"
             iconText: "\uf08e"
             bordered: true
-            onClicked: Qt.openUrlExternally(root.auth.googleUrl)
+            onClicked: Links.openExternal(root.auth.googleUrl)
           }
         }
 

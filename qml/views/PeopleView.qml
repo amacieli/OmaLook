@@ -8,6 +8,7 @@ import qs.Ui
 import "../common"
 import "../people"
 import "../people/fields.js" as PF
+import "../common/links.js" as Links
 import "../state"
 
 // PeopleView: the address book (docs/PLAN-contacts.md). A keyboard cursor walks the contact list, Enter
@@ -531,10 +532,10 @@ Item {
         return "Copied " + what
     }
     function openTarget(t) {
-        if (t.kind === "url") Qt.openUrlExternally(PF.openableUrl(t.value))
-        else if (t.kind === "address") Qt.openUrlExternally(PF.mapUrl(t.value))
-        else if (t.kind === "email") Qt.openUrlExternally("mailto:" + t.value)
-        else if (t.kind === "phone") Qt.openUrlExternally("tel:" + t.value)
+        if (t.kind === "url") Links.openExternal(PF.openableUrl(t.value))
+        else if (t.kind === "address") Links.openExternal(PF.mapUrl(t.value))
+        else if (t.kind === "email") Links.openExternal("mailto:" + t.value)
+        else if (t.kind === "phone") Links.openExternal("tel:" + t.value, { tel: true })
     }
     function scrollDetail(px) { detailPane.scrollBy(px) }
 

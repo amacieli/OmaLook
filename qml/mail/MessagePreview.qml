@@ -8,6 +8,7 @@ import qs.Commons as Commons
 import qs.Ui
 import "../common"
 import "format.js" as Fmt
+import "../common/links.js" as Links
 import "../state"
 
 // Reading pane. `message` is the model row (or null for the empty state).
@@ -201,7 +202,7 @@ Item {
     _showLink(linkIndex)
   }
   function linkClear() { linkIndex = -1; hintMode = false; hintTyped = "" }
-  function linkOpen() { if (currentHref !== "") Qt.openUrlExternally(currentHref) }
+  function linkOpen() { if (currentHref !== "") Links.openExternal(currentHref) }
   // Every recipient SelectableText, filled as the header rows are created (for Ctrl+C).
   property var _recipFields: []
   // Copy the addresses of one header field: "to" | "cc" | "bcc" | "all" (to + cc + bcc, no duplicates).
@@ -267,8 +268,19 @@ Item {
   // helper is missing or fails, the message falls back to Qt's rich-text renderer below.
   readonly property string helperPath: Quickshell.env("QML_DIR") + "/../bin/omalook-render"
   property bool webkitOk: false          // the helper exists
-  property int webkitFailures: 0
-  readonly property bool webkitBroken: webkitFailures >= 3   // stop trying this session
+  // Helper failures are counted per message (by message id), so one bad message does not switch the
+  // WebKit view off for the rest of the session. A message that failed 3 times goes straight to Qt.
+  property var _webkitFails: ({})
+  function _failKey() { return root.message && root.message.id ? String(root.message.id) : "" }
+  function _webkitBroken() { var k = _failKey(); return k !== "" && (_webkitFails[k] || 0) >= 3 }
+  function _noteHelperFailure() {
+    var k = _failKey()
+    if (k === "") return
+    var o = {}
+    for (var j in _webkitFails) o[j] = _webkitFails[j]
+    o[k] = (o[k] || 0) + 1
+    _webkitFails = o
+  }
   property bool shotFailed: false        // this message fell back to Qt
   property bool shotPending: false
   property string shotSource: ""
@@ -289,7 +301,7 @@ Item {
   }
 
   function _wantShot() {
-    return htmlMode && webkitOk && !webkitBroken && !shotFailed
+    return htmlMode && webkitOk && !_webkitBroken() && !shotFailed
       && !!root.body && root.body.state === "ready" && root.body.type === "html"
   }
 
@@ -332,7 +344,7 @@ Item {
         if (proc.seq !== root._seq || root._shotProc !== proc) return
         if (code === 0 && proc.gotOutput) return
         // Failed (no display, timeout, crash): show this message with Qt's renderer instead.
-        root.webkitFailures++
+        root._noteHelperFailure()
         root.shotFailed = true
         root.shotPending = false
         root._shotProc = null
@@ -437,7 +449,7 @@ Item {
     }
   }
   function _wantShotIgnoringFailure() {
-    return htmlMode && webkitOk && !webkitBroken && !!root.body && root.body.type === "html"
+    return htmlMode && webkitOk && !_webkitBroken() && !!root.body && root.body.type === "html"
   }
 
   // ---- copy the mouse selection (Ctrl+C). The selectable texts never take keyboard focus, so
@@ -747,7 +759,7 @@ Item {
             dim: root.statusText !== "" || root.renderPending
             onLinkActivated: function(link) {
               var n = link.indexOf("omalook-link:") === 0 ? Number(link.slice(13)) : -1
-              if (n >= 0 && n < root.sysLinks.length) Qt.openUrlExternally(root.sysLinks[n].href)
+              if (n >= 0 && n < root.sysLinks.length) Links.openExternal(root.sysLinks[n].href)
             }
             onWidthChanged: root._sysY = null
           }
@@ -829,7 +841,7 @@ Item {
                   width: modelData.w * root.shotScale * shot.k
                   height: modelData.h * root.shotScale * shot.k
                   cursorShape: Qt.PointingHandCursor
-                  onClicked: Qt.openUrlExternally(modelData.href)
+                  onClicked: Links.openExternal(modelData.href)
 
                   // Keyboard cursor: an outlined, lightly filled box over the link.
                   Rectangle {
@@ -889,7 +901,7 @@ Item {
                 font.family: "Calibri"   // fontconfig maps it to Carlito if installed, else a sans
                 font.pixelSize: 15
                 text: root.rendered.html
-                onLinkActivated: function(link) { Qt.openUrlExternally(link) }
+                onLinkActivated: function(link) { Links.openExternal(link) }
                 MouseArea {
                   anchors.fill: parent
                   acceptedButtons: Qt.NoButton

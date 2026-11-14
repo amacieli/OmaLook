@@ -200,6 +200,18 @@ function hintLabels(n) {
   return out
 }
 
+// True when a style attribute value could load a resource: after entity and CSS hex-escape decoding, and
+// with comments, backslashes and whitespace removed, it contains url, image-set, @import or expression.
+function _cssLoads(v) {
+  var s = decodeEntities(String(v || ""))
+  s = s.replace(/\\([0-9a-fA-F]{1,6})\s?/g, function(all, h) {
+    var c = parseInt(h, 16)
+    return c > 0 && c < 0x110000 ? String.fromCodePoint(c) : ""
+  })
+  s = s.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\\/g, "").replace(/\s+/g, "")
+  return /url|image-set|@import|expression/i.test(s)
+}
+
 // HTML mail prepared for Qt's rich-text engine, which is the closest thing to a
 // small mail renderer available here (no web engine can run inside Quickshell).
 // Like Outlook it shows the body on a white page and blocks remote content, so
@@ -213,10 +225,9 @@ function sanitizeHtml(html, maxWidth, allowRemote) {
   if (body) s = body[1]
   s = s.replace(/<!--[\s\S]*?-->/g, "")
   s = s.replace(/<(head|style|script|title|object|embed|iframe|form|button|select|textarea|svg|video|audio|noscript)\b[\s\S]*?<\/\1\s*>/gi, "")
-  s = s.replace(/<(meta|link|input|base|source|track|area)\b[^>]*>/gi, "")
+  s = s.replace(/<(meta|link|input|base|source|track|area|frame)\b[^>]*>/gi, "")
   s = s.replace(/<\/?(o:[a-z]+|v:[a-z]+|w:[a-z]+|m:[a-z]+|xml)\b[^>]*>/gi, "")
   s = s.replace(/\s+on[a-z]+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, "")
-  s = s.replace(/(href\s*=\s*["']?)\s*javascript:[^"'>\s]*/gi, "$1#")
 
   // Images: inline data stays; anything remote (or cid:) is replaced by its alt text.
   s = s.replace(/<img\b[^>]*>/gi, function(tag) {
@@ -240,6 +251,19 @@ function sanitizeHtml(html, maxWidth, allowRemote) {
   // Qt also loads images named by background= on table/td/body, and by srcset/poster. Drop them from tags.
   s = s.replace(/<[a-z][^>]*>/gi, function(tag) {
     return tag.replace(/\s(background|srcset|poster|dynsrc|lowsrc)\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, "")
+  })
+
+  // Anything that can name a remote resource in CSS goes: a style value whose url( (or image-set, @import)
+  // survives whitespace, backslash and comment tricks ("u\rl(", "URL (", "u/**/rl(", "\75 rl(") is dropped
+  // whole. Qt's Text would otherwise fetch it (SEC-010).
+  s = s.replace(/\sstyle\s*=\s*("[^"]*"|'[^']*'|[^\s>"']+)/gi, function(all, v) {
+    return _cssLoads(v.replace(/^["']|["']$/g, "")) ? "" : all
+  })
+  // Links: only http, https and mailto survive. Anything else (javascript:, data:, file:, vbscript:, relative,
+  // or a scheme hidden by tabs/entities) loses its href; the link text stays as plain text (SEC-011).
+  s = s.replace(/\shref\s*=\s*("[^"]*"|'[^']*'|[^\s>"']+)/gi, function(all, v) {
+    var target = decodeEntities(v.replace(/^["']|["']$/g, "")).replace(/[\x00-\x1f\x7f]/g, "").trim()
+    return /^(https?|mailto):/i.test(target) ? all : ""
   })
 
   // Qt's table layout shrinks a table with no stated width to its narrowest content

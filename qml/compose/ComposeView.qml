@@ -11,6 +11,7 @@ import "modes.js" as Modes
 import "attach.js" as Att
 import "../mail/format.js" as Fmt
 import "external.js" as External
+import "../common/links.js" as Links
 import "signature.js" as Sig
 import "identity.js" as Ident
 
@@ -826,7 +827,7 @@ else if (ctrl && !shift && e.key === Qt.Key_V) { root.startPaste(); e.accepted =
           selectedTextColor: root.mode === Modes.HTML ? "#000000" : Commons.Color.foreground
           font.family: root.mode === Modes.HTML ? "Calibri" : Style.font.family
           font.pixelSize: root.mode === Modes.HTML ? 15 : Style.font.body
-          onLinkActivated: function(l) { Qt.openUrlExternally(l) }
+          onLinkActivated: function(l) { Links.openExternal(l) }
           KeyNavigation.backtab: header.subject
 
           DocumentHandler {

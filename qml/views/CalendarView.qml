@@ -9,6 +9,7 @@ import "../common"
 import "CalendarUtil.js" as CU
 import "../calendar"
 import "../state"
+import "../common/links.js" as Links
 import "../calendar/draft.js" as Draft
 import "../calendar/frommail.js" as FromMail
 import "../calendar/when.js" as When
@@ -479,7 +480,7 @@ Item {
     function joinSelected() {
         var url = selectedEvent ? CU.joinUrl(selectedEvent.raw) : ""
         if (url === "") return selectedEvent ? "No join link on this event" : "No event selected"
-        Qt.openUrlExternally(url)
+        Links.openExternal(url)
         return "Opening " + CU.joinLabel(selectedEvent.raw) + " link"
     }
     function copyJoin() {
