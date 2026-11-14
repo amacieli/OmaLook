@@ -663,8 +663,6 @@ pub struct SyncSettings {
     pub poll_interval_secs: i32,
     /// Auto-sync on startup
     pub auto_sync: bool,
-    /// Keep messages cached for N days (0 = forever)
-    pub cache_retention_days: i32,
     /// Keep the backend (sync, SMS mirror, HTTP server) running after the UI window is closed.
     /// Absent in settings files written before this setting existed.
     #[serde(default)]
@@ -703,7 +701,6 @@ impl Default for Settings {
             sync: SyncSettings {
                 poll_interval_secs: 120, // 2 minute polling interval for email daemon
                 auto_sync: true,
-                cache_retention_days: 30,
                 run_in_background: false,
             },
             calendar: CalendarSettings::default(),
