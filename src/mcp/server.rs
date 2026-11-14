@@ -10,6 +10,8 @@ use serde_json::Value;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 const MAX_HEADER: usize = 16 * 1024;
@@ -106,11 +108,67 @@ fn write_reply(stream: &mut TcpStream, r: &Reply) {
     let _ = stream.write_all(text.as_bytes());
 }
 
+/// Most MCP connections served at once. Beyond this a new connection gets `503` straight away,
+/// the same guard the UI port has (`http::Slot`), but with its own counter and cap.
+pub const MAX_CONNECTIONS: usize = 16;
+
+#[derive(Clone)]
+struct Gate {
+    active: Arc<AtomicUsize>,
+    max: usize,
+}
+
+/// One connection slot; released when dropped (also when the thread panics).
+struct ConnSlot(Arc<AtomicUsize>);
+
+impl Gate {
+    fn new(max: usize) -> Gate {
+        Gate { active: Arc::new(AtomicUsize::new(0)), max }
+    }
+    fn try_take(&self) -> Option<ConnSlot> {
+        let mut cur = self.active.load(Ordering::Relaxed);
+        loop {
+            if cur >= self.max {
+                return None;
+            }
+            match self.active.compare_exchange_weak(cur, cur + 1, Ordering::AcqRel, Ordering::Relaxed) {
+                Ok(_) => return Some(ConnSlot(self.active.clone())),
+                Err(now) => cur = now,
+            }
+        }
+    }
+}
+
+impl Drop for ConnSlot {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+/// Serve `s` on its own thread if a slot is free, otherwise answer 503 and close.
+fn admit(mut s: TcpStream, gate: &Gate, ctx: &Ctx) {
+    let _ = s.set_nonblocking(false);
+    match gate.try_take() {
+        Some(slot) => {
+            let c = ctx.clone();
+            std::thread::spawn(move || {
+                let _slot = slot;
+                serve_connection(s, &c);
+            });
+        }
+        None => {
+            let _ = s.set_write_timeout(Some(Duration::from_secs(1)));
+            let _ = s.write_all(b"HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
+        }
+    }
+}
+
 /// Start the supervisor: open the port while MCP is active, close it when it is not.
 /// Returns at once; runs on its own thread.
 pub fn start(config_dir: &Path) {
     let ctx = Ctx::new(config_dir);
     let port = super::mcp_port();
+    let gate = Gate::new(MAX_CONNECTIONS);
     std::thread::Builder::new()
         .name("mcp-supervisor".into())
         .spawn(move || {
@@ -137,9 +195,7 @@ pub fn start(config_dir: &Path) {
                 }
                 match listener.as_ref().map(|l| l.accept()) {
                     Some(Ok((s, _))) => {
-                        let c = ctx.clone();
-                        let _ = s.set_nonblocking(false);
-                        std::thread::spawn(move || serve_connection(s, &c));
+                        admit(s, &gate, &ctx);
                     }
                     _ => std::thread::sleep(Duration::from_millis(if listener.is_some() { 10 } else { 100 })),
                 }
@@ -254,6 +310,67 @@ mod tests {
         t.join().unwrap();
         assert!(out.starts_with("HTTP/1.1 200 OK"), "{}", out);
         assert!(out.contains("\"result\":{}"), "{}", out);
+        let _ = fs::remove_dir_all(d);
+    }
+
+    #[test]
+    fn gate_counts_and_releases() {
+        let g = Gate::new(MAX_CONNECTIONS);
+        let mut held: Vec<ConnSlot> = (0..MAX_CONNECTIONS).map(|_| g.try_take().unwrap()).collect();
+        assert!(g.try_take().is_none());
+        held.pop();
+        let again = g.try_take();
+        assert!(again.is_some());
+        assert!(g.try_take().is_none());
+        drop(again);
+        drop(held);
+        assert_eq!(g.active.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn full_server_answers_503_then_recovers() {
+        let (c, d) = ctx("cap", ON);
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        let gate = Gate::new(MAX_CONNECTIONS);
+        l.set_nonblocking(true).unwrap();
+        let stop = Arc::new(AtomicUsize::new(0));
+        let stop2 = stop.clone();
+        let t = std::thread::spawn(move || {
+            while stop2.load(Ordering::Relaxed) == 0 {
+                match l.accept() {
+                    Ok((s, _)) => admit(s, &gate, &c),
+                    Err(_) => std::thread::sleep(Duration::from_millis(5)),
+                }
+            }
+        });
+        let mut idle: Vec<TcpStream> = (0..MAX_CONNECTIONS).map(|_| TcpStream::connect(("127.0.0.1", port)).unwrap()).collect();
+        // Accept order follows connect order, so the probe is admitted after the N idle ones.
+        let mut out = String::new();
+        {
+            let mut s = TcpStream::connect(("127.0.0.1", port)).unwrap();
+            let _ = s.set_read_timeout(Some(Duration::from_secs(2)));
+            let _ = s.read_to_string(&mut out);
+        }
+        assert!(out.starts_with("HTTP/1.1 503"), "{}", out);
+        assert!(out.contains("Connection: close"), "{}", out);
+        drop(idle.pop());
+        // Slot frees when the connection thread sees EOF; retry briefly.
+        let mut ok = false;
+        for _ in 0..100 {
+            let mut s = TcpStream::connect(("127.0.0.1", port)).unwrap();
+            let _ = s.write_all(b"GET /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 0\r\n\r\n");
+            let _ = s.set_read_timeout(Some(Duration::from_secs(2)));
+            let mut o = String::new();
+            let _ = s.read_to_string(&mut o);
+            if o.starts_with("HTTP/1.1 503") { std::thread::sleep(Duration::from_millis(50)); continue; }
+            ok = o.starts_with("HTTP/1.1 ");
+            break;
+        }
+        assert!(ok);
+        drop(idle);
+        stop.store(1, Ordering::Relaxed);
+        let _ = t.join();
         let _ = fs::remove_dir_all(d);
     }
 }
