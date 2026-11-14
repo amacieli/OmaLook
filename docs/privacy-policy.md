@@ -20,15 +20,28 @@ what its features need.
 
 | Permission (OAuth scope) | Why |
 |---|---|
-| `openid`, `email` | Learn which address you signed in with |
+| `openid`, `email` | Learn which address you signed in with (read from Google's userinfo endpoint) |
 | `gmail.modify` | Read your mail, mark messages read/unread, and (as features are added) move, label, delete and send |
+| `gmail.settings.basic` | Read and manage your Gmail filters (mail rules). This is a Google "restricted" scope |
 | `calendar` | Read and (as features are added) edit your calendar events |
 | `contacts` | Read and (as features are added) edit your contacts |
 | `tasks` | Read and (as features are added) edit your tasks |
 
 **Microsoft accounts (Microsoft 365, Exchange, Outlook.com)**, through the Microsoft Graph API:
-mail, calendar, contacts and tasks read/write access and basic profile (`User.Read`), plus
-`offline_access` so you stay signed in.
+
+| Permission (delegated scope) | Why |
+|---|---|
+| `Mail.ReadWrite` | Read your mail and change it (read state, move, delete, drafts) |
+| `Mail.Send` | Send mail you compose |
+| `Calendars.ReadWrite` | Read and edit your calendar events |
+| `Contacts.ReadWrite` | Read and edit your contacts |
+| `Tasks.ReadWrite` | Read and edit your tasks |
+| `MailboxSettings.ReadWrite` | Read and edit your mail category list (names and colours) |
+| `User.Read` | Basic profile: your address and display name |
+| `offline_access` | Stay signed in (refresh token) |
+
+If an account has not granted the newer write permissions, the app falls back to read-only
+calendar and contacts access (`Calendars.Read`, `Contacts.Read`) instead of signing you out.
 
 ## Where your data is stored
 
@@ -38,7 +51,14 @@ Everything is stored locally, under your own user account on your own computer:
   keyring, for example GNOME Keyring). Your account password is never seen or stored by the app:
   you enter it on Google's or Microsoft's own sign-in page in your browser.
 - **A cache of your mail, calendar, contacts and tasks** is kept in a local SQLite database in
-  `~/.config/omalook/` so the app is fast and works offline.
+  `~/.config/omalook/` so the app is fast and works offline. Rendered message images, drafts,
+  outgoing mail and contact photos are cached in `~/.cache/omalook/`.
+
+**Encryption at rest.** The database and cache files are not encrypted by the app. They are
+protected by file permissions only: the directories are mode 0700 and the files 0600, so other
+user accounts on the computer cannot read them. Anyone with access to the disk itself, or to your
+logged-in session, can. If that matters to you, use full-disk encryption (for example LUKS). Only
+the sign-in tokens are held in the system keyring, which is encrypted by your login.
 
 Nothing is uploaded to the developer or to any third party by the app.
 
@@ -64,24 +84,64 @@ including the Limited Use requirements. In particular:
 
 ## Network connections the app makes
 
-The app connects only to the services needed for the accounts you add: Google
-(`accounts.google.com`, `oauth2.googleapis.com`, `gmail.googleapis.com`, `www.googleapis.com`,
-`people.googleapis.com`) and Microsoft (`login.microsoftonline.com`, `graph.microsoft.com`).
-Remote images inside email messages are blocked by default; if you choose to load them, your
+The app connects only to the services needed for the accounts you add:
+
+| Host | Used for |
+|---|---|
+| `accounts.google.com` | Google sign-in page (opened in your browser) |
+| `oauth2.googleapis.com` | Google token exchange and refresh |
+| `openidconnect.googleapis.com` | Google userinfo: the address of the account that signed in |
+| `gmail.googleapis.com` | Gmail mail, send and filters |
+| `www.googleapis.com` | Google Calendar and Google Tasks |
+| `people.googleapis.com` | Google Contacts |
+| `login.microsoftonline.com` | Microsoft sign-in (device code) and token refresh |
+| `graph.microsoft.com` | Microsoft mail, calendar, contacts, tasks and profile |
+
+The app does not fetch Jitsi, Zoom, Teams or any other meeting service itself; see the next
+section. Remote images inside email messages are blocked by default; if you choose to load them, your
 device fetches them from whoever hosts them, as in any mail client.
 
 The app contains no analytics, telemetry or crash reporting.
 
+### Hosts contacted only when you click
+
+These are opened in your default browser or handler, not fetched by the app, and only when you
+activate them:
+
+- **Meeting join links** in calendar events and mail (Join button): the link's own host. The app
+  recognises `teams.microsoft.com`, `teams.live.com`, `zoom.us` (and subdomains), `meet.google.com`,
+  `webex.com` (and subdomains) and `meet.jit.si`. Links to other hosts can also be offered as a
+  plain link.
+- **Online meetings you create**: a Teams or Google Meet link is created by Microsoft or Google
+  through the account's own API. A Jitsi link is generated on your computer, by default on
+  `meet.jit.si` or on a server you set in Settings; your personal Zoom link is whatever `https://`
+  address you enter. Nothing is contacted until you or an invitee opens it.
+- **Links in mail** and in contact details: any `http`, `https` or `mailto` address, opened with
+  your system handler.
+- **Addresses in contacts**: "open address" opens `www.openstreetmap.org` with the address text
+  in the search query.
+
+That host then sees your IP address and whatever the link contains, as with any link you click.
+
 ## Retention and deletion
 
-- **Remove an account** in Settings → Accounts to delete its sign-in token from your keyring and
-  all of its cached mail, calendar and contact data from the local database. **Log out** keeps the
-  token and cache so you can sign back in instantly.
+- **Remove an account** in Settings → Accounts stops its sync, deletes its sign-in token from
+  your keyring, and deletes from the local database everything stored for it: messages (including
+  the full-text search index and the attachment, invite, mailing-list and rule records that belong
+  to them), folders, categories, drafts and outgoing mail, calendar events, contacts, tasks, mail
+  rules, sending identities and sync state. Its cached files in `~/.cache/omalook/` are deleted too:
+  rendered message images, drafts, outgoing mail and contact photos. Freed database pages are
+  overwritten with zeros (SQLite `secure_delete`) during the removal.
+  What is **not** removed: text-message (SMS) data and its attachments, which belong to your
+  paired phone and not to a mail account; the transient `outgoing-tmp` staging directory; and data
+  that earlier deletes or updates already left in free pages or the write-ahead log, which this
+  removal does not rewrite. To erase those too, delete `~/.config/omalook/` and `~/.cache/omalook/`
+  (see below). **Log out** keeps the token and cache so you can sign back in instantly.
 - **Revoke the app's access** at any time from your provider:
   Google: https://myaccount.google.com/permissions ·
   Microsoft: https://account.microsoft.com/privacy/app-access (personal accounts) or
   https://myapps.microsoft.com (work or school accounts).
-- **Uninstall completely** by deleting the `~/.config/omalook/` directory and the
+- **Uninstall completely** by deleting the `~/.config/omalook/` and `~/.cache/omalook/` directories and the
   `omalook` entries in your keyring.
 
 Because the developer holds none of your data, there is nothing for the developer to delete on
