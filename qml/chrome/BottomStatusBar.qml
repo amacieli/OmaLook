@@ -123,7 +123,7 @@ Item {
       id: syncWarn
       visible: root.syncWarning !== ""
       text: "\u26a0 " + root.syncWarning
-      color: root.syncWarning.indexOf("stopped") >= 0 ? Hues.red : Hues.yellow
+      color: (root.syncWarning.indexOf("stopped") >= 0 || root.syncWarning.indexOf("damaged") >= 0) ? Hues.red : Hues.yellow
       font.pixelSize: Style.font.caption
       font.bold: true
       elide: Text.ElideRight
