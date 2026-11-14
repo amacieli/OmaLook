@@ -2029,14 +2029,32 @@ Item {
   property int _mcpPendingSerial: -1   // last mcp_pending the sync serial reported
   // Sync threads that are not running (GET /sync/health), refreshed when sync_health moves.
   property var syncProblems: []
-  property string syncWarning: SyncHealth.warning(syncProblems, accounts)
-  property string syncWarningDetail: SyncHealth.detail(syncProblems, accounts)
+  // Database health (the `database` object of the same response): damaged / rebuild requested /
+  // rebuilt. A sync-thread warning wins over it in the status bar.
+  property var dbHealth: ({})
+  property string syncWarning: SyncHealth.warning(syncProblems, accounts) || SyncHealth.dbWarning(dbHealth)
+  property string syncWarningDetail: _joinLines(SyncHealth.detail(syncProblems, accounts), SyncHealth.dbDetail(dbHealth))
+  function _joinLines(a, b) { return (a && b) ? a + "\n" + b : (a || b) }
   property real _syncHealthSerial: -1
   function loadSyncHealth() {
     request("GET", "/sync/health", function(xhr) {
       if (xhr.status !== 200) return
-      try { root.syncProblems = SyncHealth.problems(JSON.parse(xhr.responseText).threads) } catch (e) {}
+      try {
+        var j = JSON.parse(xhr.responseText)
+        root.syncProblems = SyncHealth.problems(j.threads)
+        root.dbHealth = j.database || ({})
+      } catch (e) {}
     })
+  }
+  // Asks for a database rebuild at the next start (cancel: withdraws the request). onDone(xhr, reply).
+  function requestDbRebuild(cancel, onDone) {
+    request("POST", "/settings/db/rebuild", function(xhr) {
+      var r = null
+      try { r = JSON.parse(xhr.responseText) } catch (e) {}
+      if (xhr.status !== 200 || !r || r.ok !== true) notify("Not changed: backend not reachable")
+      loadSyncHealth()
+      if (onDone) onDone(xhr, r)
+    }, JSON.stringify(cancel ? { cancel: true } : {}), { "Content-Type": "application/json" })
   }
   // SMS: bumped when the backend's sms serial moves; the SMS view reloads on it.
   property int smsRev: 0

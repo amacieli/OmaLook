@@ -48,5 +48,56 @@ SettingsPage {
         ? "The MCP server (Settings > MCP) runs inside this background process; turning this off stops it."
         : "The MCP server is switched on in Settings > MCP, but stays off while this is off."
     }
+
+    PanelSectionHeader { text: "DATABASE" }
+
+    UiText {
+      width: parent.width
+      wrapMode: Text.WordWrap
+      font.pixelSize: Style.font.caption
+      color: page.dbState === "damaged" ? Commons.Color.urgent : Commons.Color.foreground
+      text: page.dbStateText
+    }
+
+    UiText {
+      visible: page.dbState === "damaged"
+      width: parent.width
+      wrapMode: Text.WordWrap
+      dim: true
+      font.pixelSize: Style.font.caption
+      text: "Drafts, rules and settings are kept; mail downloads again after the rebuild."
+    }
+
+    Row {
+      spacing: Style.space(3)
+
+      Button {
+        visible: page.dbState === "damaged"
+        bordered: true
+        iconText: "\uf021"
+        text: "Rebuild on next start"
+        onClicked: page.app.requestDbRebuild(false, null)
+      }
+
+      Button {
+        visible: page.dbState === "rebuild_requested"
+        bordered: true
+        iconText: "\uf00d"
+        text: "Cancel rebuild"
+        onClicked: page.app.requestDbRebuild(true, null)
+      }
+    }
+  }
+
+  // The state of the database as GET /sync/health reports it (app.dbHealth).
+  readonly property string dbState: (app && app.dbHealth && app.dbHealth.state) || ""
+  readonly property string dbStateText: {
+    var db = app ? app.dbHealth : null
+    var lost = (db && db.lost && db.lost.length) ? " (lost: " + db.lost.join(", ") + ")" : ""
+    if (dbState === "damaged") return "Damaged: " + ((db && db.detail) || "the file cannot be read")
+    if (dbState === "rebuild_requested") return "Rebuild requested: it happens the next time OmaLook starts"
+    if (dbState === "rebuilt") return "Rebuilt at this start" + lost
+    if (dbState === "ok") return "Healthy"
+    return "Not checked yet"
   }
 }
