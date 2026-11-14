@@ -89,6 +89,11 @@ FocusScope {
 
     // Hand keys to text inputs / popups while they own focus.
     blocked: settingsEditing || appState.auth.showModal || palette.open || help.open
+    // A page that owns the keys but lost them (OL-094) gets its Esc back through `escapeEditing()`.
+    escapeHatch: function() {
+      var ci = contentLoader.item
+      return settingsEditing && !!ci && typeof ci.escapeEditing === "function" && ci.escapeEditing() === true
+    }
 
     // A page (settings fields, the mail view's image dropdown, compose) owns the keyboard.
     readonly property bool settingsEditing: contentLoader.item && contentLoader.item.editing === true

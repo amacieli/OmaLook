@@ -16,6 +16,9 @@ Item {
 
   // Called first with every key press (even while a dialog is up); return true to consume it.
   property var interceptor: null
+  // Called with an Esc that reaches the router while `blocked` (a page said it owns the keys, yet the key came
+  // back up to us: focus was lost outside the page's field or editor). Lets the page take its keys back.
+  property var escapeHatch: null
 
   property var pending: []
   // Vim-style count typed between Ctrl-w and its key (`Ctrl-w 5 >`); handed to the command's run().
@@ -67,7 +70,10 @@ Item {
 
   Keys.onPressed: function(e) {
     if (interceptor && interceptor(e) === true) { e.accepted = true; return }
-    if (blocked) return
+    if (blocked) {
+      if (e.key === Qt.Key_Escape && escapeHatch && escapeHatch() === true) e.accepted = true
+      return
+    }
     var t = token(e)
     if (t === "") return
 

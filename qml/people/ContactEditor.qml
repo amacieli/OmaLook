@@ -65,7 +65,7 @@ FocusScope {
         if (picking) { closePicker(); return }
         if (!dirty() || confirmDiscard) { cancelRequested(); return }
         confirmDiscard = true
-        localStatus = "Discard your changes?  Esc again to discard, or keep typing."
+        localStatus = "Discard your changes?  Esc (or Cancel) again to discard, Ctrl-Enter to save, or keep typing."
     }
 
     function addFields(ids) {
@@ -77,6 +77,24 @@ FocusScope {
             var it = rep.itemAt(i)
             if (it && it.fieldId === id) { it.input.forceActiveFocus(); flick.ensureVisible(it); return }
         }
+    }
+    // Keyboard focus never leaves the editor: Tab past the last field wraps to the first and Shift-Tab before
+    // the first wraps to the last. Before this, Tab out of Notes landed on the (hidden) dropdowns behind the
+    // editor, where Esc, Ctrl-Enter and every app key were dead (OL-094).
+    function firstInput() { return rep.count > 0 && rep.itemAt(0) ? rep.itemAt(0).input : null }
+    function lastInput() { var n = rep.count; return n > 0 && rep.itemAt(n - 1) ? rep.itemAt(n - 1).input : null }
+    function tabFrom(item, forward) {
+        var next = item.nextItemInFocusChain(forward)
+        var inside = false
+        for (var p = next; p; p = p.parent) if (p === root) { inside = true; break }
+        var target = inside && next !== root ? next : (forward ? firstInput() : lastInput())
+        if (target) target.forceActiveFocus()
+    }
+    // The way back in when focus went somewhere else anyway (a click outside a field, a popup).
+    function refocus() {
+        if (picking) { pickFilter.forceActiveFocus(); return }
+        var f = firstInput()
+        if (f) f.forceActiveFocus(); else root.forceActiveFocus()
     }
     function openPicker() { picking = true; pickFilter.text = ""; pickList.currentIndex = 0; pickFilter.forceActiveFocus() }
     function closePicker() { picking = false; Qt.callLater(function() { if (rep.count > 0 && rep.itemAt(0)) rep.itemAt(0).input.forceActiveFocus() }) }
@@ -104,6 +122,16 @@ FocusScope {
     Rectangle {
         anchors.fill: parent
         color: Qt.rgba(Commons.Color.background.r, Commons.Color.background.g, Commons.Color.background.b, 1.0)
+        // Modal: clicks and the wheel stop here instead of reaching the contact list behind (which changed the
+        // selection, opened the detail pane or toggled a favorite under the editor). A click on empty space
+        // gives the keys back to the editor.
+        MouseArea {
+            anchors.fill: parent
+            acceptedButtons: Qt.AllButtons
+            onPressed: function(m) { m.accepted = true }
+            onClicked: if (!root.activeFocus) root.refocus()
+            onWheel: function(w) { w.accepted = true }
+        }
     }
 
     ColumnLayout {
@@ -120,7 +148,10 @@ FocusScope {
                 dim: true; font.pixelSize: Style.font.subtitle
             }
             Item { Layout.fillWidth: true }
-            UiText { text: "Esc discard    Ctrl-Enter save    Ctrl-K add a field"; dim: true; font.pixelSize: Style.font.caption }
+            UiText { text: "Ctrl-K add a field"; dim: true; font.pixelSize: Style.font.caption }
+            // Mouse users had no way out at all: the only exits were Esc and Ctrl-Enter.
+            Button { bordered: true; text: "Cancel  (Esc)"; onClicked: root.tryCancel() }
+            Button { bordered: true; text: "Save  (Ctrl-Enter)"; onClicked: root.save() }
         }
         PanelSeparator { Layout.fillWidth: true }
 
@@ -205,8 +236,8 @@ FocusScope {
                             activeFocusOnTab: row.multi
                             Component.onCompleted: text = root.values[row.modelData.id] || ""
                             onTextChanged: root.values[row.modelData.id] = text
-                            Keys.onTabPressed: nextItemInFocusChain(true).forceActiveFocus()
-                            Keys.onBacktabPressed: nextItemInFocusChain(false).forceActiveFocus()
+                            Keys.onTabPressed: root.tabFrom(field, true)
+                            Keys.onBacktabPressed: root.tabFrom(field, false)
                             onActiveFocusChanged: if (activeFocus) flick.ensureVisible(row)
                         }
                         // single-line fields use this one; only notes use the area above
@@ -221,6 +252,8 @@ FocusScope {
                             Component.onCompleted: text = root.values[row.modelData.id] || ""
                             onTextChanged: root.values[row.modelData.id] = text
                             onActiveFocusChanged: if (activeFocus) flick.ensureVisible(row)
+                            Keys.onTabPressed: root.tabFrom(single, true)
+                            Keys.onBacktabPressed: root.tabFrom(single, false)
                         }
                     }
                 }

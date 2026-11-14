@@ -61,7 +61,12 @@ Item {
     property var  editorRaw: null              // the contact it edits (null = a new one)
     property var  editorTargets: []            // where a new contact may be saved
     property string editorStatus: ""
-    readonly property bool editing: searching || editorOpen   // AppShell hands every key to the field / editor meanwhile
+    // Between `e`/`n` and the editor showing (the contact is read live from the server first), keys typed
+    // ahead must not run list commands on the contact behind; they are dropped instead.
+    property bool editorOpening: false
+    Timer { id: openingGuard; interval: 15000; onTriggered: root.editorOpening = false }
+    onEditorOpenChanged: if (editorOpen) { editorOpening = false; openingGuard.stop() }
+    readonly property bool editing: searching || editorOpen || editorOpening   // AppShell hands every key to the field / editor meanwhile
 
     signal notice(string text)
     signal focusRequested()                    // give the keyboard back to the shell's key catcher
@@ -172,7 +177,9 @@ Item {
         return false
     }
     function newContact() {
+        root.editorOpening = true; openingGuard.restart()
         Backend.request("GET", "/contacts/folders", function(xhr) {
+            Qt.callLater(function() { root.editorOpening = false })   // after editorOpen is set, so `editing` never blinks off
             var list = []
             try { list = JSON.parse(xhr.responseText).folders || [] } catch (e) {}
             var t = list.filter(function(f) { return root._writableAccount(f.account_id) })
@@ -192,7 +199,9 @@ Item {
         if (!_writableAccount(selected.account_id)) return "That account's contacts are read-only here (Gmail editing is a later phase)"
         var id = selected.id
         // live=1: the backend also reads the extra properties (fax, pager, anniversary, ...) from the server
+        root.editorOpening = true; openingGuard.restart()
         Backend.request("GET", "/contacts/get?id=" + encodeURIComponent(id) + "&live=1", function(xhr) {
+            Qt.callLater(function() { root.editorOpening = false })   // after editorOpen is set, so `editing` never blinks off
             var d = null
             try { d = JSON.parse(xhr.responseText) } catch (e) {}
             if (!d || d.ok !== true) { root.notice("Could not read that contact"); return }
@@ -543,6 +552,9 @@ Item {
     ColumnLayout {
         anchors.fill: parent
         spacing: 0
+        // Behind the editor nothing takes focus or clicks (Tab out of the editor used to land on the
+        // dropdowns here, where every key was dead: OL-094).
+        enabled: !root.editorOpen
 
         // header bar
         Rectangle {
@@ -808,7 +820,16 @@ Item {
         }
     }
 
+    // Esc that reached the app's key router while the editor or the filter is open: the keys were lost
+    // somewhere (AppShell's escape hatch). Take them back and treat it as the Esc it was.
+    function escapeEditing() {
+        if (editorOpen && editorLoader.item) { editorLoader.item.refocus(); editorLoader.item.tryCancel(); return true }
+        if (searching) { searchField.forceActiveFocus(); return false }
+        return false
+    }
+
     Loader {
+        id: editorLoader
         anchors.fill: parent
         active: root.editorOpen
         z: 100
