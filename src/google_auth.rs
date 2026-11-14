@@ -145,10 +145,21 @@ pub fn build_auth_url(client: &GoogleClient, redirect_uri: &str, state: &str, ch
 #[derive(Debug, PartialEq)]
 pub enum Callback {
     Code(String),
-    /// Google reported an error (`access_denied`, …) or the state did not match.
+    /// The matching-state redirect carried Google's `error=` (`access_denied`, …).
     Failed(String),
-    /// Not the redirect (favicon, port scanners …): ignore and keep listening.
+    /// Not the redirect for this login (favicon, port scanners, wrong path, wrong or missing
+    /// `state`, no `code`): answer 404 and keep waiting for the real callback.
     Unrelated,
+}
+
+/// Stray requests tolerated before the login gives up (a flood must not keep it alive
+/// beyond `LOGIN_TIMEOUT`, and must not be able to fail it either).
+const MAX_STRAY_REQUESTS: usize = 32;
+
+/// Constant-time equality for secrets (the length check may leak only the length).
+fn ct_eq(a: &str, b: &str) -> bool {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
 pub fn parse_callback(request: &str, expected_state: &str) -> Callback {
@@ -160,8 +171,10 @@ pub fn parse_callback(request: &str, expected_state: &str) -> Callback {
     }
     let Ok(u) = url::Url::parse(&format!("http://127.0.0.1{}", target)) else { return Callback::Unrelated };
     let q: std::collections::HashMap<_, _> = u.query_pairs().collect();
-    if q.get("state").map(|s| s.as_ref()) != Some(expected_state) {
-        return Callback::Failed("Sign-in response did not match this request (state mismatch)".into());
+    // Only the request carrying this login's state may complete (or fail) the flow.
+    match q.get("state") {
+        Some(s) if ct_eq(s, expected_state) => {}
+        _ => return Callback::Unrelated,
     }
     if let Some(err) = q.get("error") {
         return Callback::Failed(match err.as_ref() {
@@ -171,7 +184,7 @@ pub fn parse_callback(request: &str, expected_state: &str) -> Callback {
     }
     match q.get("code") {
         Some(c) if !c.is_empty() => Callback::Code(c.to_string()),
-        _ => Callback::Failed("Google returned no authorisation code".into()),
+        _ => Callback::Unrelated,
     }
 }
 
@@ -249,6 +262,7 @@ fn respond(stream: &mut TcpStream, status: &str, body: &str) {
 impl PendingLogin {
     fn wait_for_code(&self, timeout: Duration) -> Result<String> {
         let deadline = Instant::now() + timeout;
+        let mut strays = 0usize;
         loop {
             if LOGIN_GEN.load(Ordering::SeqCst) != self.generation {
                 return Err(OmarchyError::AuthError("Sign-in cancelled".into()));
@@ -265,7 +279,13 @@ impl PendingLogin {
                     match parse_callback(&String::from_utf8_lossy(&buf[..n]), &self.state) {
                         Callback::Code(c) => { respond(&mut stream, "200 OK", SUCCESS_PAGE); return Ok(c); }
                         Callback::Failed(m) => { respond(&mut stream, "400 Bad Request", FAILURE_PAGE); return Err(OmarchyError::AuthError(m)); }
-                        Callback::Unrelated => respond(&mut stream, "404 Not Found", ""),
+                        Callback::Unrelated => {
+                            respond(&mut stream, "404 Not Found", "");
+                            strays += 1;
+                            if strays > MAX_STRAY_REQUESTS {
+                                return Err(OmarchyError::AuthError("Too many unrelated requests to the sign-in listener".into()));
+                            }
+                        }
                     }
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => std::thread::sleep(Duration::from_millis(150)),
@@ -420,12 +440,17 @@ mod tests {
     fn callback_parsing() {
         let ok = "GET /?state=abc&code=4%2F0AX&scope=x HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n";
         assert_eq!(parse_callback(ok, "abc"), Callback::Code("4/0AX".into()));
-        assert!(matches!(parse_callback(ok, "other"), Callback::Failed(m) if m.contains("state")));
+        assert_eq!(parse_callback(ok, "other"), Callback::Unrelated, "wrong state is ignored, not fatal");
         let denied = "GET /?state=abc&error=access_denied HTTP/1.1\r\n\r\n";
         assert!(matches!(parse_callback(denied, "abc"), Callback::Failed(m) if m.contains("cancelled")));
+        assert_eq!(parse_callback(denied, "other"), Callback::Unrelated, "error with wrong state is ignored");
         assert_eq!(parse_callback("GET /favicon.ico HTTP/1.1\r\n\r\n", "abc"), Callback::Unrelated);
         assert_eq!(parse_callback("POST /?code=1&state=abc HTTP/1.1\r\n\r\n", "abc"), Callback::Unrelated);
-        assert!(matches!(parse_callback("GET /?state=abc HTTP/1.1\r\n\r\n", "abc"), Callback::Failed(_)));
+        assert_eq!(parse_callback("GET /?state=abc HTTP/1.1\r\n\r\n", "abc"), Callback::Unrelated, "no code is ignored");
+        assert_eq!(parse_callback("GET /?state=abc&code= HTTP/1.1\r\n\r\n", "abc"), Callback::Unrelated, "empty code is ignored");
+        assert_eq!(parse_callback("GET /?code=1 HTTP/1.1\r\n\r\n", "abc"), Callback::Unrelated, "no state is ignored");
+        assert_eq!(parse_callback("GET /other?state=abc&code=1 HTTP/1.1\r\n\r\n", "abc"), Callback::Unrelated, "wrong path");
+        assert!(ct_eq("abc", "abc") && !ct_eq("abc", "abd") && !ct_eq("abc", "ab") && !ct_eq("", "a"));
     }
 
     #[test]
@@ -444,28 +469,60 @@ mod tests {
         assert!(matches!(classify_refresh_error(400, r#"{"error":"temporarily_unavailable"}"#), RefreshOutcome::Transient(_)));
     }
 
-    /// End to end against a real loopback listener (no Google): the redirect is delivered by a
-    /// plain TCP client, as the browser would.
+    /// End to end against a real loopback listener (no Google): redirects are delivered by a
+    /// plain TCP client, as the browser would. Scenarios run sequentially in one test because
+    /// each login bumps the shared `LOGIN_GEN`.
     #[test]
     fn listener_returns_the_code_and_survives_stray_requests() {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        listener.set_nonblocking(true).unwrap();
-        let port = listener.local_addr().unwrap().port();
-        let gen = LOGIN_GEN.fetch_add(1, Ordering::SeqCst) + 1;
-        let p = PendingLogin {
-            client: client(), listener, redirect_uri: format!("http://127.0.0.1:{}", port),
-            state: "st8".into(), verifier: "v".into(), generation: gen, auth_url: String::new(),
-        };
-        let t = std::thread::spawn(move || p.wait_for_code(Duration::from_secs(10)));
-        let get = |path: &str| {
+        fn login(state: &str) -> (PendingLogin, u16) {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let gen = LOGIN_GEN.fetch_add(1, Ordering::SeqCst) + 1;
+            let p = PendingLogin {
+                client: client(), listener, redirect_uri: format!("http://127.0.0.1:{}", port),
+                state: state.into(), verifier: "v".into(), generation: gen, auth_url: String::new(),
+            };
+            (p, port)
+        }
+        fn get(port: u16, path: &str) -> String {
             let mut s = TcpStream::connect(("127.0.0.1", port)).unwrap();
             write!(s, "GET {} HTTP/1.1\r\nHost: x\r\n\r\n", path).unwrap();
             let mut out = String::new();
             let _ = s.read_to_string(&mut out);
             out
-        };
-        assert!(get("/favicon.ico").starts_with("HTTP/1.1 404"));
-        assert!(get("/?state=st8&code=THE_CODE").starts_with("HTTP/1.1 200"));
+        }
+
+        // Wrong state first gets 404 and is ignored; the correct callback still returns the code.
+        let (p, port) = login("st8");
+        let t = std::thread::spawn(move || p.wait_for_code(Duration::from_secs(10)));
+        assert!(get(port, "/favicon.ico").starts_with("HTTP/1.1 404"));
+        assert!(get(port, "/?state=WRONG&code=EVIL").starts_with("HTTP/1.1 404"));
+        assert!(get(port, "/?state=st8&code=THE_CODE").starts_with("HTTP/1.1 200"));
         assert_eq!(t.join().unwrap().unwrap(), "THE_CODE");
+
+        // No state: 404, still waiting; then the real callback completes.
+        let (p, port) = login("st9");
+        let t = std::thread::spawn(move || p.wait_for_code(Duration::from_secs(10)));
+        assert!(get(port, "/?code=NO_STATE").starts_with("HTTP/1.1 404"));
+        assert!(get(port, "/?state=st9&code=OK2").starts_with("HTTP/1.1 200"));
+        assert_eq!(t.join().unwrap().unwrap(), "OK2");
+
+        // error= with the right state fails the flow with Google's reason.
+        let (p, port) = login("st10");
+        let t = std::thread::spawn(move || p.wait_for_code(Duration::from_secs(10)));
+        assert!(get(port, "/?state=WRONG&error=access_denied").starts_with("HTTP/1.1 404"));
+        assert!(get(port, "/?state=st10&error=access_denied").starts_with("HTTP/1.1 400"));
+        let err = t.join().unwrap().unwrap_err().to_string();
+        assert!(err.contains("cancelled"), "{}", err);
+
+        // A flood of strays gives up after MAX_STRAY_REQUESTS rather than waiting forever.
+        let (p, port) = login("st11");
+        let t = std::thread::spawn(move || p.wait_for_code(Duration::from_secs(10)));
+        for _ in 0..MAX_STRAY_REQUESTS {
+            assert!(get(port, "/?state=nope").starts_with("HTTP/1.1 404"));
+        }
+        assert!(get(port, "/?state=nope").starts_with("HTTP/1.1 404"));
+        assert!(t.join().unwrap().is_err(), "stray cap must end the wait");
     }
 }
