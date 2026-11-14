@@ -116,12 +116,12 @@ impl Database {
             conds.push(format!("c.folder_id = ?{}", args.len()));
         }
         if let Some(cat) = category.filter(|c| !c.is_empty()) {
-            args.push(format!("%\"{}\"%", cat.replace('"', "").to_lowercase()).into());
-            conds.push(format!("lower(c.categories) LIKE ?{}", args.len()));
+            args.push(format!("%\"{}\"%", crate::db::like_escape(&cat.replace('"', "").to_lowercase())).into());
+            conds.push(format!("lower(c.categories) LIKE ?{} ESCAPE '\\'", args.len()));
         }
         for word in search.unwrap_or("").split_whitespace() {
-            args.push(format!("%{}%", word.to_lowercase().replace('\\', "").replace('%', "").replace('_', "")).into());
-            conds.push(format!("c.search_text LIKE ?{}", args.len()));
+            args.push(crate::db::like_contains(&word.to_lowercase()).into());
+            conds.push(format!("c.search_text LIKE ?{} ESCAPE '\\'", args.len()));
         }
         let order = if view == "lists" {
             format!("lower(COALESCE(f.display_name, 'Contacts')), {}", key)

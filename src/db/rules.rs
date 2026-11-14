@@ -149,15 +149,15 @@ impl Database {
             return Err("this account's rules are not Exchange rules (Gmail accounts use filters)".into());
         }
         let rules = self.cached_rules_for_write()?;
+        // Both patterns are escaped, so an address's `_` or `%` matches only itself (ESCAPE '\').
         let like = match &rule.matcher {
-            crate::rules::Match::Address(a) => a.trim().to_lowercase(),
-            crate::rules::Match::Domain(d) => format!("%@{}", d.trim().trim_start_matches('@').to_lowercase().replace('%', "").replace('_', "\\_")),
+            crate::rules::Match::Address(a) => crate::db::like_escape(&a.trim().to_lowercase()),
+            crate::rules::Match::Domain(d) => format!("%@{}", crate::db::like_escape(&d.trim().trim_start_matches('@').to_lowercase())),
         };
-        let esc = if matches!(rule.matcher, crate::rules::Match::Domain(_)) { " ESCAPE '\\'" } else { "" };
-        let sql = format!("SELECT COUNT(*), COALESCE(SUM(CASE WHEN EXISTS (SELECT 1 FROM json_each(CASE WHEN json_valid(categories) THEN categories ELSE '[]' END) j WHERE lower(trim(j.value)) = ?3) THEN 1 ELSE 0 END), 0) \
-             FROM messages WHERE account_id = ?1 AND lower(from_email) LIKE ?2{}", esc);
+        const SQL: &str = "SELECT COUNT(*), COALESCE(SUM(CASE WHEN EXISTS (SELECT 1 FROM json_each(CASE WHEN json_valid(categories) THEN categories ELSE '[]' END) j WHERE lower(trim(j.value)) = ?3) THEN 1 ELSE 0 END), 0) \
+             FROM messages WHERE account_id = ?1 AND lower(from_email) LIKE ?2 ESCAPE '\\'";
         let (matches, already): (i64, i64) = self.conn
-            .query_row(&sql, params![self.account_id(), like, rule.tag.trim().to_lowercase()], |r| Ok((r.get(0)?, r.get(1)?)))
+            .query_row(SQL, params![self.account_id(), like, rule.tag.trim().to_lowercase()], |r| Ok((r.get(0)?, r.get(1)?)))
             .map_err(|e| e.to_string())?;
         let body = crate::rules::new_rule_body(rule);
         let exists = rules.iter().any(|a| crate::rules::same_effect(a, &body));
@@ -390,5 +390,25 @@ mod tests {
         assert_eq!((none.matches, none.shadowed_by.len()), (0, 0));
         let pct = a.rule_preview(&new(Match::Domain("car%el.org".into()))).unwrap();
         assert_eq!(pct.matches, 0, "a percent sign in the text is not a wildcard");
+    }
+
+    #[test]
+    fn preview_matches_a_sender_address_literally_not_as_a_like_pattern() {
+        use crate::models::EmailMessage;
+        use crate::rules::{Match, NewRule};
+        let a = Database::open_for_account(":memory:", "ex").unwrap();
+        a.conn.execute("INSERT INTO accounts (id, provider, email) VALUES ('ex', 'exchange', 'me@work.org')", []).unwrap();
+        let put = |id: &str, from: &str| a.insert_email(&EmailMessage { id: id.into(), from: from.into(), subject: "s".into(),
+            received: "2026-10-06T12:00:00Z".into(), body: "p".into(), folder_id: Some("f".into()), is_read: true, meta: true,
+            categories: Some(vec![]), ..Default::default() }).unwrap();
+        put("1", "a_b@carmel.org"); put("2", "axb@carmel.org"); put("3", "a%@carmel.org"); put("4", "a1b@carmel.org");
+        ok_account(&a, &[]);
+        let new = |m| NewRule { tag: "Church".into(), matcher: m, enabled: true, stop: true };
+        let under = a.rule_preview(&new(Match::Address("a_b@carmel.org".into()))).unwrap();
+        assert_eq!(under.matches, 1, "`_` in an address is literal: only a_b@ matches, not axb@ or a1b@");
+        let pct = a.rule_preview(&new(Match::Address("a%@carmel.org".into()))).unwrap();
+        assert_eq!(pct.matches, 1, "`%` in an address is literal: it matches only a%@");
+        let wild = a.rule_preview(&new(Match::Address("a%b@carmel.org".into()))).unwrap();
+        assert_eq!(wild.matches, 0, "a `%` wildcard would have matched a_b@ and axb@; it must not");
     }
 }

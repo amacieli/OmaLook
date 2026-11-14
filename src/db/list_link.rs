@@ -142,22 +142,22 @@ impl Database {
 
     /// The account's contacts that carry the category (any case).
     pub fn contacts_with_category(&self, category: &str) -> Result<Vec<LinkContact>> {
-        let like = format!("%{}%", category.to_lowercase().replace('%', "").replace('_', ""));
-        Ok(self.link_contacts("lower(categories) LIKE ?2", &like)?.into_iter().filter(|c| c.has_category(category)).collect())
+        let like = crate::db::like_contains(&category.to_lowercase());
+        Ok(self.link_contacts("lower(categories) LIKE ?2 ESCAPE '\\'", &like)?.into_iter().filter(|c| c.has_category(category)).collect())
     }
 
     /// The account's contacts whose first address is this one.
     pub fn contacts_by_first_address(&self, address: &str) -> Result<Vec<LinkContact>> {
         let a = address.trim().to_lowercase();
-        let like = format!("%{}%", a.replace('%', "").replace('_', ""));
-        Ok(self.link_contacts("lower(emails) LIKE ?2", &like)?.into_iter().filter(|c| c.address().as_deref() == Some(a.as_str())).collect())
+        let like = crate::db::like_contains(&a);
+        Ok(self.link_contacts("lower(emails) LIKE ?2 ESCAPE '\\'", &like)?.into_iter().filter(|c| c.address().as_deref() == Some(a.as_str())).collect())
     }
 
     /// Category names starting with a prefix that appear on the account's contacts.
     pub fn categories_with_prefix(&self, prefix: &str) -> Result<BTreeSet<String>> {
-        let like = format!("%{}%", prefix.to_lowercase());
+        let like = crate::db::like_contains(&prefix.to_lowercase());
         let mut out = BTreeSet::new();
-        for c in self.link_contacts("lower(categories) LIKE ?2", &like)? {
+        for c in self.link_contacts("lower(categories) LIKE ?2 ESCAPE '\\'", &like)? {
             for cat in c.categories {
                 if cat.to_lowercase().starts_with(&prefix.to_lowercase()) { out.insert(cat.trim().to_string()); }
             }

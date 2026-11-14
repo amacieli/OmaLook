@@ -115,7 +115,7 @@ impl Query {
                     // categories is a JSON array of names: ["Saint Lucia","Family"]. Substring,
                     // ignoring case and spaces, so `cat:lucia` and `cat:saintlucia` both find "Saint Lucia".
                     let squeezed: String = t.to_lowercase().chars().filter(|c| !c.is_whitespace() && *c != '*').collect();
-                    let n = bind(format!("%{}%", escape_like(&squeezed)));
+                    let n = bind(format!("%{}%", crate::db::like_escape(&squeezed)));
                     format!("replace(lower(COALESCE(m.categories,'')), ' ', '') LIKE ?{n} ESCAPE '\\'")
                 }
                 Kind::TagExact(t) => {
@@ -320,20 +320,9 @@ fn resolve_date(v: &str, now: DateTime<Utc>) -> Result<(String, Option<String>),
     Err(format!("bad date \"{v}\" (use 2026-10-01, today, yesterday, 7d, 2w, 3m, 1y)"))
 }
 
-fn escape_like(s: &str) -> String {
-    let mut o = String::with_capacity(s.len());
-    for c in s.chars() {
-        if matches!(c, '\\' | '%' | '_') {
-            o.push('\\');
-        }
-        o.push(c);
-    }
-    o
-}
-
 /// `%text%` for LIKE ... ESCAPE '\'.
 fn like(s: &str) -> String {
-    format!("%{}%", escape_like(s))
+    crate::db::like_contains(s)
 }
 
 /// FTS5 MATCH string for one user term: always a quoted phrase (so user punctuation and FTS

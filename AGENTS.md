@@ -2,8 +2,8 @@
 
 Native Linux mail/calendar/contacts/tasks/SMS client: **Rust backend daemon + Qt/QML UI** (runs under Quickshell),
 Omarchy-themed, keyboard-first. Providers: Microsoft Graph (Exchange/Outlook), Gmail, others via `src/providers/`.
-Renamed from "omarchylook" on 2026-10-12. **README.md is stale** (describes the old Python version); trust this file,
-`docs/TRACKER.md` and `COMPONENT_REFERENCE.md` (master dependency/version guide) instead.
+Renamed from "omarchylook" on 2026-10-12. `README.md` is the short entry point; this file, `docs/TRACKER.md` and
+`COMPONENT_REFERENCE.md` (master dependency/version guide, repo root) hold the working detail.
 
 ## Layout
 - `src/` Rust: `main.rs` (launcher + HTTP backend), `email_daemon.rs` (sync), `providers/`, `db.rs` + `db/` (SQLite+FTS5),

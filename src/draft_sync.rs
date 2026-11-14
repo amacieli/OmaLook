@@ -637,14 +637,14 @@ mod tests {
         let fake = Fake::default();
         let root = std::env::temp_dir().join(format!("omalook-drafts-send-{}", std::process::id()));
         let m = msg("send me");
-        save(&db, "d1", &m, "saved");
-        let r = db.draft_get("d1").unwrap().unwrap();
-        db.draft_mark_pushed("d1", r.updated_at, "R1", Some("v"), "").unwrap();
+        save(&db, "send-remote", &m, "saved");
+        let r = db.draft_get("send-remote").unwrap().unwrap();
+        db.draft_mark_pushed("send-remote", r.updated_at, "R1", Some("v"), "").unwrap();
         let mut out = m.clone();
-        out.draft_id = "d1".into();
+        out.draft_id = "send-remote".into();
         send_from_draft(&db, &fake, &root, &out, "me@x").await.unwrap();
         assert_eq!(fake.calls.lock().unwrap().as_slice(), ["send_draft R1"], "sent as the draft, no second copy");
-        assert!(db.draft_get("d1").unwrap().is_none(), "local row pruned after the send");
+        assert!(db.draft_get("send-remote").unwrap().is_none(), "local row pruned after the send");
     }
 
     #[tokio::test]
@@ -653,11 +653,11 @@ mod tests {
         let fake = Fake::default();
         let root = std::env::temp_dir().join(format!("omalook-drafts-send-plain-{}", std::process::id()));
         let mut m = msg("never pushed");
-        m.draft_id = "d9".into();
-        save(&db, "d9", &m, "saved");
+        m.draft_id = "send-plain".into();
+        save(&db, "send-plain", &m, "saved");
         send_from_draft(&db, &fake, &root, &m, "me@x").await.unwrap();
         assert_eq!(fake.calls.lock().unwrap().as_slice(), ["send_message"]);
-        assert!(db.draft_get("d9").unwrap().is_none());
+        assert!(db.draft_get("send-plain").unwrap().is_none());
     }
 
     #[tokio::test]
@@ -666,16 +666,16 @@ mod tests {
         let fake = Fake::default();
         let root = std::env::temp_dir().join(format!("omalook-drafts-send-gone-{}", std::process::id()));
         let m = msg("gone");
-        save(&db, "d1", &m, "saved");
-        let r = db.draft_get("d1").unwrap().unwrap();
-        db.draft_mark_pushed("d1", r.updated_at, "R1", Some("v"), "").unwrap();
+        save(&db, "send-gone", &m, "saved");
+        let r = db.draft_get("send-gone").unwrap().unwrap();
+        db.draft_mark_pushed("send-gone", r.updated_at, "R1", Some("v"), "").unwrap();
         fake.versions.lock().unwrap().push(Ok(None));
         let mut out = m.clone();
-        out.draft_id = "d1".into();
+        out.draft_id = "send-gone".into();
         let err = send_from_draft(&db, &fake, &root, &out, "me@x").await.unwrap_err();
         assert!(err.to_string().contains("no longer in Drafts"));
         assert!(fake.calls.lock().unwrap().is_empty(), "nothing sent");
-        assert!(db.draft_get("d1").unwrap().is_some(), "local copy kept");
+        assert!(db.draft_get("send-gone").unwrap().is_some(), "local copy kept");
     }
 
     #[tokio::test]
@@ -684,12 +684,12 @@ mod tests {
         let fake = Fake::default();
         let root = std::env::temp_dir().join(format!("omalook-drafts-discard-{}", std::process::id()));
         let m = msg("bin");
-        save(&db, "d1", &m, "saved");
-        let r = db.draft_get("d1").unwrap().unwrap();
-        db.draft_mark_pushed("d1", r.updated_at, "R1", Some("v"), "").unwrap();
-        discard(&db, &fake, &root, "d1").await.unwrap();
+        save(&db, "discard", &m, "saved");
+        let r = db.draft_get("discard").unwrap().unwrap();
+        db.draft_mark_pushed("discard", r.updated_at, "R1", Some("v"), "").unwrap();
+        discard(&db, &fake, &root, "discard").await.unwrap();
         assert_eq!(fake.calls.lock().unwrap().as_slice(), ["delete R1"]);
-        assert!(db.draft_get("d1").unwrap().is_none());
+        assert!(db.draft_get("discard").unwrap().is_none());
     }
 
     #[test]

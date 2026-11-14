@@ -778,7 +778,7 @@ mod tests {
 
     #[test]
     fn mcp_unlisted_post_path_is_not_routed() {
-        // Only the listed MCP paths are routes; anything else falls through to the chain's 404.
+        // Only the listed MCP paths are routes; anything else falls through to the 404 in main.rs.
         assert!(matches!(table().find("POST", "/settings/mcp/no-such-thing"), Found::NotFound));
     }
 

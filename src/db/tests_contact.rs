@@ -41,6 +41,27 @@ fn contact_search_filters_by_every_word_folder_and_category_and_hides_deleted_ro
     assert!(q(Some("100%"), None, None).is_empty(), "LIKE wildcards in the query are not wildcards");
 }
 
+#[test]
+fn category_and_search_values_with_like_wildcards_match_literally() {
+    let db = Database::open_for_account(":memory:", "exchange-aaaaaa").unwrap();
+    let mk = |id: &str, raw: serde_json::Value| {
+        let mut v = raw; v["id"] = id.into();
+        db.put_contact_json(&v, Some("f1"), "ok").unwrap();
+    };
+    mk("u", serde_json::json!({"displayName": "Mr_Smith", "categories": ["Team_A"]}));
+    mk("x", serde_json::json!({"displayName": "MrXSmith", "categories": ["TeamXA"]}));
+    mk("p", serde_json::json!({"displayName": "Ann 100% Sure", "categories": ["Team%"]}));
+    mk("q", serde_json::json!({"displayName": "Plain Bob", "categories": ["Teams"]}));
+    let q = |s: Option<&str>, c: Option<&str>| -> Vec<String> {
+        db.query_contacts_full("all", "first", None, s, None, c).unwrap().into_iter().map(|r| r.contact.id).collect()
+    };
+    assert_eq!(q(None, Some("team_a")), vec!["u"], "`_` in a category is literal, not any character");
+    assert_eq!(q(None, Some("team%")), vec!["p"], "`%` in a category is literal, not everything");
+    assert_eq!(q(Some("_"), None), vec!["u"], "`_` in a search word matches only the literal underscore");
+    assert_eq!(q(Some("100%"), None), vec!["p"], "`%` in a search word matches only the literal percent sign");
+    assert!(q(Some("%"), None).iter().all(|id| id == "p"), "a bare `%` must not match every contact");
+}
+
 fn ids(rows: &[ContactRow]) -> Vec<&str> { rows.iter().map(|r| r.contact.id.as_str()).collect() }
 
 fn seeded() -> Database {

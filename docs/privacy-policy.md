@@ -52,7 +52,9 @@ Everything is stored locally, under your own user account on your own computer:
   you enter it on Google's or Microsoft's own sign-in page in your browser.
 - **A cache of your mail, calendar, contacts and tasks** is kept in a local SQLite database in
   `~/.config/omalook/` so the app is fast and works offline. Rendered message images, drafts,
-  outgoing mail and contact photos are cached in `~/.cache/omalook/`.
+  outgoing mail and contact photos are cached in `~/.cache/omalook/`. Nothing in the cache expires
+  on an age timer: it is kept until you remove the account (or delete those directories), and a
+  database rebuild copies it over rather than trimming it.
 
 **Encryption at rest.** The database and cache files are not encrypted by the app. They are
 protected by file permissions only: the directories are mode 0700 and the files 0600, so other
@@ -125,6 +127,8 @@ That host then sees your IP address and whatever the link contains, as with any 
 
 ## Retention and deletion
 
+- **The mail cache is not aged out.** Messages stay cached until you remove the account or delete
+  the directories below. There is no retention setting.
 - **Remove an account** in Settings → Accounts stops its sync, deletes its sign-in token from
   your keyring, and deletes from the local database everything stored for it: messages (including
   the full-text search index and the attachment, invite, mailing-list and rule records that belong

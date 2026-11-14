@@ -270,6 +270,9 @@ mod tests {
         db.put_contact_json(&json!({"id":"c1","givenName":"Ada"}), Some("f1"), "ok").unwrap();
         db.set_contact_favorite("c1", true).unwrap();
         crate::contacts_write::move_contacts(&db, &["c1".into()], "f2", 1);
+        // The delete is queued due at now+1 ms (after the copy). Wait past that so one drain sees both;
+        // without the wait the drain could run inside the same millisecond and see only the create (OL-089).
+        std::thread::sleep(std::time::Duration::from_millis(5));
         w.drain().await;
         let calls = fake.calls.lock().unwrap().clone();
         assert!(calls[0].starts_with("create f2"), "{calls:?}");
