@@ -1,6 +1,6 @@
 const fs=require('fs');
 const src=fs.readFileSync('qml/compose/attach.js','utf8').replace('.pragma library','');
-const A=new Function(src+';return {layout,counted,capacity,meter,states,displayNames,combine,defaultLimits,encodedPart,clipboardFileType,clipboardHasPng,isPicture,pathsFromClipboard,baseName,dirName,pictureFiles}')();
+const A=new Function(src+';return {layout,counted,capacity,meter,states,displayNames,combine,defaultLimits,encodedPart,clipboardFileType,clipboardHasPng,isPicture,pathsFromClipboard,baseName,dirName,pictureFiles,wireAttachment}')();
 const eq=(a,b,m)=>{ const x=JSON.stringify(a), y=JSON.stringify(b); if(x!==y){console.error('FAIL',m,x,y);process.exit(1)} };
 const MB=1048576;
 
@@ -71,16 +71,19 @@ console.log('ok attach');
 // OL-054 system-font switch: pictures still in the text become files; a picture already deleted from the
 // text is not turned into a file (it used to reappear in the strip as a duplicate), and a path listed twice is kept once.
 {
-  const pic=(p,c)=>({path:p,name:p.split('/').pop(),size:5,inline_cid:c});
-  const file={path:'/d/notes.txt',name:'notes.txt',size:2};
-  let r=A.pictureFiles([pic('/p/shot-1.png','c1'),file],['c1']);
+  const pic=(h,c)=>({handle:h,name:h.split('-').pop()+'.png',size:5,localPath:'/p/'+h+'.png',inline_cid:c});
+  const file={handle:'fh-notes',name:'notes.txt',size:2,localPath:'/d/notes.txt'};
+  let r=A.pictureFiles([pic('shot-1','c1'),file],['c1']);
   eq(r.converted,1,'one live picture converted');
-  eq(r.files,[{path:'/p/shot-1.png',name:'shot-1.png',size:5},file],'picture becomes a plain file, normal file kept');
-  r=A.pictureFiles([pic('/p/shot-1.png','gone'),pic('/p/clip.png','c2')],['c2']);
+  eq(r.files,[{handle:'shot-1',name:'1.png',size:5,localPath:'/p/shot-1.png'},file],'picture becomes a plain file, normal file kept');
+  r=A.pictureFiles([pic('shot-1','gone'),pic('clip','c2')],['c2']);
   eq(r.converted,1,'deleted-from-text entry not counted');
   eq(r.files.map(a=>a.name),['clip.png'],'deleted-from-text entry dropped, not turned into a file');
-  r=A.pictureFiles([pic('/p/shot-1.png','c1'),pic('/p/shot-1.png','c3')],['c1','c3']);
-  eq(r.files.length,1,'same file twice in the text: one attachment');
+  r=A.pictureFiles([pic('shot-1','c1'),pic('shot-1','c3')],['c1','c3']);
+  eq(r.files.length,1,'same handle twice in the text: one attachment');
   eq(r.converted,2,'both pictures still counted as converted');
   eq(A.pictureFiles([],[]),{files:[],converted:0},'nothing attached');
+  // what goes to the backend carries the handle and never the local path
+  eq(A.wireAttachment({handle:'fh-a',name:'a.png',size:3,localPath:'/x/a.png',inline_cid:'c9'}),{handle:'fh-a',name:'a.png',size:3,inline_cid:'c9'},'wire form: handle, no path');
+  eq(A.wireAttachment(file),{handle:'fh-notes',name:'notes.txt',size:2},'wire form of a plain file');
 }

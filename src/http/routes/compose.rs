@@ -73,13 +73,23 @@ fn compose_send_answer(c: &Ctx) -> String {
         Ok(b) => b,
         Err(e) => return err(&e),
     };
-    let mut msg: OutgoingMessage = match serde_json::from_str(&raw) {
-        Ok(m) => m,
+    let mut body: serde_json::Value = match serde_json::from_str(&raw) {
+        Ok(v) => v,
         Err(e) => return err(&format!("unreadable message: {}", e)),
     };
     let db = match open_db(c) {
         Ok(db) => db,
         Err(e) => return err(&e),
+    };
+    // Attachments travel as handles (R3.2): each resolves to the path the backend holds before
+    // anything opens a file. The draft's own stored attachments supply the original of a spooled copy.
+    let stored = body["draft_id"].as_str().filter(|d| !d.is_empty()).map(|d| crate::draft_sync::stored_attachments(&db, d)).unwrap_or_default();
+    if let Err(e) = crate::app::files::resolve_request(&mut body, &stored) {
+        return err(&e);
+    }
+    let mut msg: OutgoingMessage = match serde_json::from_value(body) {
+        Ok(m) => m,
+        Err(e) => return err(&format!("unreadable message: {}", e)),
     };
     // Distribution lists become their members here, at queue time: the chip in the compose pane
     // stays one chip, and what is stored in the outbox is the final address list.
@@ -90,10 +100,6 @@ fn compose_send_answer(c: &Ctx) -> String {
         Ok(r) => r,
         Err(e) => return err(&e),
     };
-    // Checked before validate() or anything else opens a file named in the message (OL-057).
-    if let Err(e) = crate::picked::check_send(&msg.attachments) {
-        return err(&e);
-    }
     // Pictures the body does not show go, and so does any `<img>` that would not load for the
     // recipient (a local path); see `settle_inline`.
     msg.settle_inline();
@@ -214,27 +220,33 @@ fn drafts_save_answer(c: &Ctx) -> String {
         Ok(b) => b,
         Err(e) => return err(&e),
     };
-    let mut msg: OutgoingMessage = match serde_json::from_str(&raw) {
-        Ok(m) => m,
+    let mut body: serde_json::Value = match serde_json::from_str(&raw) {
+        Ok(v) => v,
         Err(e) => return err(&format!("unreadable draft: {}", e)),
     };
-    if msg.account_id.is_empty() {
+    let account_id = body["account_id"].as_str().unwrap_or("").to_string();
+    if account_id.is_empty() {
         return err("the draft has no account");
     }
     let state = c.query("state").unwrap_or_else(|| "saved".to_string());
-    let db = match Database::open_for_account(&c.db_path(), &msg.account_id) {
+    let db = match Database::open_for_account(&c.db_path(), &account_id) {
         Ok(db) => db,
         Err(e) => return err(&format!("database: {}", e)),
     };
-    // Only files the user picked, or copies we spooled, are read (OL-057). The draft's stored
-    // attachments count as trusted: they passed this check when they were saved.
-    let stored = crate::draft_sync::stored_attachments(&db, &msg.draft_id);
-    if let Err(e) = crate::picked::check_message_attachments(&msg.attachments, &stored) {
+    // Attachments travel as handles (R3.2). The draft's stored attachments are the trusted ones: they
+    // supply the original behind a spooled copy, and a handle for a gone copy still resolves.
+    let draft_id = body["draft_id"].as_str().unwrap_or("").to_string();
+    let stored = crate::draft_sync::stored_attachments(&db, &draft_id);
+    if let Err(e) = crate::app::files::resolve_request(&mut body, &stored) {
         return err(&e);
     }
+    let mut msg: OutgoingMessage = match serde_json::from_value(body) {
+        Ok(m) => m,
+        Err(e) => return err(&format!("unreadable draft: {}", e)),
+    };
     match crate::draft_sync::save_local(&db, &crate::draft_sync::default_root(), &mut msg, &state) {
         Ok(id) => serde_json::json!({
-            "ok": true, "id": id, "state": state, "attachments": msg.attachments,
+            "ok": true, "id": id, "state": state, "attachments": crate::app::files::attachments_for_ui(&msg.attachments),
             "missing": crate::attach_spool::missing_copies(&msg.attachments),
         }).to_string(),
         Err(e) => err(&e),
@@ -543,10 +555,10 @@ mod tests {
         );
     }
 
-    /// A message naming a file nobody registered is refused before anything opens it, with the
-    /// same text as before. The file exists here, so only the allow-list can refuse it.
+    /// An attachment that names a path and no handle is refused before anything opens it, with the
+    /// same text as before. The file exists here; only the handle registry can say it was picked.
     #[test]
-    fn compose_send_refuses_a_file_that_was_never_registered() {
+    fn compose_send_refuses_an_attachment_with_a_path_and_no_handle() {
         let dir = temp_dir("send-unregistered");
         let file = dir.join("never-registered.txt");
         std::fs::write(&file, b"not picked").unwrap();
@@ -562,6 +574,15 @@ mod tests {
             json_of(&r),
             serde_json::json!({ "ok": false, "error": "never-registered.txt was not picked in this session; attach it again" })
         );
+        // A forged handle is refused the same way.
+        let body = serde_json::json!({
+            "kind": "new", "account_id": "acct-a", "to": [{ "email": "a@example.com" }],
+            "subject": "s", "body": { "format": "text", "content": "hi" },
+            "attachments": [{ "handle": "fh-00000000000000000000000000000000", "name": "never-registered.txt" }],
+        })
+        .to_string();
+        let r = run(&dir, post("/compose/send", &body), compose_send);
+        assert_eq!(json_of(&r)["ok"], false);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

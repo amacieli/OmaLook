@@ -1372,18 +1372,28 @@ Item {
     attachRecentDirs = next
   }
 
-  function listDir(path, hidden, cb) {
-    request("GET", "/fs/list?path=" + encodeURIComponent(path) + (hidden ? "&hidden=1" : ""), function(xhr) {
+  // R3.2 (OL-087): a folder browser opens a picker first (openPicker) and passes its id to every
+  // listDir. The backend answers {error: "picker expired"} once the picker is 30 minutes idle.
+  function openPicker(purpose, cb) {
+    request("POST", "/files/picker", function(xhr) {
+      var r = null
+      try { r = JSON.parse(xhr.responseText) } catch (e) {}
+      cb(xhr.status === 200 && r && r.ok === true ? String(r.picker) : "")
+    }, JSON.stringify({ purpose: purpose }))
+  }
+
+  function listDir(picker, path, hidden, cb) {
+    request("GET", "/fs/list?picker=" + encodeURIComponent(picker) + "&path=" + encodeURIComponent(path) + (hidden ? "&hidden=1" : ""), function(xhr) {
       var r = null
       try { r = JSON.parse(xhr.responseText) } catch (e) {}
       cb(xhr.status === 200 && r ? r : { error: "could not reach the backend" })
     })
   }
 
-  // R1.5 (OL-057): every local file the UI is about to attach, insert, import or use as a photo is
-  // registered first; the backend refuses any path it was not given this way. purpose: "attach" |
-  // "photo" | "import". callback(files, refused, error): files = [{ path (canonical), name, size }] in
-  // the order accepted, refused = [{ path (as sent), error }], error = "" on success.
+  // R1.5 (OL-057), R3.2 (OL-087): every local file the UI is about to attach, insert, import or use as a
+  // photo is registered first. The backend answers a handle per file; from then on the UI sends only the
+  // handle. purpose: "attach" | "photo" | "import". callback(files, refused, error): files = [{ handle,
+  // name, size }] in the order accepted, refused = [{ path (as sent), error }], error = "" on success.
   // Long lists go in chunks of 256 (the backend's limit).
   function registerFiles(purpose, paths, callback) {
     if (!paths || paths.length === 0) { callback([], [], ""); return }

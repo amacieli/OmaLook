@@ -21,6 +21,7 @@ pub fn routes() -> Vec<Route> {
         Route::new("POST", Exact("/sms/retry"), Lock::Exclusive, sms_retry),
         Route::new("POST", Exact("/sms/sync"), Lock::Exclusive, sms_sync),
         Route::new("POST", Exact("/files/register"), Lock::Exclusive, files_register),
+        Route::new("POST", Exact("/files/picker"), Lock::Exclusive, files_picker),
         Route::new("GET", Exact("/fs/list"), Lock::Exclusive, fs_list),
         Route::new("GET", Exact("/search/history"), Lock::Exclusive, search_history_get),
         Route::new("POST", Exact("/search/history"), Lock::Exclusive, search_history_post),
@@ -383,12 +384,12 @@ fn sms_sync(c: &Ctx) -> Response {
     Response::json(serde_json::json!({ "ok": crate::sms_daemon::request_sync() }).to_string())
 }
 
-/// POST /files/register — `{"purpose": "attach"|"photo"|"import", "paths": [...]}`. Each path the user
-/// picked, pasted, dropped or typed joins the allow-list (`picked::register`). Answers
-/// `{ok, files, refused}`; a refused entry echoes the path as sent and names no other file.
-/// Security: this is the R1.5 allow-list; its logic is unchanged from the legacy chain.
+/// POST /files/register — `{"purpose": "attach"|"photo"|"import", "paths": [...]}`. Each file the user
+/// picked, pasted, dropped or typed gets a handle (`app::files::register`). Answers
+/// `{ok, files: [{handle, name, size}], refused: [{path, error}]}`: no path comes back, and a refused
+/// entry echoes the path as sent and names no other file.
 fn files_register(c: &Ctx) -> Response {
-    use crate::picked::{self, Purpose};
+    use crate::app::files::{self, Purpose};
     let err = |m: &str| serde_json::json!({ "ok": false, "error": m }).to_string();
     let raw = match post_body(c, 256 * 1024) {
         Ok(b) => b,
@@ -403,28 +404,65 @@ fn files_register(c: &Ctx) -> Response {
         None => return Response::json(err("unknown purpose")),
     };
     let Some(list) = req["paths"].as_array() else { return Response::json(err("no files named")) };
-    if list.len() > picked::MAX_PER_REQUEST {
+    if list.len() > files::MAX_PER_REQUEST {
         return Response::json(err("too many files in one request"));
     }
-    let mut files = Vec::new();
+    let mut registered = Vec::new();
     let mut refused = Vec::new();
     for p in list {
         let as_sent = p.as_str().unwrap_or("").to_string();
-        match picked::register(purpose, &as_sent) {
-            Ok(f) => files.push(f),
+        match files::register(purpose, &as_sent) {
+            Ok(f) => registered.push(f),
             Err(e) => refused.push(serde_json::json!({ "path": as_sent, "error": e })),
         }
     }
-    Response::json(serde_json::json!({ "ok": true, "files": files, "refused": refused }).to_string())
+    Response::json(serde_json::json!({ "ok": true, "files": registered, "refused": refused }).to_string())
 }
 
-/// GET /fs/list?path=DIR[&hidden=1] — one directory for the compose file picker.
+/// POST /files/picker `{"purpose": "attach"|"photo"|"import"}` — the folder browser opens: answers
+/// `{ok, picker}`, the id every `GET /fs/list` of that browser must carry. A picker expires 30 minutes
+/// after its last listing; at most 16 are live.
+fn files_picker(c: &Ctx) -> Response {
+    use crate::app::files::{self, Purpose};
+    let err = |m: &str| serde_json::json!({ "ok": false, "error": m }).to_string();
+    let raw = match post_body(c, 4 * 1024) {
+        Ok(b) => b,
+        Err(e) => return Response::json(err(&e)),
+    };
+    let req: serde_json::Value = match serde_json::from_str(&raw) {
+        Ok(v) => v,
+        Err(_) => return Response::json(err("unreadable request")),
+    };
+    let Some(purpose) = Purpose::parse(req["purpose"].as_str().unwrap_or("")) else {
+        return Response::json(err("unknown purpose"));
+    };
+    Response::json(match files::open_picker(purpose) {
+        Ok(id) => serde_json::json!({ "ok": true, "picker": id }).to_string(),
+        Err(e) => err(&e),
+    })
+}
+
+/// GET /fs/list?picker=ID&path=DIR[&hidden=1] — one directory for the compose file picker. The picker
+/// must be live (else `{error: "picker expired"}`), and folders under the secret roots are not listed.
 fn fs_list(c: &Ctx) -> Response {
+    use crate::app::files;
+    let err = |m: &str| serde_json::json!({ "error": m }).to_string();
+    if !files::picker_live(&c.query("picker").unwrap_or_default()) {
+        return Response::json(err("picker expired"));
+    }
     let path = c.query("path").unwrap_or_default();
     let hidden = c.query("hidden").as_deref() == Some("1");
-    Response::json(match crate::fs_browse::list(&path, hidden) {
+    // List the canonical folder, so the check and the listing look at the same directory.
+    let target = crate::fs_browse::expand(&path);
+    let dir = if target.is_file() { target.parent().map(|p| p.to_path_buf()).unwrap_or(target.clone()) } else { target.clone() };
+    let list_path = match std::fs::canonicalize(&dir) {
+        Ok(canon) if files::in_secret_root(&canon) => return Response::json(err("that folder cannot be listed")),
+        Ok(canon) => canon.to_string_lossy().into_owned(),
+        Err(_) => path,
+    };
+    Response::json(match crate::fs_browse::list(&list_path, hidden) {
         Ok(l) => serde_json::to_string(&l).unwrap_or_else(|_| "{\"error\":\"could not list\"}".into()),
-        Err(e) => serde_json::json!({ "error": e }).to_string(),
+        Err(e) => err(&e),
     })
 }
 
@@ -494,6 +532,7 @@ mod tests {
                 ("GET", "/sms/messages"),
                 ("GET", "/sms/threads"),
                 ("GET", "/sms/unread"),
+                ("POST", "/files/picker"),
                 ("POST", "/files/register"),
                 ("POST", "/search/history"),
                 ("POST", "/sms/read"),
@@ -524,6 +563,67 @@ mod tests {
         assert_eq!(json_of(&r), serde_json::json!([]));
         let r = run(&dir, get("/sms/messages?device=dev-1"), sms_messages);
         assert_eq!(json_of(&r), serde_json::json!({ "error": "missing thread" }));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn files_register_answers_handles_and_no_paths() {
+        let dir = temp_dir("files-register-ok");
+        let f = dir.join("notes.txt");
+        std::fs::write(&f, b"12345").unwrap();
+        let body = serde_json::json!({ "purpose": "attach", "paths": [f.to_string_lossy(), "relative/x"] }).to_string();
+        let r = run(&dir, post("/files/register", &body), files_register);
+        let v = json_of(&r);
+        assert_eq!(v["ok"], true);
+        let files = v["files"].as_array().unwrap();
+        assert_eq!(files.len(), 1);
+        assert!(files[0]["handle"].as_str().unwrap().starts_with("fh-"));
+        assert_eq!((files[0]["name"].as_str(), files[0]["size"].as_u64()), (Some("notes.txt"), Some(5)));
+        assert!(files[0].get("path").is_none(), "no canonical path goes back");
+        assert_eq!(v["refused"][0]["path"], "relative/x", "a refused entry echoes the path as sent");
+        // The handle is what the rest of the backend resolves.
+        let h = files[0]["handle"].as_str().unwrap();
+        assert!(crate::app::files::resolve(crate::app::files::Purpose::Attach, h).is_some());
+        assert!(crate::app::files::resolve(crate::app::files::Purpose::Import, h).is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn picker_id(dir: &PathBuf, purpose: &str) -> String {
+        let body = serde_json::json!({ "purpose": purpose }).to_string();
+        let v = json_of(&run(dir, post("/files/picker", &body), files_picker));
+        assert_eq!(v["ok"], true, "{}", v);
+        v["picker"].as_str().unwrap().to_string()
+    }
+
+    #[test]
+    fn fs_list_needs_a_live_picker_and_refuses_secret_roots() {
+        let dir = temp_dir("fs-list");
+        std::fs::write(dir.join("a.txt"), b"1").unwrap();
+        let target = dir.to_string_lossy().into_owned();
+        // No picker, or a made-up one: expired.
+        let r = run(&dir, get(&format!("/fs/list?path={}", target)), fs_list);
+        assert_eq!(r.status(), 200);
+        assert_eq!(json_of(&r), serde_json::json!({ "error": "picker expired" }));
+        let r = run(&dir, get(&format!("/fs/list?picker=fp-nope&path={}", target)), fs_list);
+        assert_eq!(json_of(&r), serde_json::json!({ "error": "picker expired" }));
+        // With a picker: the folder lists.
+        let id = picker_id(&dir, "attach");
+        assert!(id.starts_with("fp-") && id.len() == 35);
+        let r = run(&dir, get(&format!("/fs/list?picker={}&path={}", id, target)), fs_list);
+        assert!(json_of(&r)["entries"].as_array().unwrap().iter().any(|e| e["name"] == "a.txt"));
+        // A secret root is refused even with a live picker (/proc is one on every Linux).
+        if std::path::Path::new("/proc/self").exists() {
+            let r = run(&dir, get(&format!("/fs/list?picker={}&path=/proc", id)), fs_list);
+            assert_eq!(json_of(&r), serde_json::json!({ "error": "that folder cannot be listed" }));
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn files_picker_refuses_an_unknown_purpose() {
+        let dir = temp_dir("picker-purpose");
+        let r = run(&dir, post("/files/picker", r#"{"purpose":"nope"}"#), files_picker);
+        assert_eq!(json_of(&r), serde_json::json!({ "ok": false, "error": "unknown purpose" }));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

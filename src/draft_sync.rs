@@ -257,7 +257,7 @@ async fn send_claimed(db: &Database, provider: &dyn EmailProvider, spool_root: &
     }
     // Only spooled copies are read here (OL-057). A draft send's copies sit in the outgoing spool
     // (the outbox snapshot), so both spool roots count.
-    crate::picked::check_stored(&msg.attachments, &[spool_root.to_path_buf(), crate::attach_spool::default_root()]).map_err(OmarchyError::HttpError)?;
+    crate::app::files::check_stored(&msg.attachments, &[spool_root.to_path_buf(), crate::attach_spool::default_root()]).map_err(OmarchyError::HttpError)?;
     match row.remote_id.clone() {
         // Never pushed: a plain send creates no copy anywhere but Sent.
         None => provider.send_message(msg, from).await?,
@@ -374,10 +374,21 @@ pub fn save_local(db: &Database, spool_root: &Path, msg: &mut OutgoingMessage, s
 /// under `payload`, `recover` (an autosaved draft a crash left unsaved: offered at startup) and
 /// `missing` (names of spooled attachments whose copy is gone).
 pub fn draft_json(row: &DraftRow) -> serde_json::Value {
-    let payload: serde_json::Value = serde_json::from_str(&row.payload_json).unwrap_or(serde_json::Value::Null);
+    let mut payload: serde_json::Value = serde_json::from_str(&row.payload_json).unwrap_or(serde_json::Value::Null);
+    // The stored paths never reach the UI: each attachment goes back as a handle (R3.2).
     let missing: Vec<String> = match serde_json::from_str::<OutgoingMessage>(&row.payload_json) {
-        Ok(m) => crate::attach_spool::missing_copies(&m.attachments),
-        Err(_) => Vec::new(),
+        Ok(m) => {
+            if let Some(obj) = payload.as_object_mut() {
+                obj.insert("attachments".into(), serde_json::Value::Array(crate::app::files::attachments_for_ui(&m.attachments)));
+            }
+            crate::attach_spool::missing_copies(&m.attachments)
+        }
+        Err(_) => {
+            if let Some(obj) = payload.as_object_mut() {
+                obj.remove("attachments");
+            }
+            Vec::new()
+        }
     };
     serde_json::json!({
         "local_id": row.local_id,
@@ -688,6 +699,11 @@ mod tests {
         assert_eq!(j["recover"], true, "an autosaved, unsaved draft is offered for recovery");
         assert_eq!(j["missing"], serde_json::json!(["x.pdf"]));
         assert_eq!(j["payload"]["subject"], "unsaved");
+        // R3.2: the stored path goes back to the UI as a handle that resolves, never as a path.
+        let att = &j["payload"]["attachments"][0];
+        assert!(att.get("path").is_none() && att.get("source_path").is_none(), "{}", j);
+        let h = att["handle"].as_str().expect("a handle");
+        assert_eq!(crate::app::files::resolve(crate::app::files::Purpose::Attach, h), Some(PathBuf::from("/gone/omalook/x.pdf")));
         db.draft_save("d1", "new", "", &serde_json::to_string(&m).unwrap(), "system", "saved").unwrap();
         assert_eq!(draft_json(&db.draft_get("d1").unwrap().unwrap())["recover"], false);
     }

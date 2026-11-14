@@ -133,7 +133,7 @@ impl OutboxWorker {
             // What is about to go out must be what was queued: the spooled copies, intact.
             // Only spooled copies are read from a stored row (OL-057). On refusal, a copy that is
             // simply gone gets verify's plainer message (verify only stats the files).
-            if let Err(check) = crate::picked::check_stored(&msg.attachments, &[self.spool_root.clone(), crate::draft_sync::default_root()]) {
+            if let Err(check) = crate::app::files::check_stored(&msg.attachments, &[self.spool_root.clone(), crate::draft_sync::default_root()]) {
                 let why = crate::attach_spool::verify(&msg.attachments).err().unwrap_or(check);
                 error!("Outbox {}: {} not sent: not a prepared copy", self.account_id, id);
                 let _ = self.db.outbox_mark_failed(&id, &why);
