@@ -229,6 +229,12 @@ fn launch_qml_app(config_dir: &PathBuf, token: &str) {
 }
 
 fn initialize_app(config_dir: &PathBuf, db_path: &str, settings_path: &str, listener: TcpListener, port: u16, token: String) -> omalook::errors::Result<()> {
+    // R3.9: before anything opens the mail cache, rebuild it if the user asked or it cannot be read;
+    // a full quick_check runs in the background a minute after start-up.
+    let mail_db = config_dir.join("messages.db");
+    omalook::db_health::prepare_at_startup(config_dir, &mail_db);
+    omalook::db_health::check_in_background(mail_db, std::time::Duration::from_secs(60));
+
     // Initialize database
     let db = {
         let _t = omalook::perf::span("Database::open (schema init)");

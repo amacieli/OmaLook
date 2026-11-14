@@ -208,6 +208,11 @@ pub fn health_json() -> Value {
     json!({ "threads": threads })
 }
 
+/// Something else shown with the threads changed (database health, R3.9): the UI re-reads `/sync/health`.
+pub fn bump_health_serial() {
+    HEALTH_SERIAL.fetch_add(1, Ordering::SeqCst);
+}
+
 /// Changes every time a thread's health changes. Included in `GET /sync/serial`.
 pub fn health_serial() -> u64 {
     HEALTH_SERIAL.load(Ordering::SeqCst)
