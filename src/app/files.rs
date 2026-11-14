@@ -338,6 +338,7 @@ pub fn resolve_request(body: &mut Value, stored: &[OutgoingAttachment]) -> Resul
         };
         let source = stored.iter().find(|s| !path.is_empty() && s.path == path && !s.source_path.is_empty()).map(|s| s.source_path.clone()).unwrap_or_default();
         obj.remove("handle");
+        obj.remove("localPath");
         obj.insert("path".into(), Value::String(path));
         obj.insert("source_path".into(), Value::String(source));
     }
@@ -345,7 +346,9 @@ pub fn resolve_request(body: &mut Value, stored: &[OutgoingAttachment]) -> Resul
 }
 
 /// The attachments as the UI may see them: each stored path replaced by a handle (minted here),
-/// `path` and `source_path` removed. An attachment whose handle cannot be minted goes without one,
+/// `path` and `source_path` removed. `localPath` is the stored file for display only (the compose pane
+/// shows a resumed draft's inline pictures from it); requests never send it back (`resolve_request`
+/// drops it, and only the handle names a file). An attachment whose handle cannot be minted goes without one,
 /// so a later save refuses it and asks for it again.
 pub fn attachments_for_ui(atts: &[OutgoingAttachment]) -> Vec<Value> {
     atts.iter()
@@ -355,6 +358,7 @@ pub fn attachments_for_ui(atts: &[OutgoingAttachment]) -> Vec<Value> {
                 obj.remove("path");
                 obj.remove("source_path");
                 if !a.path.is_empty() {
+                    obj.insert("localPath".into(), Value::String(a.path.clone()));
                     match mint_for_stored(Purpose::Attach, Path::new(&a.path)) {
                         Ok(h) => {
                             obj.insert("handle".into(), Value::String(h));
@@ -626,5 +630,29 @@ mod tests {
         let roots = vec![spool];
         assert!(check_stored(&[att(&copy, "")], &roots).is_ok());
         assert!(check_stored(&[att(&outside, "")], &roots).is_err());
+    }
+
+    /// A stored attachment goes to the UI with a handle and a display-only `localPath` (inline
+    /// pictures of a resumed draft are shown from it); sent back, `localPath` names no file.
+    #[test]
+    fn ui_attachments_carry_a_display_path_that_requests_ignore() {
+        let d = tmp("ui-local-path");
+        let f = d.join("pic.png");
+        fs::write(&f, b"png").unwrap();
+        let canon = fs::canonicalize(&f).unwrap();
+        let ui = attachments_for_ui(&[att(&canon, "/somewhere/else")]);
+        assert_eq!(ui[0]["localPath"], canon.to_string_lossy().as_ref());
+        assert!(ui[0].get("path").is_none() && ui[0].get("source_path").is_none());
+        let handle = ui[0]["handle"].as_str().unwrap().to_string();
+        // Round trip: the handle names the file; a forged localPath is dropped.
+        let mut body = serde_json::json!({ "attachments": [ { "handle": handle, "name": "pic.png", "localPath": "/etc/shadow" } ] });
+        resolve_request(&mut body, &[]).unwrap();
+        assert_eq!(body["attachments"][0]["path"], canon.to_string_lossy().as_ref());
+        assert!(body["attachments"][0].get("localPath").is_none());
+        // localPath alone (no handle) is not a file reference at all.
+        let mut body = serde_json::json!({ "attachments": [ { "name": "x", "localPath": canon.to_string_lossy() } ] });
+        resolve_request(&mut body, &[]).unwrap();
+        assert_eq!(body["attachments"][0]["path"], "");
+        let _ = fs::remove_dir_all(&d);
     }
 }

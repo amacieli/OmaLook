@@ -1763,7 +1763,7 @@ Item {
 
   function dismissSend(id) { sends = sends.filter(function(s) { return s.id !== id }) }
 
-  function submitCompose(message) {
+  function submitCompose(message, uiAttachments) {
     composeStatus = "sending…"
     request("POST", "/compose/send", function(xhr) {
       var r = null
@@ -1776,7 +1776,7 @@ Item {
       if (message && message.account_id) lastMailAccount = String(message.account_id)
       sendNow = Date.now()
       sends = sends.concat([{
-        id: r.id, message: message, sendAt: sendNow + r.delay_secs * 1000, delaySecs: r.delay_secs,
+        id: r.id, message: message, uiAttachments: uiAttachments || null, sendAt: sendNow + r.delay_secs * 1000, delaySecs: r.delay_secs,
         state: r.delay_secs > 0 ? "pending" : "sending", error: "", doneAt: 0, polling: false
       }])
       closeCompose()
@@ -1826,12 +1826,12 @@ Item {
     if (composing) return          // one compose at a time: finish or discard the open one first
     var i = _sendIndex(id)
     if (i < 0) return
-    var msg = sends[i].message
+    var msg = sends[i].message, uiAtts = sends[i].uiAttachments
     request("POST", "/compose/cancel?id=" + encodeURIComponent(id), function(xhr) {
       var r = null
       try { r = JSON.parse(xhr.responseText) } catch (e) {}
       if (r && r.cancelled && msg.kind === "bounce") { dismissSend(id); notify("Bounce taken back, nothing was sent") }
-      else if (r && r.cancelled) { dismissSend(id); reopenCompose(msg) }
+      else if (r && r.cancelled) { dismissSend(id); reopenCompose(msg, uiAtts) }
       else _patchSend(id, { state: r && r.state === "sent" ? "sent" : "sending", doneAt: Date.now() })
     })
   }
@@ -1840,24 +1840,25 @@ Item {
     if (composing) return
     var i = _sendIndex(id)
     if (i < 0) return
-    var msg = sends[i].message
+    var msg = sends[i].message, uiAtts = sends[i].uiAttachments
     dismissSend(id)
     if (msg.kind === "bounce") { notify("Bounce dismissed; press B to try again"); return }
-    reopenCompose(msg)
+    reopenCompose(msg, uiAtts)
   }
 
   function _addrText(list) {
     return (list || []).map(function(a) { return a.name ? a.name + " <" + a.email + ">" : a.email }).join(", ")
   }
 
-  // Back into the editor exactly as it was sent: recipients, subject, body and mode.
-  function reopenCompose(m) {
+  // Back into the editor exactly as it was sent: recipients, subject, body and mode. uiAtts: the
+  // attachments as the compose pane held them (handles + localPath, R3.2); else the message's own.
+  function reopenCompose(m, uiAtts) {
     composeStatus = ""
     composeInitial = {
       kind: m.kind, accountId: m.account_id, inReplyTo: m.in_reply_to || "",
       to: _addrText(m.to), cc: _addrText(m.cc), bcc: _addrText(m.bcc),
       toEntries: m.to, ccEntries: m.cc, bccEntries: m.bcc,
-      subject: m.subject, quote: null, restore: m.body, mode: m.mode, attachments: m.attachments || [],
+      subject: m.subject, quote: null, restore: m.body, mode: m.mode, attachments: uiAtts || m.attachments || [],
       draftId: m.draft_id || "", from: m.from || "", missing: m.missing || [],
       forwardedKeep: m.forwarded_keep
     }

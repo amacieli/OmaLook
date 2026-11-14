@@ -114,7 +114,7 @@ RowLayout {
     Connections {
       target: composeLoader.item
       ignoreUnknownSignals: true
-      function onSendRequested(message) { root.app.submitCompose(message) }
+      function onSendRequested(message, uiAttachments) { root.app.submitCompose(message, uiAttachments) }
       // Discard also drops the saved draft (its provider copy and local row).
       function onDiscardRequested() { root.app.discardDraftAndClose(composeLoader.item ? composeLoader.item.draftId : "") }
       // Esc -> Save draft: saved as a draft (the Drafts folder shows it), then the pane closes.

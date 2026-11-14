@@ -61,7 +61,9 @@ FocusScope {
   property var recentDirs: []
 
   signal browsed(string dir)
-  signal sendRequested(var message)
+  // uiAttachments: the attachment list as the UI holds it (with `localPath`), kept by the owner so a
+  // message taken back (Undo) or a failed send reopens with its pictures; never sent to the backend.
+  signal sendRequested(var message, var uiAttachments)
   signal discardRequested()
   signal focusRequested()
   // Status "saved to Drafts" once the worker has pushed the saved copy (polled while the pane is open).
@@ -491,7 +493,7 @@ FocusScope {
     }
     if (root.largeAudience > 0 && audience > root.largeAudience && !root.audienceOk) { root.confirming = "audience"; return }
     if (header.subject.text.trim() === "") { root.confirming = "nosubject"; return }
-    root.sendRequested(root.buildMessage())
+    root.sendRequested(root.buildMessage(), root.liveAttachments)
   }
 
   // Esc: an empty message closes silently; a changed one asks Save draft / Discard / Cancel.
@@ -961,7 +963,7 @@ else if (ctrl && !shift && e.key === Qt.Key_V) { root.startPaste(); e.accepted =
       var what = root.confirming
       root.confirming = ""
       if (what === "discard") root.discardRequested()
-      else if (what === "nosubject") root.sendRequested(root.buildMessage())
+      else if (what === "nosubject") root.sendRequested(root.buildMessage(), root.liveAttachments)
       else if (what === "audience") { root.audienceOk = true; root.trySend() }
       else if (what === "flatten") { root._picturesToFiles(); handler.flattenToSystem(); root.mode = Modes.SYSTEM }
     }
