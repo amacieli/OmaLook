@@ -17,17 +17,40 @@ mod extras;
 
 pub struct GraphEmailProvider {
     auth: Mutex<AuthManager>,
+    /// Scheme+host replacement for request URLs. Always `None` in production; only the
+    /// `#[cfg(test)]` constructor sets it (see `providers::rebase_url`).
+    base_override: Option<String>,
+    /// Fixed access token for tests, so no test reads the keyring or refreshes a grant.
+    #[cfg(test)]
+    test_token: Option<String>,
 }
 
 impl GraphEmailProvider {
     pub fn new(auth: AuthManager) -> Self {
         Self {
             auth: Mutex::new(auth),
+            base_override: None,
+            #[cfg(test)]
+            test_token: None,
+        }
+    }
+
+    /// Test-only: requests go to `base` (e.g. a fake server) and use a fixed token.
+    #[cfg(test)]
+    pub fn with_base_override(base: &str) -> Self {
+        Self {
+            auth: Mutex::new(AuthManager::for_account("test-account")),
+            base_override: Some(base.to_string()),
+            test_token: Some("test-token".to_string()),
         }
     }
 
     /// Internal: get a valid access token
     async fn get_token(&self) -> Result<String> {
+        #[cfg(test)]
+        if let Some(t) = &self.test_token {
+            return Ok(t.clone());
+        }
         let mut auth = self.auth.lock().await;
         let token = auth.get_token().map_err(|e| {
             crate::errors::OmarchyError::AuthError(format!("Failed to get token: {}", e))
@@ -54,10 +77,18 @@ impl GraphEmailProvider {
         let mut auth = super::retry::AuthRetry::default();
         loop {
             let token = self.get_token().await?;
-            let resp = build(client, &token)
-                .send()
-                .await
-                .map_err(|e| crate::errors::OmarchyError::HttpError(e.to_string()))?;
+            let builder = build(client, &token);
+            let sent = match &self.base_override {
+                None => builder.send().await,
+                Some(base) => {
+                    // Test only: point the built request at the fake server, keeping its path and query.
+                    let mut req = builder.build().map_err(|e| crate::errors::OmarchyError::HttpError(e.to_string()))?;
+                    let url = super::rebase_url(req.url().as_str(), Some(base));
+                    *req.url_mut() = reqwest::Url::parse(&url).map_err(|e| crate::errors::OmarchyError::HttpError(e.to_string()))?;
+                    client.execute(req).await
+                }
+            };
+            let resp = sent.map_err(|e| crate::errors::OmarchyError::HttpError(e.to_string()))?;
             if auth.on_status(resp.status().as_u16()) == super::retry::AuthStep::InvalidateAndResend {
                 warn!("Graph API 401: refreshing the access token and retrying once");
                 self.invalidate(&token).await;
@@ -1365,5 +1396,42 @@ mod detail_parse_tests {
         let bare = GraphEmailProvider::parse_message(&json!({"id": "x"}));
         assert_eq!(bare.categories, Some(vec![]));
         assert!(MSG_SELECT.contains("categories") && MSG_SELECT.contains("bccRecipients"));
+    }
+}
+
+#[cfg(test)]
+mod fault_tests {
+    use super::*;
+    use crate::providers::test_server::{FakeServer, Reply};
+
+    const ME_MAIL: &str = "https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messages";
+
+    #[tokio::test]
+    async fn a_401_refreshes_and_resends_once() {
+        let srv = FakeServer::start(vec![Reply::new(401, "{}"), Reply::new(200, r#"{"value":[]}"#)]);
+        let p = GraphEmailProvider::with_base_override(&srv.base());
+        let client = crate::providers::http_client();
+        let resp = p
+            .send_authed(&client, |c, t| c.get(ME_MAIL).header("Authorization", format!("Bearer {}", t)))
+            .await
+            .unwrap();
+        assert_eq!(resp.status().as_u16(), 200);
+        let seen = srv.requests();
+        assert_eq!(seen.len(), 2, "one resend");
+        assert_eq!(seen[1].path, "/v1.0/me/mailFolders/inbox/messages");
+        assert_eq!(seen[0].header("authorization"), Some("Bearer test-token"));
+    }
+
+    #[tokio::test]
+    async fn a_second_401_is_returned_after_two_requests() {
+        let srv = FakeServer::start(vec![Reply::new(401, "{}"), Reply::new(401, "{}"), Reply::new(200, "{}")]);
+        let p = GraphEmailProvider::with_base_override(&srv.base());
+        let client = crate::providers::http_client();
+        let resp = p
+            .send_authed(&client, |c, t| c.get(ME_MAIL).header("Authorization", format!("Bearer {}", t)))
+            .await
+            .unwrap();
+        assert_eq!(resp.status().as_u16(), 401);
+        assert_eq!(srv.requests().len(), 2);
     }
 }

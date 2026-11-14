@@ -245,6 +245,24 @@ pub fn clean_header_value(v: &str) -> String {
 pub fn is_precondition_failed(e: &crate::errors::OmarchyError) -> bool {
     contacts::error_status(e) == Some(412)
 }
+
+/// Test seam for the provider base URLs: `url` with its scheme and host replaced by `base`
+/// (everything from the first '/' after "://" is kept). `None` returns `url` unchanged. Only a
+/// `#[cfg(test)]` constructor ever sets a base, so production requests are never rewritten.
+pub(crate) fn rebase_url(url: &str, base: Option<&str>) -> String {
+    match base {
+        None => url.to_string(),
+        Some(b) => {
+            let after_scheme = url.find("://").map(|i| &url[i + 3..]).unwrap_or(url);
+            let path = after_scheme.find('/').map(|j| &after_scheme[j..]).unwrap_or("");
+            format!("{}{}", b.trim_end_matches('/'), path)
+        }
+    }
+}
+
+/// Test-only fake HTTP server (scripted replies, recorded requests).
+#[cfg(test)]
+pub(crate) mod test_server;
 pub use graph::GraphEmailProvider;
 
 pub mod retry;
