@@ -385,9 +385,77 @@ pub fn sign_out_all(config_dir: &Path, scheduler: &SyncScheduler) -> Result<usiz
 pub fn remove_account(config_dir: &Path, id: &str, scheduler: &SyncScheduler) -> Result<()> {
     scheduler.stop_account(id);
     broker_for(id).sign_out()?;
-    Database::open(&db_path(config_dir))?.delete_account(id)?;
+    let db = Database::open(&db_path(config_dir))?;
+    // Names of the cache files must be read before the rows go.
+    let keys = db.account_cache_keys(id)?;
+    db.delete_account(id)?;
+    let removed = purge_account_caches(&app_cache_root(), &keys);
+    info!("Removed account {}: {} cache entries", id, removed);
     write_auth_state(config_dir, None, Some(now_serial()));
     Ok(())
+}
+
+/// `<cache dir>/omalook`: the only place `purge_account_caches` ever deletes from.
+fn app_cache_root() -> std::path::PathBuf {
+    dirs::cache_dir().unwrap_or_else(|| std::path::PathBuf::from("/tmp")).join("omalook")
+}
+
+/// Same hash as `photo_cache_file` in main.rs (contact id -> `contact-photos/<hash>.jpg`).
+fn contact_photo_name(contact_id: &str) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    contact_id.hash(&mut h);
+    format!("{:016x}.jpg", h.finish())
+}
+
+/// Remove `root/<rel>` when it is a real file or directory (a symlink is unlinked, never followed).
+fn remove_entry(root: &Path, rel: &Path) -> bool {
+    use std::path::Component;
+    if rel.components().any(|c| !matches!(c, Component::Normal(_))) { return false; }
+    let p = root.join(rel);
+    match std::fs::symlink_metadata(&p) {
+        Ok(m) if m.is_dir() => std::fs::remove_dir_all(&p).is_ok(),
+        Ok(_) => std::fs::remove_file(&p).is_ok(),
+        Err(_) => false,
+    }
+}
+
+/// Delete what the cache holds for one account, under `root` only:
+/// `render/` (`<key>.png` + `.json`, the json names the message id), `drafts/<draft id>/`,
+/// `outgoing/<outbox id>/`, `contact-photos/<hash of contact id>.jpg`.
+/// Not touched: `sms-attachments/` (keyed by phone, not account) and `outgoing-tmp/` (transient).
+/// Returns how many entries were removed.
+pub fn purge_account_caches(root: &Path, keys: &crate::db::AccountCacheKeys) -> usize {
+    let mut n = 0;
+    let safe = |s: &str| !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+    for id in keys.draft_ids.iter().filter(|s| safe(s)) {
+        if remove_entry(root, &Path::new("drafts").join(id)) { n += 1; }
+    }
+    for id in keys.outbox_ids.iter().filter(|s| safe(s)) {
+        if remove_entry(root, &Path::new("outgoing").join(id)) { n += 1; }
+    }
+    for id in &keys.contact_ids {
+        if remove_entry(root, &Path::new("contact-photos").join(contact_photo_name(id))) { n += 1; }
+    }
+    let msgs: HashSet<&str> = keys.message_ids.iter().map(|s| s.as_str()).collect();
+    if let Ok(rd) = std::fs::read_dir(root.join("render")) {
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.extension().and_then(|x| x.to_str()) != Some("json") { continue; }
+            let Some(key) = p.file_stem().and_then(|s| s.to_str()).map(str::to_string) else { continue };
+            let Ok(m) = std::fs::symlink_metadata(&p) else { continue };
+            if !m.is_file() { continue; }
+            let id = std::fs::read_to_string(&p).ok()
+                .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+                .and_then(|v| v["id"].as_str().map(str::to_string));
+            if id.as_deref().map(|i| msgs.contains(i)).unwrap_or(false) {
+                let a = remove_entry(root, &Path::new("render").join(format!("{key}.png")));
+                let b = remove_entry(root, &Path::new("render").join(format!("{key}.json")));
+                if a || b { n += 1; }
+            }
+        }
+    }
+    n
 }
 
 #[cfg(test)]
@@ -512,5 +580,41 @@ mod tests {
         assert!(resolve_reauth(&dir, &pending_id, true, &sched).is_err());
         assert_eq!(broker_for(&existing).snapshot().unwrap().refresh_token.as_deref(), Some("r_old"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn purge_removes_only_this_accounts_cache_and_never_follows_symlinks() {
+        let root = std::env::temp_dir().join(format!("omalook-purge-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let w = |p: std::path::PathBuf| { std::fs::create_dir_all(p.parent().unwrap()).unwrap(); std::fs::write(p, b"x").unwrap(); };
+        w(root.join("drafts/d1/a.txt")); w(root.join("drafts/d2/a.txt"));
+        w(root.join("outgoing/o1/a.txt"));
+        w(root.join("contact-photos").join(contact_photo_name("c1")));
+        w(root.join("contact-photos").join(contact_photo_name("c2")));
+        w(root.join("render/k1.png")); w(root.join("render/k2.png"));
+        std::fs::write(root.join("render/k1.json"), r#"{"id":"m1"}"#).unwrap();
+        std::fs::write(root.join("render/k2.json"), r#"{"id":"m2"}"#).unwrap();
+        w(root.join("sms-attachments/phone/f"));
+        // a draft dir that is a symlink to a directory outside the cache root
+        let outside = std::env::temp_dir().join(format!("omalook-purge-out-{}", std::process::id()));
+        std::fs::create_dir_all(&outside).unwrap(); std::fs::write(outside.join("keep"), b"x").unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("drafts/dlink")).unwrap();
+        let keys = crate::db::AccountCacheKeys {
+            message_ids: vec!["m1".into()],
+            draft_ids: vec!["d1".into(), "dlink".into(), "../x".into()],
+            outbox_ids: vec!["o1".into()],
+            contact_ids: vec!["c1".into()],
+        };
+        assert_eq!(purge_account_caches(&root, &keys), 5);
+        assert!(!root.join("drafts/d1").exists() && root.join("drafts/d2/a.txt").exists());
+        assert!(!root.join("outgoing/o1").exists());
+        assert!(!root.join("contact-photos").join(contact_photo_name("c1")).exists());
+        assert!(root.join("contact-photos").join(contact_photo_name("c2")).exists());
+        assert!(!root.join("render/k1.png").exists() && !root.join("render/k1.json").exists());
+        assert!(root.join("render/k2.png").exists());
+        assert!(root.join("sms-attachments/phone/f").exists());
+        assert!(!root.join("drafts/dlink").exists(), "the link itself goes");
+        assert!(outside.join("keep").exists(), "its target does not");
+        let _ = std::fs::remove_dir_all(&root); let _ = std::fs::remove_dir_all(&outside);
     }
 }

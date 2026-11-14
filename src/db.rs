@@ -97,6 +97,43 @@ pub mod tasks;
 pub mod drafts;
 pub mod mail_extras;
 
+/// Every table with an `account_id` column; `delete_account` clears them all in one transaction.
+/// Guarded by `account_tables_cover_every_account_id_table` (walks `sqlite_master`): a new table
+/// with `account_id` that is not listed here fails that test.
+/// Not listed on purpose: `accounts` (keyed by `id`, deleted last), `sms_*` (device-scoped, not
+/// account-scoped; see db/sms.rs), `messages_fts` (cleared with `messages`), and the tables in
+/// `MESSAGE_KEYED_TABLES`.
+pub const ACCOUNT_TABLES: &[&str] = &[
+    "messages", "folders", "mail_delta",
+    "category_defs", "account_flags", "category_state",
+    "outbox", "drafts",
+    "calendar_events", "calendar_outbox",
+    "contacts", "contact_folders", "contact_sync", "contact_outbox",
+    "identities", "identity_pref",
+    "mail_rules", "rules_state", "rule_ops", "local_rules_state",
+    "task_lists", "tasks",
+    "dl_sync_targets", "dl_sync_base", "dl_sync_log",
+];
+
+/// Tables keyed by a message id instead of an account id: (table, column). Deleted through
+/// `messages` before the messages go. Guarded by the same test (any table with a `message_id`
+/// column must be here).
+pub const MESSAGE_KEYED_TABLES: &[(&str, &str)] = &[
+    ("attachment_cache", "message_id"),
+    ("invite_info", "message_id"),
+    ("list_info", "message_id"),
+    ("local_rule_seen", "message_id"),
+];
+
+/// Names of the cache files of one account (see `account_ops::remove_account`).
+#[derive(Debug, Default, Clone)]
+pub struct AccountCacheKeys {
+    pub message_ids: Vec<String>,
+    pub draft_ids: Vec<String>,
+    pub outbox_ids: Vec<String>,
+    pub contact_ids: Vec<String>,
+}
+
 pub struct Database {
     conn: Connection,
     /// Account that rows written through this handle belong to.
@@ -723,21 +760,57 @@ impl Database {
         Ok(())
     }
 
-    /// Remove an account and everything synced for it (mail, folders, events).
+    /// Ids that name per-account files in the cache directories; read BEFORE `delete_account`.
+    pub fn account_cache_keys(&self, account_id: &str) -> Result<AccountCacheKeys> {
+        let col = |sql: &str| -> Result<Vec<String>> {
+            let mut st = self.conn.prepare(sql)?;
+            let v = st.query_map(params![account_id], |r| r.get::<_, String>(0))?.collect::<std::result::Result<Vec<_>, _>>()?;
+            Ok(v)
+        };
+        Ok(AccountCacheKeys {
+            message_ids: col("SELECT id FROM messages WHERE account_id = ?1")?,
+            draft_ids: col("SELECT local_id FROM drafts WHERE account_id = ?1")?,
+            outbox_ids: col("SELECT id FROM outbox WHERE account_id = ?1")?,
+            contact_ids: col("SELECT id FROM contacts WHERE account_id = ?1")?,
+        })
+    }
+
+    /// Remove an account and everything stored for it: every table in `ACCOUNT_TABLES` and
+    /// `MESSAGE_KEYED_TABLES`, the FTS rows, and the account row, in ONE transaction.
+    /// `secure_delete` is set on this connection first so freed pages are zeroed (it is not
+    /// global: it costs a write per freed page, so it is only on for this delete).
     /// Tokens live in the keyring and are removed by the token broker.
     pub fn delete_account(&self, account_id: &str) -> Result<()> {
-        self.conn.execute_batch("BEGIN")?;
+        self.conn.pragma_update(None, "secure_delete", "ON")?;
+        self.conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| -> Result<()> {
-            for table in ["messages", "folders", "calendar_events", "contacts", "contact_folders", "mail_delta"] {
-                self.conn.execute(&format!("DELETE FROM {} WHERE account_id = ?1", table), params![account_id])?;
+            // Message-keyed tables first, while the messages still exist to name them.
+            for (table, col) in MESSAGE_KEYED_TABLES {
+                self.conn.execute(
+                    &format!("DELETE FROM {table} WHERE {col} IN (SELECT id FROM messages WHERE account_id = ?1)"),
+                    params![account_id])?;
             }
+            // messages_fts.id is UNINDEXED, so the per-row messages_ad trigger would scan the whole
+            // index once per message. Clear the index in one pass and swap the trigger out meanwhile
+            // (DDL is transactional: a rollback restores it).
+            self.conn.execute("DELETE FROM messages_fts WHERE id IN (SELECT id FROM messages WHERE account_id = ?1)", params![account_id])?;
+            self.conn.execute("DROP TRIGGER IF EXISTS messages_ad", [])?;
+            for table in ACCOUNT_TABLES {
+                self.conn.execute(&format!("DELETE FROM {table} WHERE account_id = ?1"), params![account_id])?;
+            }
+            self.conn.execute(
+                "CREATE TRIGGER IF NOT EXISTS messages_ad AFTER DELETE ON messages BEGIN
+                    DELETE FROM messages_fts WHERE id = old.id;
+                END", [])?;
             self.conn.execute("DELETE FROM accounts WHERE id = ?1", params![account_id])?;
             Ok(())
         })();
-        match result {
-            Ok(()) => { self.conn.execute_batch("COMMIT")?; Ok(()) }
+        let out = match result {
+            Ok(()) => self.conn.execute_batch("COMMIT").map_err(Into::into),
             Err(e) => { let _ = self.conn.execute_batch("ROLLBACK"); Err(e) }
-        }
+        };
+        let _ = self.conn.pragma_update(None, "secure_delete", "OFF");
+        out
     }
 
     /// Cache a message from Graph API
@@ -3261,3 +3334,7 @@ pub fn body_snippet(text: &str) -> String {
     let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
     flat.chars().take(255).collect()
 }
+
+#[cfg(test)]
+#[path = "db/account_delete_tests.rs"]
+mod account_delete_tests;
