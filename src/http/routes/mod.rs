@@ -3,11 +3,13 @@
 //! chain in `main.rs` until their group moves.
 
 pub mod core;
+pub mod sms_files;
 
 use super::router::Route;
 
 pub fn all() -> Vec<Route> {
     let mut v = Vec::new();
     v.extend(core::routes());
+    v.extend(sms_files::routes());
     v
 }

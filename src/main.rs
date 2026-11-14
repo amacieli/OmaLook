@@ -608,202 +608,6 @@ fn respond_invite_json(config_dir: &PathBuf, id: &str, choice: &str) -> String {
     out.to_string()
 }
 
-/// Contact name for each address ("" when the phone shared none).
-fn sms_names_of(device: &str, addresses: &[String]) -> Vec<String> {
-    addresses.iter().map(|a| omalook::sms_names::lookup(device, a).unwrap_or_default()).collect()
-}
-
-/// Display title of a thread: contact names (falling back to the number), comma-joined.
-fn sms_title(addresses: &[String], names: &[String]) -> String {
-    let mut seen: Vec<String> = vec![];
-    for (a, n) in addresses.iter().zip(names) {
-        let shown = if n.is_empty() { a.clone() } else { n.clone() };
-        if !seen.contains(&shown) { seen.push(shown); }
-    }
-    seen.join(", ")
-}
-
-/// A short excerpt of `body` around the first word of `query` it contains.
-fn sms_snippet(body: &str, query: &str) -> String {
-    let flat: String = body.split_whitespace().collect::<Vec<_>>().join(" ");
-    let chars: Vec<char> = flat.chars().collect();
-    let lower: String = flat.to_lowercase();
-    let at = query.split_whitespace().filter_map(|w| lower.find(&w.to_lowercase())).min()
-        .map(|b| lower[..b].chars().count()).unwrap_or(0);
-    let start = at.saturating_sub(24);
-    let end = (start + 90).min(chars.len());
-    format!("{}{}{}", if start > 0 { "\u{2026}" } else { "" }, chars[start..end].iter().collect::<String>(), if end < chars.len() { "\u{2026}" } else { "" })
-}
-
-/// POST /sms/send — send a text through KDE Connect. JSON body:
-/// `{"device"?: id, "thread"?: id, "to"?: ["number", ...], "text": "..."}`. With `thread` it replies in
-/// that conversation; with `to` it starts one (or reuses the thread that already has exactly those
-/// recipients). The text is stored as a pending row at once (queued -> the phone's echo replaces it,
-/// or it turns into a failure). Answers `{ok, device, thread, uid, new_thread}` or `{ok:false, error, ...}`.
-fn sms_send_response(config_dir: &PathBuf, stream: &mut std::net::TcpStream, initial: &[u8]) -> String {
-    let err = |m: &str| serde_json::json!({ "ok": false, "error": m }).to_string();
-    let raw = match read_post_body(stream, initial, 64 * 1024) { Ok(b) => b, Err(e) => return err(&e) };
-    let req: serde_json::Value = match serde_json::from_str(&raw) { Ok(v) => v, Err(e) => return err(&format!("unreadable request: {}", e)) };
-    let text = req["text"].as_str().unwrap_or("").trim_end().to_string();
-    if text.trim().is_empty() { return err("nothing to send"); }
-    if text.chars().count() > 5000 { return err("message too long"); }
-    let db = match Database::open(config_dir.join("messages.db").to_str().unwrap_or("messages.db")) { Ok(d) => d, Err(e) => return err(&format!("database: {}", e)) };
-    let device = match req["device"].as_str().map(String::from).or_else(|| db.sms_default_device().ok().flatten()) {
-        Some(d) => d, None => return err("no phone paired (Settings > SMS)"),
-    };
-    let to: Vec<String> = req["to"].as_array().map(|a| a.iter().filter_map(|v| v.as_str()).map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()).unwrap_or_default();
-    let (mut thread, addresses) = match req["thread"].as_i64() {
-        Some(t) => match db.sms_messages(Some(&device), t, None, 1).ok().and_then(|r| r.into_iter().next()) {
-            Some(m) => (Some(t), m.addresses),
-            None => return err("unknown conversation"),
-        },
-        None => {
-            if to.is_empty() { return err("add at least one recipient"); }
-            if let Some(bad) = to.iter().find(|a| a.chars().filter(|c| c.is_ascii_digit()).count() < 3) { return err(&format!("not a phone number: {}", bad)); }
-            (db.sms_thread_for_addresses(&device, &to).ok().flatten(), to)
-        }
-    };
-    if matches!(thread, Some(t) if t <= 0) { thread = None; }   // a stand-in thread: send as new
-    let new_thread = thread.is_none();
-    let shown_thread = thread.unwrap_or_else(|| omalook::db::sms::pending_thread_id(&addresses));
-    let uid = match db.sms_add_pending(&device, shown_thread, &addresses, &text, false) { Ok(u) => u, Err(e) => return err(&e.to_string()) };
-    omalook::sync_state::bump_sms("send queued");
-    match omalook::sms_daemon::send_text(&device, thread, &addresses, &text) {
-        Ok(()) => serde_json::json!({ "ok": true, "device": device, "thread": shown_thread, "uid": uid, "new_thread": new_thread }).to_string(),
-        Err(e) => {
-            warn!("SMS send failed: {}", e);
-            let _ = db.sms_set_pending_state(&device, uid, true);
-            omalook::sync_state::bump_sms("send failed");
-            serde_json::json!({ "ok": false, "error": e, "device": device, "thread": shown_thread, "uid": uid, "new_thread": new_thread }).to_string()
-        }
-    }
-}
-
-/// Handle the `/sms/*` routes; always returns a JSON body.
-fn sms_route(config_dir: &PathBuf, first_line: &str) -> String {
-    let err = |m: &str| serde_json::json!({ "error": m }).to_string();
-    let db = match Database::open(config_dir.join("messages.db").to_str().unwrap_or("messages.db")) {
-        Ok(db) => db,
-        Err(e) => return err(&format!("database: {}", e)),
-    };
-    let device = query_param(first_line, "device");
-    let int = |k: &str| query_param(first_line, k).and_then(|v| v.parse::<i64>().ok());
-    let json = |r: omalook::errors::Result<serde_json::Value>| match r {
-        Ok(v) => v.to_string(),
-        Err(e) => err(&e.to_string()),
-    };
-    let path = first_line.split_whitespace().nth(1).unwrap_or("").split('?').next().unwrap_or("");
-    match (first_line.starts_with("POST"), path) {
-        (false, "/sms/threads") => {
-            let query = query_param(first_line, "q").unwrap_or_default();
-            let query = query.trim().to_string();
-            // Searching reads every thread, then keeps the ones that match by contact name,
-            // phone number, or the text of any message in them.
-            let limit = if query.is_empty() { int("limit").unwrap_or(500).clamp(1, 5000) } else { 5000 };
-            let hits: std::collections::HashMap<(String, i64), String> = if query.is_empty() { Default::default() } else {
-                db.sms_search_bodies(device.as_deref(), &query, 20000).unwrap_or_default()
-                    .into_iter().map(|(d, t, b)| ((d, t), b)).collect()
-            };
-            let q_lower = query.to_lowercase();
-            let q_digits: String = query.chars().filter(|c| c.is_ascii_digit()).collect();
-            json(db.sms_threads(device.as_deref(), limit).map(|r| serde_json::Value::Array(r.into_iter().filter_map(|t| {
-                let names = sms_names_of(&t.device_id, &t.addresses);
-                let title = sms_title(&t.addresses, &names);
-                let mut v = serde_json::json!(t);
-                v["title"] = serde_json::json!(title);
-                v["names"] = serde_json::json!(names);
-                if !query.is_empty() {
-                    let by_name = names.iter().chain(std::iter::once(&title)).any(|n| n.to_lowercase().contains(&q_lower));
-                    let by_number = q_digits.len() >= 3 && t.addresses.iter().any(|a| {
-                        a.chars().filter(|c| c.is_ascii_digit()).collect::<String>().contains(&q_digits)
-                    });
-                    let body = hits.get(&(t.device_id.clone(), t.thread_id));
-                    if by_name || by_number { v["match"] = serde_json::json!(if by_name { "name" } else { "number" }); }
-                    else if let Some(b) = body { v["match"] = serde_json::json!("text"); v["snippet"] = serde_json::json!(sms_snippet(b, &query)); }
-                    else { return None; }
-                    if by_name || by_number { if let Some(b) = body { v["snippet"] = serde_json::json!(sms_snippet(b, &query)); } }
-                }
-                Some(v)
-            }).collect())))
-        }
-        (false, "/sms/contacts") => {
-            // Recipient suggestions: the phone's contacts whose name or number contains `q`.
-            let q = query_param(first_line, "q").unwrap_or_default().to_lowercase();
-            let qd: String = q.chars().filter(|c| c.is_ascii_digit()).collect();
-            let dev = device.clone().or_else(|| db.sms_default_device().ok().flatten()).unwrap_or_default();
-            let list: Vec<serde_json::Value> = omalook::sms_names::contacts(&dev).into_iter()
-                .filter(|(n, num)| q.is_empty() || n.to_lowercase().contains(&q)
-                    || (qd.len() >= 2 && num.chars().filter(|c| c.is_ascii_digit()).collect::<String>().contains(&qd)))
-                .take(12).map(|(n, num)| serde_json::json!({ "name": n, "number": num })).collect();
-            serde_json::json!({ "device": dev, "contacts": list }).to_string()
-        }
-        (false, "/sms/messages") => match int("thread") {
-            None => err("missing thread"),
-            Some(t) => json(db.sms_messages(device.as_deref(), t, int("before"), int("limit").unwrap_or(100).clamp(1, 1000))
-                .map(|r| serde_json::Value::Array(r.into_iter().map(|m| {
-                    let names = sms_names_of(&m.device_id, &m.addresses);
-                    let mut v = serde_json::json!(m);
-                    v["names"] = serde_json::json!(names);
-                    v
-                }).collect()))),
-        },
-        // GET /sms/attachment?device=&part=&uid= : state of one MMS picture (the first call asks the phone).
-        (false, "/sms/attachment") => match (device.as_deref(), int("part"), query_param(first_line, "uid")) {
-            (Some(d), Some(part), Some(uid)) if !d.is_empty() && !uid.is_empty() => omalook::sms_daemon::attachment_status(d, part, &uid).to_string(),
-            _ => err("need device, part and uid"),
-        },
-        (false, "/sms/unread") => json(db.sms_unread_totals().map(|(m, t)| serde_json::json!({ "messages": m, "threads": t }))),
-        (true, "/sms/read") => match int("thread") {
-            None => err("missing thread"),
-            Some(t) => {
-                let read = query_param(first_line, "read").as_deref() != Some("false");
-                // Unread follows mail: only the newest received message of the thread goes back to unread.
-                let changed = if read || int("uid").is_some() { db.sms_set_read(device.as_deref(), t, int("uid"), read) }
-                              else { db.sms_mark_thread_unread(device.as_deref(), t) };
-                json(changed.map(|n| {
-                    if n > 0 { omalook::sync_state::bump_sms("read flag"); }
-                    if n > 0 && read {
-                        // Best effort: ask the phone's SMS app to mark the thread read (see sms_daemon).
-                        if let Some(dev) = device.clone().or_else(|| db.sms_default_device().ok().flatten()) {
-                            let mut needles: Vec<String> = vec![];
-                            if let Ok(rows) = db.sms_messages(Some(&dev), t, None, 1) {
-                                if let Some(m) = rows.first() {
-                                    needles.extend(sms_names_of(&dev, &m.addresses));
-                                    needles.extend(m.addresses.clone());
-                                }
-                            }
-                            omalook::sms_daemon::sync_read_to_phone(dev, needles);
-                        }
-                    }
-                    serde_json::json!({ "ok": true, "changed": n })
-                }))
-            }
-        },
-        (true, "/sms/retry") => {
-            // Send a failed text again: one (`uid`) or every failed text of the thread.
-            let dev = device.clone().or_else(|| db.sms_default_device().ok().flatten()).unwrap_or_default();
-            let uids = match (int("uid"), int("thread")) {
-                (Some(u), _) => vec![u],
-                (None, Some(t)) => db.sms_failed_in_thread(&dev, t).unwrap_or_default(),
-                _ => vec![],
-            };
-            let (mut sent, mut failed) = (0, 0);
-            for u in uids {
-                let Ok(Some((thread, addrs, body))) = db.sms_failed_row(&dev, u) else { continue };
-                let _ = db.sms_set_pending_state(&dev, u, false);
-                match omalook::sms_daemon::send_text(&dev, Some(thread), &addrs, &body) {
-                    Ok(()) => sent += 1,
-                    Err(e) => { warn!("SMS retry failed: {}", e); let _ = db.sms_set_pending_state(&dev, u, true); failed += 1; }
-                }
-            }
-            omalook::sync_state::bump_sms("retry");
-            serde_json::json!({ "ok": failed == 0, "sent": sent, "failed": failed }).to_string()
-        }
-        (true, "/sms/sync") => serde_json::json!({ "ok": omalook::sms_daemon::request_sync() }).to_string(),
-        _ => err("unknown sms route"),
-    }
-}
-
 /// Path of the WebKit render helper (the reading pane looks in the same place).
 fn render_helper_path() -> PathBuf { resolve_qml_dir().join("..").join("bin").join("omalook-render") }
 
@@ -1040,40 +844,6 @@ fn mcp_json_body(stream: &mut std::net::TcpStream, method: &str, initial: &[u8])
     }
     let text = read_post_body(stream, initial, 64 * 1024)?;
     Ok(serde_json::from_str::<serde_json::Value>(&text).unwrap_or(serde_json::Value::Null))
-}
-
-/// POST /files/register — `{"purpose": "attach"|"photo"|"import", "paths": [...]}`. Each path the user
-/// picked, pasted, dropped or typed joins the allow-list (`picked::register`). Answers
-/// `{ok, files, refused}`; a refused entry echoes the path as sent and names no other file.
-fn files_register_response(stream: &mut std::net::TcpStream, initial: &[u8]) -> String {
-    use omalook::picked::{self, Purpose};
-    let err = |m: &str| serde_json::json!({ "ok": false, "error": m }).to_string();
-    let raw = match read_post_body(stream, initial, 256 * 1024) {
-        Ok(b) => b,
-        Err(e) => return err(&e),
-    };
-    let req: serde_json::Value = match serde_json::from_str(&raw) {
-        Ok(v) => v,
-        Err(_) => return err("unreadable request"),
-    };
-    let purpose = match Purpose::parse(req["purpose"].as_str().unwrap_or("")) {
-        Some(p) => p,
-        None => return err("unknown purpose"),
-    };
-    let Some(list) = req["paths"].as_array() else { return err("no files named") };
-    if list.len() > picked::MAX_PER_REQUEST {
-        return err("too many files in one request");
-    }
-    let mut files = Vec::new();
-    let mut refused = Vec::new();
-    for p in list {
-        let as_sent = p.as_str().unwrap_or("").to_string();
-        match picked::register(purpose, &as_sent) {
-            Ok(f) => files.push(f),
-            Err(e) => refused.push(serde_json::json!({ "path": as_sent, "error": e })),
-        }
-    }
-    serde_json::json!({ "ok": true, "files": files, "refused": refused }).to_string()
 }
 
 /// POST /drafts/save — the compose pane's draft (`OutgoingMessage` JSON). `draft_id` empty = a new
@@ -3019,21 +2789,6 @@ fn route_http_request(config_dir: &PathBuf, mut stream: std::net::TcpStream, raw
                 let first_line = request.lines().next().unwrap_or("");
                 let req_t = std::time::Instant::now();
 
-                // ── SMS cache (KDE Connect). Reads: GET /sms/threads?device=&limit=,
-                // GET /sms/messages?thread=&device=&before=&limit=, GET /sms/unread.
-                // Writes: POST /sms/read?thread=&read=true|false[&uid=&device=] (local state only:
-                // KDE Connect cannot mark messages read on the phone), POST /sms/sync (full re-pull). ──
-                if first_line.contains(" /sms/") {
-                    let body = if first_line.contains("POST /sms/send") { sms_send_response(config_dir, &mut stream, raw) }
-                               else { sms_route(config_dir, first_line) };
-                    let response = format!(
-                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
-                        body.len(), body
-                    );
-                    let _ = stream.write_all(response.as_bytes());
-                    return;
-                }
-
                 // ── /contacts/get, /contacts/folders (and the write routes of phase 2 onward): see `contacts_route` ──
                 if let Some(body) = contacts_route(config_dir, &mut stream, raw, first_line) {
                     let response = format!(
@@ -3274,33 +3029,6 @@ fn route_http_request(config_dir: &PathBuf, mut stream: std::net::TcpStream, raw
                             }
                         }
                         Err(e) => serde_json::json!({ "error": format!("database: {}", e) }).to_string(),
-                    };
-                    let response = format!(
-                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
-                        body.len(), body
-                    );
-                    let _ = stream.write_all(response.as_bytes());
-                    return;
-                }
-
-                // ── POST /files/register {purpose, paths} — the files the user picked join the allow-list (OL-057) ──
-                if first_line.contains("POST /files/register") {
-                    let body = files_register_response(&mut stream, raw);
-                    let response = format!(
-                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
-                        body.len(), body
-                    );
-                    let _ = stream.write_all(response.as_bytes());
-                    return;
-                }
-
-                // ── GET /fs/list?path=DIR[&hidden=1] — one directory for the compose file picker ──
-                if first_line.contains("GET /fs/list") {
-                    let path = query_param(first_line, "path").unwrap_or_default();
-                    let hidden = query_param(first_line, "hidden").as_deref() == Some("1");
-                    let body = match omalook::fs_browse::list(&path, hidden) {
-                        Ok(l) => serde_json::to_string(&l).unwrap_or_else(|_| "{\"error\":\"could not list\"}".into()),
-                        Err(e) => serde_json::json!({ "error": e }).to_string(),
                     };
                     let response = format!(
                         "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
@@ -3870,27 +3598,6 @@ fn route_http_request(config_dir: &PathBuf, mut stream: std::net::TcpStream, raw
                         },
                         Err(_) => serde_json::json!({ "serial": serial.to_string(), "preset": "", "bindings": {}, "error": "" }),
                     }.to_string();
-                    let response = format!(
-                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
-                        body.len(), body
-                    );
-                    let _ = stream.write_all(response.as_bytes());
-                    return;
-                }
-
-                // ── GET /search/history — recent search patterns, newest first (JSON array);
-                // POST /search/history?q=PATTERN — record one (called after it ran fine). ──
-                if first_line.contains("GET /search/history") || first_line.contains("POST /search/history") {
-                    let path = config_dir.join("search_history.json");
-                    let list = if first_line.contains("POST ") {
-                        match query_param(first_line, "q") {
-                            Some(q) => omalook::search::push_history(&path, &q),
-                            None => omalook::search::load_history(&path),
-                        }
-                    } else {
-                        omalook::search::load_history(&path)
-                    };
-                    let body = serde_json::to_string(&list).unwrap_or_else(|_| "[]".to_string());
                     let response = format!(
                         "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                         body.len(), body
