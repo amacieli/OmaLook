@@ -97,6 +97,18 @@ pub fn mark(label: &str) {
     }
 }
 
+/// Short tag for an account id in perf lines (R2.7): the first 8 hex digits of its FNV-1a 64-bit hash.
+/// Stable across runs and builds, so lines from one account still group together. The id never
+/// reaches perf.log. Not a cryptographic hash: a 32-bit tag of a short id can be matched by guessing.
+pub fn acct_tag(account_id: &str) -> String {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in account_id.bytes() {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{:08x}", (h >> 32) as u32)
+}
+
 /// Time a block: marks `<label> (<n> ms)` when the returned guard drops.
 pub struct Span {
     label: String,
@@ -115,7 +127,18 @@ impl Drop for Span {
 
 #[cfg(test)]
 mod tests {
-    use super::route_name;
+    use super::{acct_tag, route_name};
+
+    #[test]
+    fn acct_tag_is_stable_short_and_hides_the_id() {
+        let id = "gmail-7f3a9c1e2b";
+        let t = acct_tag(id);
+        assert_eq!(t.len(), 8);
+        assert!(t.bytes().all(|b| b.is_ascii_hexdigit()));
+        assert_eq!(t, acct_tag(id), "same id, same tag");
+        assert_ne!(t, acct_tag("exchange-7f3a9c1e2b"));
+        assert!(!t.contains("7f3a9c"));
+    }
 
     #[test]
     fn drops_query_string_fs_list() {

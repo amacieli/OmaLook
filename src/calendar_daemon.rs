@@ -101,7 +101,7 @@ impl CalendarDaemon {
                         .map(|t| t.elapsed() >= Duration::from_secs(self.config.near_window_interval_secs))
                         .unwrap_or(true);
                     if full_due || near_due {
-                        let _t = perf::span(format!("calendar[{}] occurrences {}", self.db.account_id(), if full_due { "FULL window" } else { "near window" }));
+                        let _t = perf::span(format!("calendar[{}] occurrences {}", perf::acct_tag(self.db.account_id()), if full_due { "FULL window" } else { "near window" }));
                         let result = if full_due {
                             self.sync_full_window(today, years.0, years.1).await
                         } else {
@@ -122,7 +122,7 @@ impl CalendarDaemon {
                     }
 
                     if should_sync {
-                        let _t = perf::span(format!("calendar[{}] sync_events(first_run={})", self.db.account_id(), is_first_run));
+                        let _t = perf::span(format!("calendar[{}] sync_events(first_run={})", perf::acct_tag(self.db.account_id()), is_first_run));
                         match self.sync_events(is_first_run).await {
                             Ok(count) => {
                                 if is_first_run {

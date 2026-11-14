@@ -301,7 +301,7 @@ fn initialize_app(config_dir: &PathBuf, db_path: &str, settings_path: &str, list
     
     // Pre-render: mail from "always HTML" senders is drawn ahead of time into the render cache (OL-028).
     let config_dir_render = config_dir.clone();
-    std::thread::Builder::new().name("prerender".into()).spawn(move || {
+    omalook::supervisor::spawn_supervised("prerender", None, || false, move || {
         let db = config_dir_render.join("messages.db");
         std::thread::sleep(std::time::Duration::from_secs(45));      // let the first sync and the window settle
         loop {
@@ -3031,9 +3031,19 @@ fn route_http_request(config_dir: &PathBuf, mut stream: std::net::TcpStream, raw
                 let request = String::from_utf8_lossy(raw);
                 let first_line = request.lines().next().unwrap_or("");
                 let req_t = std::time::Instant::now();
+                // ── GET /sync/health — per-thread supervisor state (restarts, last panic text). No DB access.
+                if first_line.contains("GET /sync/health") {
+                    let body = omalook::supervisor::health_json().to_string();
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                        body.len(), body
+                    );
+                    let _ = stream.write_all(response.as_bytes());
+                    return;
+                }
                 // ── GET /sync/serial — cheap change counter the UI polls (no DB access)
                 if first_line.contains("GET /sync/serial") {
-                    let body = format!("{{\"mail\":{},\"sms\":{},\"mcp_pending\":{}}}", omalook::sync_state::mail_serial(), omalook::sync_state::sms_serial(), omalook::mcp::confirm::serial());
+                    let body = format!("{{\"mail\":{},\"sms\":{},\"mcp_pending\":{},\"sync_health\":{}}}", omalook::sync_state::mail_serial(), omalook::sync_state::sms_serial(), omalook::mcp::confirm::serial(), omalook::supervisor::health_serial());
                     let response = format!(
                         "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                         body.len(), body

@@ -74,7 +74,7 @@ impl ContactsDaemon {
                     let full_due = !full_done || last_full.map(|t| t.elapsed() >= FULL_EVERY).unwrap_or(true);
 
                     if last_folder_sync.map(|t| t.elapsed() >= folder_interval).unwrap_or(true) {
-                        let _t = perf::span(format!("contacts[{}] sync_folders", self.db.account_id()));
+                        let _t = perf::span(format!("contacts[{}] sync_folders", perf::acct_tag(self.db.account_id())));
                         match self.sync_folders().await {
                             Ok(n) => {
                                 info!("Synced {} contact folders", n);
@@ -85,7 +85,7 @@ impl ContactsDaemon {
                     }
 
                     if full_due || last_sync.map(|t| t.elapsed() >= message_interval).unwrap_or(true) {
-                        let _t = perf::span(format!("contacts[{}] sync_contacts(full={})", self.db.account_id(), full_due));
+                        let _t = perf::span(format!("contacts[{}] sync_contacts(full={})", perf::acct_tag(self.db.account_id()), full_due));
                         match self.sync_contacts(full_due).await {
                             Ok(n) => {
                                 if n > 0 { info!("Synced {} contacts", n) } else { debug!("No contact changes") }

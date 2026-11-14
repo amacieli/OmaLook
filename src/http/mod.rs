@@ -53,6 +53,7 @@ pub fn runs_unlocked(method: &str, path: &str) -> bool {
         "GET" => matches!(
             path,
             "/sync/serial"
+                | "/sync/health"
                 | "/calendar/find"
                 | "/compose/originals"
                 | "/contacts/directory"

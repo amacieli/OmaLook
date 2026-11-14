@@ -63,7 +63,7 @@ pub fn meta_active() -> bool {
 pub fn open_gate(account: &str) {
     let mut g = GATE.lock().unwrap_or_else(|p| p.into_inner());
     if g.get_or_insert_with(HashSet::new).insert(account.to_string()) {
-        perf::mark(&format!("gate[{}] opened: mail priority stages done", account));
+        perf::mark(&format!("gate[{}] opened: mail priority stages done", perf::acct_tag(account)));
     }
 }
 
@@ -77,7 +77,7 @@ pub async fn wait_gate(account: &str, max: Duration) -> bool {
     let t = Instant::now();
     while !is_open(account) {
         if t.elapsed() >= max {
-            perf::mark(&format!("gate[{}] wait timed out after {:?}", account, max));
+            perf::mark(&format!("gate[{}] wait timed out after {:?}", perf::acct_tag(account), max));
             return false;
         }
         tokio::time::sleep(Duration::from_millis(100)).await;

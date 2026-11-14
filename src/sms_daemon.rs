@@ -18,11 +18,13 @@
 
 use crate::db::sms::{SmsAttachment, SmsMessage};
 use crate::db::Database;
+use crate::supervisor;
 use log::{debug, error, info, warn};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use zbus::blocking::{Connection, MessageIterator};
 use zbus::zvariant::{Array, Structure, Value};
@@ -50,35 +52,41 @@ enum Ev {
     Resync,
 }
 
-static CMD: OnceLock<Sender<Ev>> = OnceLock::new();
+/// Sender into the current worker run. Replaced on each supervised restart (each run has its own channel).
+static CMD: Mutex<Option<Sender<Ev>>> = Mutex::new(None);
 
 /// Ask the daemon for a fresh full pass of every device (history is re-pulled; upserts make it cheap).
 pub fn request_sync() -> bool {
-    CMD.get().map(|tx| tx.send(Ev::Resync).is_ok()).unwrap_or(false)
+    let guard = CMD.lock().unwrap_or_else(|p| p.into_inner());
+    guard.as_ref().map(|tx| tx.send(Ev::Resync).is_ok()).unwrap_or(false)
 }
 
-/// Start the SMS daemon thread. Returns immediately.
+/// Start the SMS daemon threads (worker, outbox expiry, signal listener). Returns immediately.
+/// Each thread is supervised: a panic restarts it with backoff (ARCH-C1).
 pub fn start(config_dir: PathBuf) {
-    let config_dir_for_ticker = config_dir.clone();
-    let (tx, rx) = channel::<Ev>();
-    if CMD.set(tx.clone()).is_err() {
+    static STARTED: AtomicBool = AtomicBool::new(false);
+    if STARTED.swap(true, Ordering::SeqCst) {
         warn!("SMS daemon already started");
         return;
     }
-    let r = std::thread::Builder::new().name("sms".into()).spawn(move || {
-        let db_path = config_dir.join("messages.db");
+    let dir = config_dir.clone();
+    let worker = supervisor::spawn_supervised("sms", None, || false, move || {
+        // A fresh channel per run: a restarted worker must not inherit a dead receiver.
+        let (tx, rx) = channel::<Ev>();
+        *CMD.lock().unwrap_or_else(|p| p.into_inner()) = Some(tx.clone());
+        let db_path = dir.join("messages.db");
         let db = match Database::open(db_path.to_str().unwrap_or("messages.db")) {
             Ok(db) => db,
             Err(e) => return error!("SMS daemon: cannot open database: {}", e),
         };
         Worker { db, tx, rx, conn: None, synced: HashSet::new(), attempts: HashMap::new(), dirty: false, last_nudge: None }.run();
     });
-    if let Err(e) = r {
+    if let Err(e) = worker {
         error!("Cannot spawn SMS daemon thread: {}", e);
     }
     // Sent texts the phone never echoed turn into "send failure" after SEND_TIMEOUT.
-    let dir = config_dir_for_ticker;
-    let _ = std::thread::Builder::new().name("sms-outbox".into()).spawn(move || {
+    let dir = config_dir;
+    let expiry = supervisor::spawn_supervised("sms-outbox", None, || false, move || {
         let Ok(db) = Database::open(dir.join("messages.db").to_str().unwrap_or("messages.db")) else { return };
         loop {
             std::thread::sleep(Duration::from_secs(10));
@@ -88,6 +96,9 @@ pub fn start(config_dir: PathBuf) {
             }
         }
     });
+    if let Err(e) = expiry {
+        error!("Cannot spawn SMS outbox thread: {}", e);
+    }
 }
 
 // ── MMS attachments (OL-032) ──────────────────────────────────────────────
@@ -371,16 +382,24 @@ impl Worker {
     fn connect(&self) -> Result<Connection, String> {
         let conn = Connection::session().map_err(|e| e.to_string())?;
         // One listener for every device (path namespace), feeding the worker.
-        let rule = MatchRule::builder()
-            .msg_type(zbus::MessageType::Signal)
-            .sender(SERVICE).map_err(|e| e.to_string())?
-            .interface(IFACE).map_err(|e| e.to_string())?
-            .build();
-        let iter = MessageIterator::for_match_rule(rule, &conn, Some(4096)).map_err(|e| e.to_string())?;
+        let iter = signal_iter(&conn)?;
         let tx = self.tx.clone();
-        std::thread::Builder::new().name("sms-signals".into()).spawn(move || listen(iter, tx)).map_err(|e| e.to_string())?;
+        // The first run uses the iterator built above; a restart after a panic builds its own.
+        let first = Mutex::new(Some(iter));
+        supervisor::spawn_supervised("sms-signals", None, || false, move || {
+            let taken = first.lock().unwrap_or_else(|p| p.into_inner()).take();
+            match taken {
+                Some(iter) => listen(iter, tx.clone()),
+                None => match Connection::session().map_err(|e| e.to_string()).and_then(|c| signal_iter(&c).map(|it| (c, it))) {
+                    Ok((_conn, iter)) => listen(iter, tx.clone()),
+                    Err(e) => error!("SMS signal listener restart failed: {}", e),
+                },
+            }
+        })
+        .map_err(|e| e.to_string())?;
         Ok(conn)
     }
+
 
     /// A paired phone that is not reachable (Wi-Fi roam, phone slept, network change missed) stays that way until
     /// kdeconnectd is told to announce itself again. That is what the KDE Connect app's refresh button does
@@ -585,7 +604,17 @@ impl Worker {
     }
 }
 
-/// Signal listener thread: turns bus signals into events.
+/// The match rule for every device's signals (path namespace) on `conn`.
+fn signal_iter(conn: &Connection) -> Result<MessageIterator, String> {
+    let rule = MatchRule::builder()
+        .msg_type(zbus::MessageType::Signal)
+        .sender(SERVICE).map_err(|e| e.to_string())?
+        .interface(IFACE).map_err(|e| e.to_string())?
+        .build();
+    MessageIterator::for_match_rule(rule, conn, Some(4096)).map_err(|e| e.to_string())
+}
+
+/// Signal listener: turns bus signals into events until the iterator or the worker ends.
 fn listen(iter: MessageIterator, tx: Sender<Ev>) {
     for msg in iter {
         let Ok(msg) = msg else { continue };

@@ -116,7 +116,7 @@ impl EmailDaemon {
         let mut authenticated_once = false;
 
         let acct = self.db.account_id().to_string();
-        perf::mark(&format!("mail[{}] daemon started", acct));
+        perf::mark(&format!("mail[{}] daemon started", perf::acct_tag(&acct)));
         loop {
             // Re-read each cycle so a change in settings.toml applies without a restart.
             message_interval = self.poll_interval();
@@ -125,7 +125,7 @@ impl EmailDaemon {
             let tok_t = Instant::now();
             let token_check = self.provider.is_token_valid().await;
             if !authenticated_once {
-                perf::mark(&format!("mail[{}] token check {:?} in {:.1}ms", acct, token_check.as_ref().ok(), tok_t.elapsed().as_secs_f64() * 1000.0));
+                perf::mark(&format!("mail[{}] token check {:?} in {:.1}ms", perf::acct_tag(&acct), token_check.as_ref().ok(), tok_t.elapsed().as_secs_f64() * 1000.0));
             }
             match token_check {
                 Ok(true) => {
@@ -146,7 +146,7 @@ impl EmailDaemon {
                         .unwrap_or(true);
 
                     if should_sync_folders {
-                        let _t = perf::span(format!("mail[{}] sync_folders", acct));
+                        let _t = perf::span(format!("mail[{}] sync_folders", perf::acct_tag(&acct)));
                         match self.sync_folders().await {
                             Ok(count) => {
                                 info!("Synced {} folders", count);
@@ -167,7 +167,7 @@ impl EmailDaemon {
                         .unwrap_or(true);
 
                     if should_sync_messages {
-                        let _t = perf::span(format!("mail[{}] sync_messages(first_run={}) TOTAL", acct, is_first_run));
+                        let _t = perf::span(format!("mail[{}] sync_messages(first_run={}) TOTAL", perf::acct_tag(&acct), is_first_run));
                         match self.sync_messages(is_first_run).await {
                             Ok(count) => {
                                 if count > 0 {
@@ -283,7 +283,7 @@ impl EmailDaemon {
         // Read flags first: one cheap request per folder, so they are right within seconds
         // of launch instead of after the full paginated sync of every folder.
         {
-            let _t = perf::span(format!("mail[{}] reconcile_read_state x{} folders", self.db.account_id(), folders.len()));
+            let _t = perf::span(format!("mail[{}] reconcile_read_state x{} folders", perf::acct_tag(self.db.account_id()), folders.len()));
             // Deletions made on other clients: every 5th cycle (and the first), ids only.
             let cycle = self.sync_cycle.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             for folder in &folders {
@@ -300,7 +300,7 @@ impl EmailDaemon {
 
         let mut total = 0;
         for folder in &folders {
-            let _t = perf::span(format!("mail[{}] folder '{}' sync", self.db.account_id(), folder.display_name));
+            let _t = perf::span(format!("mail[{}] folder '{}' sync", perf::acct_tag(self.db.account_id()), folder.display_name));
             match self.sync_folder_messages(&folder.id, is_initial).await {
                 Ok(count) => total += count,
                 Err(e) => error!("Failed to sync folder {}: {}", folder.display_name, e),
@@ -321,7 +321,7 @@ impl EmailDaemon {
         let mut total = 0usize;
         let mut any_change = false;
         for folder in &folders {
-            let _t = perf::span(format!("mail[{}] delta '{}'", acct, folder.display_name));
+            let _t = perf::span(format!("mail[{}] delta '{}'", perf::acct_tag(&acct), folder.display_name));
             match self.sync_folder_delta(&folder.id, &folder.display_name).await {
                 Ok(n) => {
                     if n > 0 {
@@ -369,7 +369,7 @@ impl EmailDaemon {
             while let Some(page) = rx.recv().await {
                 pages += 1;
                 if pages == 1 && (link.is_none() || !complete) {
-                    perf::mark(&format!("mail[{}] '{}' initial enumeration: first page of {}", acct, folder_name, page.upserts.len()));
+                    perf::mark(&format!("mail[{}] '{}' initial enumeration: first page of {}", perf::acct_tag(&acct), folder_name, page.upserts.len()));
                 }
                 if fresh_full {
                     seen.extend(page.upserts.iter().map(|m| m.id.clone()));
@@ -798,7 +798,9 @@ impl EmailDaemon {
                             let want = (op.payload["from"].as_i64(), op.payload["to"].as_i64());
                             let seqs = (rule["sequence"].as_i64(), before.iter().find(|x| x["id"].as_str() == Some(nid)).and_then(|x| x["sequence"].as_i64()));
                             if seqs != want { return Err(("conflict", "the rules were reordered somewhere else since you looked".into())) }
-                            let n = before.iter().find(|x| x["id"].as_str() == Some(nid)).unwrap();
+                            let Some(n) = before.iter().find(|x| x["id"].as_str() == Some(nid)) else {
+                                return Err(("conflict", "the rules were reordered somewhere else since you looked".into()));
+                            };
                             if n["isReadOnly"].as_bool() == Some(true) { return Err(("failed", "read-only rules cannot be moved past".into())) }
                         }
                         Ok(())
@@ -979,7 +981,7 @@ impl EmailDaemon {
         let folders = match self.db.get_folders() { Ok(f) => f, Err(_) => return };
         let Some(inbox) = folders.iter().find(|f| f.well_known_name.as_deref() == Some("inbox")
             || f.display_name.eq_ignore_ascii_case("inbox")) else { return };
-        let _t = perf::span(format!("mail[{}] inbox quick poll", self.db.account_id()));
+        let _t = perf::span(format!("mail[{}] inbox quick poll", perf::acct_tag(self.db.account_id())));
         if self.provider.supports_delta() {
             if !matches!(self.db.delta_state(&inbox.id), Ok(Some((_, true)))) { return; }
             if let Err(e) = self.sync_folder_delta(&inbox.id, &inbox.display_name).await {
@@ -1053,7 +1055,7 @@ impl EmailDaemon {
             while let Some(batch) = rx.recv().await {
                 if first_batch {
                     first_batch = false;
-                    perf::mark(&format!("mail[{}] folder {} first page of {} received", db.account_id(), &folder_id[..folder_id.len().min(8)], batch.len()));
+                    perf::mark(&format!("mail[{}] folder {} first page of {} received", perf::acct_tag(db.account_id()), &folder_id[..folder_id.len().min(8)], batch.len()));
                 }
                 match db.insert_emails_batch(&batch) {
                     Ok(n) => inserted += n,
@@ -1095,10 +1097,10 @@ impl EmailDaemon {
                 return;
             }
         };
-        perf::mark(&format!("mail[{}] recent {}: fetched {} in {:.1}ms", acct, limit, emails.len(), t.elapsed().as_secs_f64() * 1000.0));
+        perf::mark(&format!("mail[{}] recent {}: fetched {} in {:.1}ms", perf::acct_tag(&acct), limit, emails.len(), t.elapsed().as_secs_f64() * 1000.0));
         match self.db.insert_emails_batch(&emails) {
             Ok(n) => {
-                perf::mark(&format!("mail[{}] recent {}: {} new stored", acct, limit, n));
+                perf::mark(&format!("mail[{}] recent {}: {} new stored", perf::acct_tag(&acct), limit, n));
                 if n > 0 {
                     sync_state::bump_mail(&format!("recent {}: {} new", limit, n));
                 }
