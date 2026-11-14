@@ -92,6 +92,17 @@ impl GoogleApi {
         self.send(reqwest::Method::DELETE, url, None).await
     }
 
+    /// PATCH that only applies while the resource still has version `if_match` (Google answers 412
+    /// otherwise). `None` or "" = unconditional.
+    pub async fn patch_if(&self, url: &str, body: &serde_json::Value, if_match: Option<&str>) -> Result<serde_json::Value> {
+        self.send_if(reqwest::Method::PATCH, url, Some(body), if_match).await
+    }
+
+    /// DELETE that only applies while the resource still has version `if_match`.
+    pub async fn delete_if(&self, url: &str, if_match: Option<&str>) -> Result<serde_json::Value> {
+        self.send_if(reqwest::Method::DELETE, url, None, if_match).await
+    }
+
     /// PUT (Gmail's `drafts.update` replaces the draft's message).
     pub async fn put(&self, url: &str, body: &serde_json::Value) -> Result<serde_json::Value> {
         self.send(reqwest::Method::PUT, url, Some(body)).await
@@ -212,12 +223,20 @@ impl GoogleApi {
     }
 
     async fn send(&self, method: reqwest::Method, url: &str, body: Option<&serde_json::Value>) -> Result<serde_json::Value> {
+        self.send_if(method, url, body, None).await
+    }
+
+    async fn send_if(&self, method: reqwest::Method, url: &str, body: Option<&serde_json::Value>, if_match: Option<&str>) -> Result<serde_json::Value> {
+        let if_match = if_match.map(super::clean_header_value).filter(|v| !v.is_empty());
         let mut attempt = 0;
         let mut auth = AuthRetry::default();
         loop {
             attempt += 1;
             let token = self.token().await?;
             let mut req = self.client.request(method.clone(), url).bearer_auth(&token);
+            if let Some(v) = &if_match {
+                req = req.header("If-Match", v.as_str());
+            }
             if let Some(b) = body {
                 req = req.json(b);
             }

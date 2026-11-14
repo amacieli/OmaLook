@@ -252,6 +252,10 @@ pub struct CalendarEvent {
     /// OmaLook tags: Graph `categories`, Google private property `omalook_tags` (see `calendar_tags`).
     #[serde(default)]
     pub tags: Vec<String>,
+    /// Provider version of this event as last seen (Graph `@odata.etag`, Google `etag`); sent as `If-Match`
+    /// on edits and deletes so a change made elsewhere is not overwritten (R3.6). "" = unknown.
+    #[serde(default)]
+    pub etag: String,
 }
 
 /// Phone number with its type ("mobile", "home", "work")

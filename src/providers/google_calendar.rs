@@ -93,6 +93,7 @@ pub(crate) fn parse_event(account_id: &str, time_zone: &str, ev: &serde_json::Va
         recurrence_json: String::new(),
         calendar_id: String::new(),
         tags: crate::calendar_tags::from_google(ev["extendedProperties"]["private"][crate::calendar_tags::GOOGLE_TAGS_KEY].as_str().unwrap_or("")),
+        etag: ev["etag"].as_str().unwrap_or("").to_string(),
     })
 }
 
@@ -181,17 +182,17 @@ impl super::CalendarProvider for GoogleCalendarProvider {
         super::google_calendar_write::create(&self.api, &self.account_id, draft).await
     }
 
-    async fn update_event(&self, target: &str, draft: &crate::calendar_write::EventDraft, series: bool) -> Result<crate::calendar_write::CreatedEvent> {
-        super::google_calendar_write::update(&self.api, &self.account_id, target, draft, series).await
+    async fn update_event(&self, target: &str, draft: &crate::calendar_write::EventDraft, series: bool, if_match: Option<&str>) -> Result<crate::calendar_write::CreatedEvent> {
+        super::google_calendar_write::update(&self.api, &self.account_id, target, draft, series, if_match).await
     }
 
-    async fn delete_event(&self, target: &str) -> Result<()> {
-        super::google_calendar_write::delete(&self.api, &self.account_id, target, false).await
+    async fn delete_event(&self, target: &str, if_match: Option<&str>) -> Result<()> {
+        super::google_calendar_write::delete(&self.api, &self.account_id, target, false, if_match).await
     }
 
     /// Google's delete has no message field, so `_comment` is not sent (the attendees get Google's own notice).
     async fn cancel_event(&self, target: &str, _comment: &str) -> Result<()> {
-        super::google_calendar_write::delete(&self.api, &self.account_id, target, true).await
+        super::google_calendar_write::delete(&self.api, &self.account_id, target, true, None).await
     }
 
     async fn decline_event(&self, target: &str, comment: &str) -> Result<()> {
@@ -203,6 +204,13 @@ impl super::CalendarProvider for GoogleCalendarProvider {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn the_google_version_is_kept() {
+        let t = json!({"dateTime": "2026-10-05T13:00:00Z"});
+        let e = parse_event("gmail-aaaaaa", "UTC", &json!({"id": "x", "etag": "\"3181\"", "start": t, "end": t})).unwrap();
+        assert_eq!(e.etag, "\"3181\"");
+    }
 
     #[test]
     fn timed_event_is_converted_to_local_wall_clock() {
