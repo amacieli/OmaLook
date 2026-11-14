@@ -201,9 +201,9 @@ impl Database {
     /// How many of this account's messages carry `name`.
     pub fn tag_message_count(&self, name: &str) -> Result<i64> {
         let mut n = 0;
-        let mut st = self.conn.prepare("SELECT categories FROM messages WHERE account_id = ?1 AND categories LIKE '%' || ?2 || '%' COLLATE NOCASE")?;
+        let mut st = self.conn.prepare("SELECT categories FROM messages WHERE account_id = ?1 AND categories LIKE ?2 ESCAPE '\\'")?;
         let key = tag_key(name);
-        let rows = st.query_map(params![self.account_id, name.trim()], |r| r.get::<_, Option<String>>(0))?;
+        let rows = st.query_map(params![self.account_id, crate::db::like_contains(name.trim())], |r| r.get::<_, Option<String>>(0))?;
         for r in rows {
             if categories_from_json(r?.as_deref()).iter().any(|c| tag_key(c) == key) { n += 1; }
         }
@@ -226,8 +226,8 @@ impl Database {
         let key = tag_key(name);
         let mut ids: Vec<String> = Vec::new();
         {
-            let mut st = self.conn.prepare("SELECT id, categories FROM messages WHERE account_id = ?1 AND categories LIKE '%' || ?2 || '%' COLLATE NOCASE")?;
-            let rows = st.query_map(params![self.account_id, name.trim()], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?)))?;
+            let mut st = self.conn.prepare("SELECT id, categories FROM messages WHERE account_id = ?1 AND categories LIKE ?2 ESCAPE '\\'")?;
+            let rows = st.query_map(params![self.account_id, crate::db::like_contains(name.trim())], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?)))?;
             for r in rows {
                 let (id, cats) = r?;
                 if categories_from_json(cats.as_deref()).iter().any(|c| tag_key(c) == key) { ids.push(id); }
@@ -277,8 +277,8 @@ impl Database {
             let key = tag_key(&name);
             let mut st = self.conn.prepare(
                 "SELECT categories, categories_synced FROM messages WHERE account_id = ?1 AND
-                 (categories LIKE '%' || ?2 || '%' COLLATE NOCASE OR categories_synced LIKE '%' || ?2 || '%' COLLATE NOCASE)")?;
-            let rows = st.query_map(params![self.account_id, name.trim()], |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, Option<String>>(1)?)))?;
+                 (categories LIKE ?2 ESCAPE '\\' OR categories_synced LIKE ?2 ESCAPE '\\')")?;
+            let rows = st.query_map(params![self.account_id, crate::db::like_contains(name.trim())], |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, Option<String>>(1)?)))?;
             let mut still = false;
             for r in rows {
                 let (c, s) = r?;

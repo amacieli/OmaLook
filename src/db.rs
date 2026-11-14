@@ -37,6 +37,43 @@ pub use accounts::*;
 pub use messages::*;
 pub use categories::*;
 
+/// Escape `\`, `%` and `_` so the value matches literally inside a LIKE pattern. Every LIKE that
+/// carries user or provider data must bind a pattern built with this and say `ESCAPE '\'`
+/// (omalook-secure-by-default rule 6). Constant patterns need neither.
+pub fn like_escape(s: &str) -> String {
+    let mut o = String::with_capacity(s.len());
+    for c in s.chars() {
+        if matches!(c, '\\' | '%' | '_') {
+            o.push('\\');
+        }
+        o.push(c);
+    }
+    o
+}
+
+/// `%value%` with the value escaped, for `LIKE ? ESCAPE '\'`.
+pub fn like_contains(s: &str) -> String {
+    format!("%{}%", like_escape(s))
+}
+
+#[cfg(test)]
+mod like_escape_tests {
+    use super::{like_contains, like_escape};
+
+    #[test]
+    fn escapes_backslash_percent_and_underscore() {
+        assert_eq!(like_escape("a_b%c\\d"), "a\\_b\\%c\\\\d");
+        assert_eq!(like_escape("plain text"), "plain text");
+        assert_eq!(like_escape(""), "");
+    }
+
+    #[test]
+    fn contains_pattern_wraps_the_escaped_value() {
+        assert_eq!(like_contains("100%"), "%100\\%%");
+        assert_eq!(like_contains("a_b"), "%a\\_b%");
+    }
+}
+
 /// Every table with an `account_id` column; `delete_account` clears them all in one transaction.
 /// Guarded by `account_tables_cover_every_account_id_table` (walks `sqlite_master`): a new table
 /// with `account_id` that is not listed here fails that test.

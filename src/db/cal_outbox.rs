@@ -124,8 +124,8 @@ impl Database {
         let target = master.filter(|m| !m.is_empty()).unwrap_or(id);
         let series = kind == "seriesMaster" || kind == "occurrence" || kind == "exception";
         let pending: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM calendar_outbox WHERE account_id = ?1 AND op = 'set_tags' AND state IN ('pending','sending') AND payload_json LIKE ?2",
-            params![self.account_id, format!("%\"event_id\":{}%", serde_json::to_string(&target).unwrap_or_default())], |r| r.get(0)).map_err(|e| e.to_string())?;
+            "SELECT COUNT(*) FROM calendar_outbox WHERE account_id = ?1 AND op = 'set_tags' AND state IN ('pending','sending') AND payload_json LIKE ?2 ESCAPE '\\'",
+            params![self.account_id, format!("%\"event_id\":{}%", crate::db::like_escape(&serde_json::to_string(&target).unwrap_or_default()))], |r| r.get(0)).map_err(|e| e.to_string())?;
         if pending > 0 { return Err("a tag change for this event is already waiting".into()) }
         let payload = serde_json::json!({ "event_id": target, "tags": tags, "series": series }).to_string();
         self.cal_outbox_enqueue(outbox_id, &self.account_id, "set_tags", &payload, 0, outbox_id, due_ms).map_err(|e| e.to_string())?;
@@ -174,8 +174,8 @@ impl Database {
     /// `target` and `series`, and at most one such change may wait per target (a second edit would race the first).
     pub fn cal_queue_event_change(&self, outbox_id: &str, op: &str, target: &str, payload: &serde_json::Value, attendees: usize, due_ms: i64) -> std::result::Result<(), String> {
         let pending: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM calendar_outbox WHERE account_id = ?1 AND op IN ('update','cancel','decline','delete') AND state IN ('pending','sending') AND payload_json LIKE ?2",
-            params![self.account_id, format!("%\"target\":{}%", serde_json::to_string(target).unwrap_or_default())], |r| r.get(0)).map_err(|e| e.to_string())?;
+            "SELECT COUNT(*) FROM calendar_outbox WHERE account_id = ?1 AND op IN ('update','cancel','decline','delete') AND state IN ('pending','sending') AND payload_json LIKE ?2 ESCAPE '\\'",
+            params![self.account_id, format!("%\"target\":{}%", crate::db::like_escape(&serde_json::to_string(target).unwrap_or_default()))], |r| r.get(0)).map_err(|e| e.to_string())?;
         if pending > 0 { return Err("a change to this event is already waiting".into()) }
         let mut p = payload.clone();
         p["target"] = serde_json::json!(target);
