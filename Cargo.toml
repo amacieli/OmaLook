@@ -18,7 +18,7 @@ oauth2 = { version = "5.0", default-features = false }
 url = "2.5"
 
 # Keyring (Linux SecretService)
-keyring = "2.1"
+keyring = { version = "3", features = ["sync-secret-service", "crypto-rust"] }  # Linux Secret Service, sync API (v2 default); without a store feature keyring 3 silently uses the mock
 
 # Configuration (TOML)
 toml = "0.8"

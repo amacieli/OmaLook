@@ -67,7 +67,7 @@ impl TokenStore for KeyringStore {
     }
 
     fn delete(&self, account_id: &str) -> Result<()> {
-        match Self::entry(account_id)?.delete_password() {
+        match Self::entry(account_id)?.delete_credential() {
             Ok(_) | Err(keyring::error::Error::NoEntry) => Ok(()),
             Err(e) => Err(OmarchyError::KeyringError(e.to_string())),
         }
