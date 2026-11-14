@@ -419,8 +419,7 @@ fn handle_http_connection(config_dir: &PathBuf, port: u16, token: &str, mut stre
             drop(stream);
             if let Some(f) = after { f(); }
         }
-        // Unknown path, or a known path with another method: the old chain's last answer, kept byte
-        // for byte (a 404 whose body is `ok`).
+        // Unknown path, or a known path with another method: a 404 whose body is `ok`, kept byte for byte.
         Found::WrongMethod | Found::NotFound => {
             let _ = stream.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\nok");
         }
