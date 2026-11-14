@@ -125,11 +125,34 @@ pub struct GraphCalendarProvider {
     auth: Mutex<AuthManager>,
     /// IANA zone requested from Graph so start/end arrive as local wall-clock
     time_zone: String,
+    /// Scheme+host replacement for request URLs. Always `None` in production; only the
+    /// `#[cfg(test)]` constructor sets it (see `providers::rebase_url`).
+    base_override: Option<String>,
+    /// Fixed access token for tests, so no test reads the keyring or refreshes a grant.
+    #[cfg(test)]
+    test_token: Option<String>,
 }
 
 impl GraphCalendarProvider {
     pub fn new(auth: AuthManager) -> Self {
-        Self { auth: Mutex::new(auth), time_zone: local_time_zone() }
+        Self {
+            auth: Mutex::new(auth),
+            time_zone: local_time_zone(),
+            base_override: None,
+            #[cfg(test)]
+            test_token: None,
+        }
+    }
+
+    /// Test-only: requests go to `base` (e.g. a fake server) and use a fixed token.
+    #[cfg(test)]
+    pub fn with_base_override(base: &str) -> Self {
+        Self {
+            auth: Mutex::new(AuthManager::for_account("test-account")),
+            time_zone: "UTC".to_string(),
+            base_override: Some(base.to_string()),
+            test_token: Some("test-token".to_string()),
+        }
     }
 
     /// One Graph call that must succeed; the body of the answer (possibly empty) comes back.
@@ -140,8 +163,9 @@ impl GraphCalendarProvider {
     /// `graph_call` that only applies while the event still has version `if_match` (412 otherwise).
     async fn graph_call_if(&self, method: reqwest::Method, path: &str, body: Option<serde_json::Value>, time_zone: Option<&str>, if_match: Option<&str>) -> Result<String> {
         let token = self.get_token().await?;
+        let url = super::rebase_url(&format!("https://graph.microsoft.com/v1.0/{}", path), self.base_override.as_deref());
         let mut req = super::http_client()
-            .request(method, format!("https://graph.microsoft.com/v1.0/{}", path))
+            .request(method, url)
             .header("Authorization", format!("Bearer {}", token));
         if let Some(v) = if_match.map(super::clean_header_value).filter(|v| !v.is_empty()) {
             req = req.header("If-Match", v);
@@ -162,6 +186,10 @@ impl GraphCalendarProvider {
     }
 
     async fn get_token(&self) -> Result<String> {
+        #[cfg(test)]
+        if let Some(t) = &self.test_token {
+            return Ok(t.clone());
+        }
         let mut auth = self.auth.lock().await;
         let token = auth
             .get_token()
@@ -588,5 +616,64 @@ mod tests {
         assert_eq!(answers[1].error.as_deref(), Some("No free/busy data"));
         assert!(answers[1].working_hours.is_none());
         assert!(parse_schedule(&serde_json::json!({})).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod fault_tests {
+    use super::*;
+    use crate::calendar_write::EventDraft;
+    use crate::providers::test_server::{FakeServer, Reply};
+
+    fn draft() -> EventDraft {
+        EventDraft {
+            subject: "Standup".into(),
+            body_text: String::new(),
+            start: chrono::NaiveDate::from_ymd_opt(2026, 11, 16).unwrap().and_hms_opt(9, 0, 0).unwrap(),
+            end: chrono::NaiveDate::from_ymd_opt(2026, 11, 16).unwrap().and_hms_opt(9, 30, 0).unwrap(),
+            time_zone: "UTC".into(),
+            is_all_day: false,
+            location: None,
+            attendees: vec![],
+            reminder_minutes: None,
+            show_as: "busy".into(),
+            recurrence: None,
+            transaction_id: "tx-1".into(),
+            online_provider: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn update_sends_if_match_to_patch_and_412_is_a_precondition_failure() {
+        let srv = FakeServer::start(vec![Reply::new(412, r#"{"error":{"code":"PreconditionFailed"}}"#)]);
+        let p = GraphCalendarProvider::with_base_override(&srv.base());
+        let err = p.update_event("AAMkAB", &draft(), false, Some("W/\"ck\"")).await.unwrap_err();
+        assert!(crate::providers::is_precondition_failed(&err), "{}", err);
+        let seen = srv.requests();
+        assert_eq!(seen.len(), 1, "412 is not retried");
+        assert_eq!(seen[0].method, "PATCH");
+        assert_eq!(seen[0].path, "/v1.0/me/events/AAMkAB");
+        assert_eq!(seen[0].header("if-match"), Some("W/\"ck\""));
+    }
+
+    #[tokio::test]
+    async fn update_with_matching_version_succeeds_and_sends_if_match() {
+        let srv = FakeServer::start(vec![Reply::new(200, r#"{"id":"AAMkAB","webLink":"x","type":"singleInstance"}"#)]);
+        let p = GraphCalendarProvider::with_base_override(&srv.base());
+        let created = p.update_event("AAMkAB", &draft(), false, Some("W/\"ck\"")).await.unwrap();
+        assert_eq!(created.id, "AAMkAB");
+        assert_eq!(srv.requests()[0].header("if-match"), Some("W/\"ck\""));
+    }
+
+    #[tokio::test]
+    async fn delete_of_an_already_missing_event_counts_as_done() {
+        let srv = FakeServer::start(vec![Reply::new(404, r#"{"error":{"code":"ErrorItemNotFound"}}"#)]);
+        let p = GraphCalendarProvider::with_base_override(&srv.base());
+        p.delete_event("AAMkAB", Some("W/\"ck\"")).await.unwrap();
+        let seen = srv.requests();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].method, "DELETE");
+        assert_eq!(seen[0].path, "/v1.0/me/events/AAMkAB");
+        assert_eq!(seen[0].header("if-match"), Some("W/\"ck\""));
     }
 }

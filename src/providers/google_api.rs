@@ -28,6 +28,12 @@ pub(crate) fn wait_before_retry(status: u16, retry_after: Option<Duration>, atte
 pub struct GoogleApi {
     auth: Mutex<AuthManager>,
     client: reqwest::Client,
+    /// Scheme+host replacement for request URLs. Always `None` in production; only the
+    /// `#[cfg(test)]` constructor sets it (see `rebase_url`).
+    base_override: Option<String>,
+    /// Fixed access token for tests, so no test reads the keyring or refreshes a grant.
+    #[cfg(test)]
+    test_token: Option<String>,
 }
 
 /// Whether a failed response is worth retrying, from its status and error body.
@@ -52,10 +58,30 @@ pub(crate) fn hint_for(status: u16, body: &str) -> &'static str {
 
 impl GoogleApi {
     pub fn new(account_id: &str) -> Self {
-        Self { auth: Mutex::new(AuthManager::for_account(account_id)), client: super::http_client() }
+        Self {
+            auth: Mutex::new(AuthManager::for_account(account_id)),
+            client: super::http_client(),
+            base_override: None,
+            #[cfg(test)]
+            test_token: None,
+        }
+    }
+
+    /// Test-only: requests go to `base` (e.g. a fake server) and use a fixed token.
+    #[cfg(test)]
+    pub fn with_base_override(account_id: &str, base: &str) -> Self {
+        Self {
+            base_override: Some(base.to_string()),
+            test_token: Some(TEST_TOKEN.to_string()),
+            ..Self::new(account_id)
+        }
     }
 
     async fn token(&self) -> Result<String> {
+        #[cfg(test)]
+        if let Some(t) = &self.test_token {
+            return Ok(t.clone());
+        }
         let mut auth = self.auth.lock().await;
         let token = auth
             .get_token()
@@ -227,6 +253,8 @@ impl GoogleApi {
     }
 
     async fn send_if(&self, method: reqwest::Method, url: &str, body: Option<&serde_json::Value>, if_match: Option<&str>) -> Result<serde_json::Value> {
+        let rebased = super::rebase_url(url, self.base_override.as_deref());
+        let url: &str = &rebased;
         let if_match = if_match.map(super::clean_header_value).filter(|v| !v.is_empty());
         let mut attempt = 0;
         let mut auth = AuthRetry::default();
@@ -278,8 +306,86 @@ impl GoogleApi {
 }
 
 #[cfg(test)]
+const TEST_TOKEN: &str = "test-token";
+
+#[cfg(test)]
 mod tests {
     use super::*;
+    use crate::providers::test_server::{FakeServer, Reply};
+
+    const EVENTS: &str = "https://www.googleapis.com/calendar/v3/calendars/primary/events";
+
+    fn api_for(srv: &FakeServer) -> GoogleApi {
+        GoogleApi::with_base_override("test-account", &srv.base())
+    }
+
+    #[tokio::test]
+    async fn a_401_refreshes_the_token_and_resends_once() {
+        let srv = FakeServer::start(vec![Reply::new(401, "{}"), Reply::new(200, r#"{"ok":true}"#)]);
+        let v = api_for(&srv).get(&format!("{}/abc", EVENTS)).await.unwrap();
+        assert_eq!(v["ok"], true);
+        let seen = srv.requests();
+        assert_eq!(seen.len(), 2, "one resend, no loop");
+        assert_eq!(seen[1].path, "/calendar/v3/calendars/primary/events/abc");
+        assert_eq!(seen[0].header("authorization"), Some("Bearer test-token"));
+    }
+
+    #[tokio::test]
+    async fn a_second_401_fails_after_two_requests() {
+        let srv = FakeServer::start(vec![Reply::new(401, "{}"), Reply::new(401, "{}"), Reply::new(200, "{}")]);
+        let err = api_for(&srv).get(EVENTS).await.unwrap_err();
+        assert!(err.to_string().contains("401"), "{}", err);
+        assert_eq!(srv.requests().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_429_waits_for_retry_after_then_succeeds() {
+        let srv = FakeServer::start(vec![
+            Reply::new(429, r#"{"error":"rate"}"#).header("Retry-After", "1"),
+            Reply::new(200, "{}"),
+        ]);
+        let started = std::time::Instant::now();
+        api_for(&srv).get(EVENTS).await.unwrap();
+        assert!(started.elapsed() >= Duration::from_secs(1), "waited {:?}", started.elapsed());
+        assert_eq!(srv.requests().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_503_is_retried_after_backoff() {
+        // No Retry-After: the first backoff step is 1 s.
+        let srv = FakeServer::start(vec![Reply::new(503, "{}"), Reply::new(200, "{}")]);
+        api_for(&srv).get(EVENTS).await.unwrap();
+        assert_eq!(srv.requests().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_410_fails_at_once_without_retry() {
+        let srv = FakeServer::start(vec![Reply::new(410, r#"{"error":"gone"}"#), Reply::new(200, "{}")]);
+        let err = api_for(&srv).get(EVENTS).await.unwrap_err();
+        assert!(err.to_string().contains("410"), "{}", err);
+        assert_eq!(srv.requests().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn if_match_is_sent_and_412_is_a_precondition_failure() {
+        let srv = FakeServer::start(vec![Reply::new(412, r#"{"error":"stale"}"#)]);
+        let body = serde_json::json!({ "summary": "x" });
+        let err = api_for(&srv).patch_if(&format!("{}/abc", EVENTS), &body, Some("\"v1\"")).await.unwrap_err();
+        assert!(crate::providers::is_precondition_failed(&err), "{}", err);
+        let seen = srv.requests();
+        assert_eq!(seen.len(), 1, "412 is not retried");
+        assert_eq!(seen[0].method, "PATCH");
+        assert_eq!(seen[0].header("if-match"), Some("\"v1\""));
+    }
+
+    #[test]
+    fn rebase_keeps_path_and_query_and_is_identity_without_base() {
+        assert_eq!(super::super::rebase_url(EVENTS, None), EVENTS);
+        assert_eq!(
+            super::super::rebase_url("https://gmail.googleapis.com/gmail/v1/users/me/x?q=1", Some("http://127.0.0.1:9/")),
+            "http://127.0.0.1:9/gmail/v1/users/me/x?q=1"
+        );
+    }
 
     #[test]
     fn only_transient_failures_are_retried() {
