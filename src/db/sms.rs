@@ -90,7 +90,7 @@ pub fn address_keys(addresses: &[String]) -> Vec<String> {
 /// Stand-in thread id for a conversation the phone has not reported yet: negative, stable per recipient set.
 pub fn pending_thread_id(addresses: &[String]) -> i64 {
     let mut h: u64 = 0xcbf29ce484222325;
-    for k in address_keys(addresses) { for b in k.bytes().chain([b'|']) { h = (h ^ b as u64).wrapping_mul(0x100000001b3); } }
+    for k in address_keys(addresses) { for b in k.bytes().chain(*b"|") { h = (h ^ b as u64).wrapping_mul(0x100000001b3); } }
     -(((h >> 24) & 0xff_ffff_ffff) as i64 + 1)
 }
 

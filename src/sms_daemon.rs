@@ -674,6 +674,7 @@ mod tests {
     }
     use zbus::zvariant::StructureBuilder;
 
+    #[allow(clippy::too_many_arguments)] // test helper: mirrors the 9 fields of a KDE Connect message tuple
     fn tuple(event: i32, body: &str, addrs: &[&str], date: i64, typ: i32, read: i32, thread: i64, uid: i32, atts: usize) -> Value<'static> {
         let mut addr_arr = Array::new(&zbus::zvariant::Signature::try_from("(s)").unwrap());
         for a in addrs {

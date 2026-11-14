@@ -88,7 +88,7 @@ fn open_db(c: &Ctx) -> Result<Database, String> {
 
 /// A write to the People view's address book: opens the account's database, runs `f` on it, wakes the
 /// outbox worker. `account` is the account the write belongs to.
-fn contacts_write_call(config_dir: &PathBuf, account: &str, f: impl FnOnce(&Database) -> Value) -> String {
+fn contacts_write_call(config_dir: &std::path::Path, account: &str, f: impl FnOnce(&Database) -> Value) -> String {
     if account.is_empty() {
         return err_json("no contact account selected");
     }
@@ -106,7 +106,7 @@ fn contacts_write_call(config_dir: &PathBuf, account: &str, f: impl FnOnce(&Data
 }
 
 /// The account a contact belongs to (its row says so).
-fn account_of_contact(config_dir: &PathBuf, id: &str) -> String {
+fn account_of_contact(config_dir: &std::path::Path, id: &str) -> String {
     let path = config_dir.join("messages.db");
     Database::open(path.to_str().unwrap_or("messages.db"))
         .ok()
@@ -221,7 +221,7 @@ fn photo_cache_file(id: &str) -> PathBuf {
 }
 
 /// The photo's path on disk; a fetch in the background the first time (`pending`).
-fn contact_photo_path(config_dir: &PathBuf, id: &str) -> String {
+fn contact_photo_path(config_dir: &std::path::Path, id: &str) -> String {
     let file = photo_cache_file(id);
     let none_marker = file.with_extension("none");
     let fresh = |p: &PathBuf| std::fs::metadata(p).and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).map(|a| a < std::time::Duration::from_secs(24 * 3600)).unwrap_or(false);
@@ -266,7 +266,7 @@ fn photo_set(c: &Ctx) -> Response {
     Response::json(set_photo(c.config_dir, req["id"].as_str().unwrap_or(""), req["handle"].as_str().unwrap_or("")))
 }
 
-fn set_photo(config_dir: &PathBuf, id: &str, handle: &str) -> String {
+fn set_photo(config_dir: &std::path::Path, id: &str, handle: &str) -> String {
     let Some(path) = crate::app::files::resolve(crate::app::files::Purpose::Photo, handle) else {
         return err_json("pick the picture again");
     };
@@ -311,7 +311,7 @@ fn addresses(c: &Ctx) -> Response {
     Response::json(addresses_json(c.config_dir))
 }
 
-fn addresses_json(config_dir: &PathBuf) -> String {
+fn addresses_json(config_dir: &std::path::Path) -> String {
     let cache = ADDRESS_CACHE.get_or_init(|| std::sync::Mutex::new(None));
     if let Some((at, body)) = cache.lock().ok().and_then(|g| g.clone()) {
         if at.elapsed() < std::time::Duration::from_secs(60) {
@@ -495,7 +495,7 @@ fn folder_call(c: &Ctx, action: &str) -> Response {
     Response::json(contacts_folder_call(c.config_dir, action, &req))
 }
 
-fn contacts_folder_call(config_dir: &PathBuf, action: &str, req: &Value) -> String {
+fn contacts_folder_call(config_dir: &std::path::Path, action: &str, req: &Value) -> String {
     let account = req["account_id"].as_str().unwrap_or("").to_string();
     if account.is_empty() {
         return err_json("no contact account selected");

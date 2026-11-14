@@ -1330,7 +1330,7 @@ mod tests {
         assert_eq!(r.last().unwrap().1, 9_999_999);
         assert!(r.windows(2).all(|w| w[1].0 == w[0].1 + 1));
         assert_eq!(UPLOAD_CHUNK % 327_680, 0);
-        assert!(UPLOAD_CHUNK <= 4 * 1024 * 1024);
+        const { assert!(UPLOAD_CHUNK <= 4 * 1024 * 1024) };
     }
 
     // ---- provider limits (phase 0 measured: Gmail upload endpoints stop at 36,700,160 bytes)

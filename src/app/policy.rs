@@ -276,9 +276,7 @@ mod tests {
 
     #[test]
     fn sanitize_drops_junk_and_clamps() {
-        let mut s = McpSettings::default();
-        s.ask_timeout_secs = 0;
-        s.recipients = "everyone".into();
+        let mut s = McpSettings { ask_timeout_secs: 0, recipients: "everyone".into(), ..Default::default() };
         s.domains.insert("mail".into(), "read".into());
         s.domains.insert("nonsense".into(), "write".into());
         s.domains.insert("sms".into(), "banana".into());

@@ -143,7 +143,7 @@ fn resolve_qml_dir() -> PathBuf {
 /// The UI is built on the Omarchy shell kit (`qs.Commons`, `qs.Ui`). Quickshell
 /// resolves `qs.*` relative to the config root, so link the installed kit into
 /// the QML dir (idempotent; the links are git-ignored).
-fn ensure_omarchy_kit(qml_dir: &PathBuf) -> std::io::Result<()> {
+fn ensure_omarchy_kit(qml_dir: &std::path::Path) -> std::io::Result<()> {
     use std::os::unix::fs::symlink;
     for name in ["Commons", "Ui"] {
         let target = PathBuf::from(OMARCHY_KIT_DIR).join(name);
@@ -163,7 +163,7 @@ fn ensure_omarchy_kit(qml_dir: &PathBuf) -> std::io::Result<()> {
 }
 
 /// Launch the QML application window (Quickshell used as a standalone Qt Quick host).
-fn launch_qml_app(config_dir: &PathBuf, token: &str) {
+fn launch_qml_app(config_dir: &std::path::Path, token: &str) {
     use std::process::{Command, Stdio};
 
     info!("Launching Quickshell UI...");
@@ -223,7 +223,7 @@ fn launch_qml_app(config_dir: &PathBuf, token: &str) {
     }
 }
 
-fn initialize_app(config_dir: &PathBuf, db_path: &str, settings_path: &str, listener: TcpListener, port: u16, token: String) -> omalook::errors::Result<()> {
+fn initialize_app(config_dir: &std::path::Path, db_path: &str, settings_path: &str, listener: TcpListener, port: u16, token: String) -> omalook::errors::Result<()> {
     // R3.9: before anything opens the mail cache, rebuild it if the user asked or it cannot be read;
     // a full quick_check runs in the background a minute after start-up.
     let mail_db = config_dir.join("messages.db");
@@ -231,7 +231,7 @@ fn initialize_app(config_dir: &PathBuf, db_path: &str, settings_path: &str, list
     omalook::db_health::check_in_background(mail_db, std::time::Duration::from_secs(60));
 
     // Initialize database
-    let db = {
+    let _db = {
         let _t = omalook::perf::span("Database::open (schema init)");
         Rc::new(Database::open(db_path)?)
     };
@@ -257,22 +257,22 @@ fn initialize_app(config_dir: &PathBuf, db_path: &str, settings_path: &str, list
     }
     
     // Start background thread to watch for device flow trigger file
-    let config_dir_clone = config_dir.clone();
+    let config_dir_clone = config_dir.to_path_buf();
     std::thread::spawn(move || {
         watch_for_device_flow_trigger(&config_dir_clone);
     });
 
-    let config_dir_sms = config_dir.clone();
+    let config_dir_sms = config_dir.to_path_buf();
     // MCP listener: opens its own port only while MCP is on and "Keep running in background" is on.
     omalook::mcp::server::start(config_dir);
     // Start HTTP trigger server (QML posts to this to trigger auth/logout)
-    let config_dir_http = config_dir.clone();
+    let config_dir_http = config_dir.to_path_buf();
     std::thread::spawn(move || {
         start_http_trigger_server(&config_dir_http, listener, port, token);
     });
     
     // Pre-render: mail from "always HTML" senders is drawn ahead of time into the render cache (OL-028).
-    let config_dir_render = config_dir.clone();
+    let config_dir_render = config_dir.to_path_buf();
     omalook::supervisor::spawn_supervised("prerender", None, || false, move || {
         let db = config_dir_render.join("messages.db");
         std::thread::sleep(std::time::Duration::from_secs(45));      // let the first sync and the window settle
@@ -297,7 +297,7 @@ fn initialize_app(config_dir: &PathBuf, db_path: &str, settings_path: &str, list
 }
 
 /// Watch for device flow and logout trigger files
-fn watch_for_device_flow_trigger(config_dir: &PathBuf) {
+fn watch_for_device_flow_trigger(config_dir: &std::path::Path) {
     use std::fs;
     use std::thread;
     use std::time::Duration;
@@ -354,7 +354,7 @@ fn render_helper_path() -> PathBuf { resolve_qml_dir().join("..").join("bin").jo
 /// The UI's backend HTTP server on 127.0.0.1:27182 (`OMALOOK_PORT` overrides).
 /// Every UI request comes from the one QML client, `qml/state/Backend.qml`.
 /// `listener` was bound by `main` (which exits when it cannot bind); `token` is this start's session token.
-fn start_http_trigger_server(config_dir: &PathBuf, listener: TcpListener, port: u16, token: String) {
+fn start_http_trigger_server(config_dir: &std::path::Path, listener: TcpListener, port: u16, token: String) {
     // OMALOOK_PORT is for tests that run a second instance beside the real one; the UI's
     // Backend.qml reads the same variable, so a scratch UI talks only to its own backend.
     info!("🌐 HTTP server listening on http://127.0.0.1:{}", port);
@@ -363,7 +363,7 @@ fn start_http_trigger_server(config_dir: &PathBuf, listener: TcpListener, port: 
 
     // One thread per connection (at most http::MAX_CONNECTIONS at once): the request is read there,
     // with timeouts and size caps, so an idle or slow client no longer freezes the other routes (SEC-004).
-    let config_dir = Arc::new(config_dir.clone());
+    let config_dir = Arc::new(config_dir.to_path_buf());
     for stream in listener.incoming() {
         match stream {
             Ok(mut stream) => {

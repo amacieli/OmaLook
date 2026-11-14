@@ -10,7 +10,7 @@
 //!   * X-Original-From, Resent-From / Resent-To / Resent-Date: who it came from and who passed it on;
 //!   * the original's DKIM / ARC / Received / Return-Path and receipt requests are dropped (a DKIM signature
 //!     would fail after the changes and a receipt would go to the author).
-//! The recipient therefore sees a message from the user with the original's subject, body and files.
+//!     The recipient therefore sees a message from the user with the original's subject, body and files.
 
 use crate::compose::{header_value_safe, is_valid_email, Address};
 
@@ -65,7 +65,7 @@ fn logical_headers(head: &[u8]) -> Vec<(String, Vec<u8>)> {
 /// Value of a header, unfolded, as text.
 fn value(h: &(String, Vec<u8>)) -> String {
     let t = String::from_utf8_lossy(&h.1).to_string();
-    let v = t.splitn(2, ':').nth(1).unwrap_or("").to_string();
+    let v = t.split_once(':').map(|x| x.1).unwrap_or("").to_string();
     v.replace("\r\n", "").trim().to_string()
 }
 

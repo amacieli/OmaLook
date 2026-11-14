@@ -32,7 +32,7 @@ pub fn with_preset(current: &McpSettings, name: &str) -> Option<McpSettings> {
 
 /// Which preset the domain levels and tool overrides add up to, or "custom".
 pub fn preset_of(s: &McpSettings) -> &'static str {
-    PRESETS.iter().copied().find(|p| with_preset(s, p).map_or(false, |x| x.domains == normalized_domains(s) && s.tools.is_empty())).unwrap_or("custom")
+    PRESETS.iter().copied().find(|p| with_preset(s, p).is_some_and(|x| x.domains == normalized_domains(s) && s.tools.is_empty())).unwrap_or("custom")
 }
 
 /// Domain levels with every domain present (missing = off), as text.

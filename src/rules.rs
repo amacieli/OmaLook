@@ -448,14 +448,12 @@ mod tests {
 
     #[test]
     fn organise_groups_by_tag_in_rule_order_and_keeps_the_rest_apart() {
-        let rules: Vec<RuleSummary> = vec![
-            tag_rule("r3", 3, json!({ "senderContains": ["c"] }), "SaintLucia", true),
+        let rules: Vec<RuleSummary> = [tag_rule("r3", 3, json!({ "senderContains": ["c"] }), "SaintLucia", true),
             tag_rule("r1", 1, json!({ "senderContains": ["a"] }), "SaintLucia", true),
             tag_rule("r2", 2, json!({ "senderContains": ["b"] }), "Family", true),
             tag_rule("r4", 4, json!({ "senderContains": ["d"] }), "saintlucia", true),
             json!({ "id": "cp", "sequence": 9, "isReadOnly": true, "conditions": {}, "actions": {} }),
-            json!({ "id": "del", "sequence": 8, "conditions": { "bodyContains": ["x"] }, "actions": { "delete": true } }),
-        ].iter().map(summarize).collect();
+            json!({ "id": "del", "sequence": 8, "conditions": { "bodyContains": ["x"] }, "actions": { "delete": true } })].iter().map(summarize).collect();
         let o = organise(rules);
         assert_eq!(o.groups.iter().map(|g| (g.tag.as_str(), g.rules.len())).collect::<Vec<_>>(), vec![("SaintLucia", 3), ("Family", 1)]);
         assert_eq!(o.groups[0].rules.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), vec!["r1", "r3", "r4"], "rule order within a tag; spelling variants group together");

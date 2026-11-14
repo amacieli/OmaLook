@@ -168,7 +168,7 @@ pub fn query_value(target: &str, key: &str) -> Option<String> {
     target
         .split_once('?')
         .and_then(|(_, q)| {
-            q.split(|c| c == ' ' || c == '\r' || c == '\n').next().and_then(|q| {
+            q.split([' ', '\r', '\n']).next().and_then(|q| {
                 q.split('&').find_map(|kv| kv.strip_prefix(needle.as_str()).map(url_decode))
             })
         })

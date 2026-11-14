@@ -300,7 +300,7 @@ fn resolve_date(v: &str, now: DateTime<Utc>) -> Result<(String, Option<String>),
     }
     if let Some(unit) = low.chars().last().filter(|c| matches!(c, 'd' | 'w' | 'm' | 'y')) {
         if let Ok(n) = low[..low.len() - 1].parse::<i64>() {
-            if n < 0 || n > 100_000 {
+            if !(0..=100_000).contains(&n) {
                 return Err(format!("bad date \"{v}\""));
             }
             let days = match unit {

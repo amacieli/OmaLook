@@ -61,10 +61,7 @@ fn per_row_skip_inside_one_transaction_commits_the_rest_of_the_batch() {
     let stored = db.in_transaction(|| {
         let mut ok = 0usize;
         for c in &batch {
-            match db.upsert_contact(c) {
-                Ok(()) => ok += 1,
-                Err(_) => {}
-            }
+            if let Ok(()) = db.upsert_contact(c) { ok += 1 }
         }
         Ok(ok)
     }).unwrap();

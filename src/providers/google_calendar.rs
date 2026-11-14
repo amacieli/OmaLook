@@ -8,7 +8,7 @@
 //!   `occurrence` rows (`calendarView` on Graph).
 //! * Times are converted to local wall-clock `YYYY-MM-DDTHH:MM:SS` in this machine's zone;
 //!   all-day events keep their dates (end exclusive on both services).
-//! Google event ids are only unique per calendar, so ids are stored as `<account id>:<id>`.
+//!   Google event ids are only unique per calendar, so ids are stored as `<account id>:<id>`.
 
 use super::google_api::GoogleApi;
 use crate::accounts::scoped;

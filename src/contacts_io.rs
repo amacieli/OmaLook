@@ -338,12 +338,12 @@ pub fn duplicate_groups(contacts: &[(String, Value)]) -> Vec<Vec<String>> {
     }
     // union the groups that share a member
     let mut group_of: Vec<usize> = (0..contacts.len()).collect();
-    fn find(g: &mut Vec<usize>, x: usize) -> usize { let mut r = x; while g[r] != r { r = g[r]; } let mut y = x; while g[y] != r { let n = g[y]; g[y] = r; y = n; } r }
+    fn find(g: &mut [usize], x: usize) -> usize { let mut r = x; while g[r] != r { r = g[r]; } let mut y = x; while g[y] != r { let n = g[y]; g[y] = r; y = n; } r }
     for ids in by.values().filter(|v| v.len() > 1) {
         for w in ids.windows(2) { let (a, b) = (find(&mut group_of, w[0]), find(&mut group_of, w[1])); if a != b { group_of[b] = a; } }
     }
     let mut groups: BTreeMap<usize, Vec<String>> = BTreeMap::new();
-    for i in 0..contacts.len() { let r = find(&mut group_of, i); groups.entry(r).or_default().push(contacts[i].0.clone()); }
+    for (i, c) in contacts.iter().enumerate() { let r = find(&mut group_of, i); groups.entry(r).or_default().push(c.0.clone()); }
     let mut out: Vec<Vec<String>> = groups.into_values().filter(|g| g.len() > 1).collect();
     out.sort_by_key(|g| contacts.iter().position(|(id, _)| id == &g[0]).unwrap_or(0));
     out
@@ -433,7 +433,7 @@ mod tests {
     #[test]
     fn csv_round_trips_and_keeps_commas_quotes_and_newlines() {
         let c = ada();
-        let csv = to_csv(&[c.clone()]);
+        let csv = to_csv(std::slice::from_ref(&c));
         assert!(csv.starts_with("First Name,Middle Name,Last Name,"));
         let got = parse_csv(&csv);
         assert_eq!(got.len(), 1);

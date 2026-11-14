@@ -134,11 +134,10 @@ fn sms_threads(c: &Ctx) -> Response {
                         let body = hits.get(&(t.device_id.clone(), t.thread_id));
                         if by_name || by_number {
                             v["match"] = serde_json::json!(if by_name { "name" } else { "number" });
-                        } else if let Some(b) = body {
+                        } else {
+                            let b = body?;
                             v["match"] = serde_json::json!("text");
                             v["snippet"] = serde_json::json!(sms_snippet(b, &query));
-                        } else {
-                            return None;
                         }
                         if by_name || by_number {
                             if let Some(b) = body {

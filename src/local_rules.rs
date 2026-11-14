@@ -6,11 +6,11 @@
 //!   - inside one predicate: ANY of its values matches;
 //!   - `exceptions`: the rule is skipped if ANY of these predicates matches (same shape);
 //!   - `actions`: tags to add, and `stop` (stop processing more rules).
-//! No groups, no parentheses, no NOT, no OR across different predicates. A rule is therefore always
-//! writable to Exchange unchanged (`to_graph`) and any Exchange rule made of supported predicates can be read
-//! back (`from_graph`); a rule using anything else is refused, never approximated, so a local result can
-//! never differ from what the server would do. (The AND/OR semantics above are documented for Exchange
-//! mail-flow rules; for inbox rules they match Outlook's behaviour but are unverified by a live test.)
+//!     No groups, no parentheses, no NOT, no OR across different predicates. A rule is therefore always
+//!     writable to Exchange unchanged (`to_graph`) and any Exchange rule made of supported predicates can be read
+//!     back (`from_graph`); a rule using anything else is refused, never approximated, so a local result can
+//!     never differ from what the server would do. (The AND/OR semantics above are documented for Exchange
+//!     mail-flow rules; for inbox rules they match Outlook's behaviour but are unverified by a live test.)
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};

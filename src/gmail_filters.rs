@@ -10,10 +10,10 @@
 //!   - Filters have no "stop processing": every filter that matches applies. A rule with `stop` is refused.
 //!   - `addLabelIds` takes label ids, and one label per filter here (one tag per rule).
 //!   - Not expressible: importance, categories (tags already on the message), `hasAttachments=false`.
-//! Edit is impossible on Gmail (PUT and PATCH both 404, phase 0), so an edit is delete + create; the caller
-//! creates first, then deletes the old one, so a failure never leaves the mailbox without the rule.
-//! UNVERIFIED LIVE: that a delivered message actually gets the label, and how Gmail matches `@domain.tld`
-//! inside `from` (phase 0 only proved filter create/get/delete and the label round trip).
+//!     Edit is impossible on Gmail (PUT and PATCH both 404, phase 0), so an edit is delete + create; the caller
+//!     creates first, then deletes the old one, so a failure never leaves the mailbox without the rule.
+//!     UNVERIFIED LIVE: that a delivered message actually gets the label, and how Gmail matches `@domain.tld`
+//!     inside `from` (phase 0 only proved filter create/get/delete and the label round trip).
 
 use crate::local_rules::{Actions, LocalRule, Pred};
 use serde_json::{json, Map, Value};
@@ -268,7 +268,7 @@ pub fn fingerprint(filter: &Value) -> String {
 /// After a create: the one new filter the server holds, found by effect, is the one we wrote.
 pub fn verify_create(before: &[Value], after: &[Value], body: &Value) -> Result<String, String> {
     let known: Vec<&str> = before.iter().filter_map(|f| f["id"].as_str()).collect();
-    let fresh: Vec<&Value> = after.iter().filter(|f| f["id"].as_str().map_or(false, |i| !known.contains(&i))).collect();
+    let fresh: Vec<&Value> = after.iter().filter(|f| f["id"].as_str().is_some_and(|i| !known.contains(&i))).collect();
     match fresh.as_slice() {
         [one] if same_effect(one, body) => Ok(one["id"].as_str().unwrap_or("").to_string()),
         [one] => Err(format!("the server stored a different filter than asked: {}", one["criteria"])),
@@ -398,11 +398,11 @@ mod tests {
         let body = json!({ "criteria": { "from": "A@x.com" }, "action": { "addLabelIds": ["Label_7"] } });
         let old = json!({ "id": "1", "criteria": { "from": "z@z.com" }, "action": { "addLabelIds": ["Label_7"] } });
         let mut stored = body.clone(); stored["id"] = json!("2"); stored["criteria"]["from"] = json!("a@x.com");
-        assert_eq!(verify_create(&[old.clone()], &[old.clone(), stored.clone()], &body).unwrap(), "2");
-        assert!(verify_create(&[old.clone()], &[old.clone()], &body).is_err());
+        assert_eq!(verify_create(std::slice::from_ref(&old), &[old.clone(), stored.clone()], &body).unwrap(), "2");
+        assert!(verify_create(std::slice::from_ref(&old), std::slice::from_ref(&old), &body).is_err());
         let mut other = stored.clone(); other["criteria"]["from"] = json!("q@q.com");
-        assert!(verify_create(&[old.clone()], &[old.clone(), other], &body).is_err());
-        assert!(verify_delete(&[old.clone(), stored.clone()], &[old.clone()], "2").is_ok());
+        assert!(verify_create(std::slice::from_ref(&old), &[old.clone(), other], &body).is_err());
+        assert!(verify_delete(&[old.clone(), stored.clone()], std::slice::from_ref(&old), "2").is_ok());
         assert!(verify_delete(&[old.clone(), stored.clone()], &[old.clone(), stored.clone()], "2").is_err());
         assert!(verify_delete(&[old.clone(), stored.clone()], &[], "2").is_err());
     }

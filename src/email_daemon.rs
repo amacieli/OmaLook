@@ -109,7 +109,7 @@ impl EmailDaemon {
         let folder_interval = Duration::from_secs(self.config.folder_sync_interval_secs);
         let mut last_folder_sync: Option<Instant> = None;
         let mut last_message_sync: Option<Instant> = None;
-        let mut message_interval = self.poll_interval();
+        let mut message_interval;
         // Last `mail_sync_serial` this loop has acted on; a change means the user asked for mail now.
         let mut seen_mail_sync = sync_state::mail_sync_serial();
 
@@ -290,7 +290,7 @@ impl EmailDaemon {
                 match self.apply_history(&start).await? {
                     HistoryOutcome::Applied(n) => {
                         sync_state::open_gate(self.db.account_id());
-                        if cycle % 5 == 0 {
+                        if cycle.is_multiple_of(5) {
                             self.safety_net_reconcile(&folders).await;
                         }
                         return Ok(n);
@@ -311,7 +311,7 @@ impl EmailDaemon {
             // Deletions made on other clients: every 5th cycle (and the first), ids only.
             for folder in &folders {
                 self.reconcile_read_state(&folder.id, &folder.display_name).await;
-                if cycle % 5 == 0 {
+                if cycle.is_multiple_of(5) {
                     self.reconcile_deleted(&folder.id, &folder.display_name).await;
                 }
             }

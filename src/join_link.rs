@@ -17,9 +17,7 @@ pub fn provider_of(url: &str) -> Option<&'static str> {
     let host = host.split(':').next().unwrap_or("").to_ascii_lowercase();
     let path = path.to_ascii_lowercase();
     let on = |d: &str| host == d || host.ends_with(&format!(".{}", d));
-    if host == "teams.microsoft.com" && path.starts_with("l/meetup-join") {
-        Some("teams")
-    } else if host == "teams.live.com" && path.starts_with("meet") {
+    if (host == "teams.microsoft.com" && path.starts_with("l/meetup-join")) || (host == "teams.live.com" && path.starts_with("meet")) {
         Some("teams")
     } else if on("zoom.us") && (path.starts_with("j/") || path.starts_with("my/") || path.starts_with("wc/")) {
         Some("zoom")
@@ -44,7 +42,7 @@ fn https_urls(text: &str) -> Vec<String> {
             .find(|c: char| c.is_whitespace() || matches!(c, '<' | '>' | '"' | '\'' | ')' | ']' | '}'))
             .map(|n| start + n)
             .unwrap_or(text.len());
-        let url = text[start..end].trim_end_matches(|c: char| matches!(c, '.' | ',' | ';' | ':' | '!' | '?'));
+        let url = text[start..end].trim_end_matches(['.', ',', ';', ':', '!', '?']);
         if url.len() > "https://".len() {
             out.push(url.to_string());
         }

@@ -357,7 +357,7 @@ mod tests {
 
         dm.sync_full_window(today, 1, 1).await.unwrap();           // narrowed: 2028 is now outside
         assert_eq!(dm.db.get_events_for_month("2028-10").unwrap().len(), 0, "outside the new window");
-        assert!(dm.db.get_events_for_month("2027-03").unwrap().len() > 0, "inside the new window");
+        assert!(!dm.db.get_events_for_month("2027-03").unwrap().is_empty(), "inside the new window");
 
         dm.sync_full_window(today, 3, 3).await.unwrap();           // widened again
         assert_eq!(dm.db.get_events_for_month("2028-10").unwrap().len(), wide);
@@ -370,7 +370,7 @@ mod tests {
         dm.sync_full_window(today, 3, 3).await.unwrap();
         *p.fail.lock().unwrap() = true;
         assert!(dm.sync_full_window(today, 1, 1).await.is_err());
-        assert!(dm.db.get_events_for_month("2028-10").unwrap().len() > 0, "narrowing must wait for a successful fetch");
+        assert!(!dm.db.get_events_for_month("2028-10").unwrap().is_empty(), "narrowing must wait for a successful fetch");
     }
 
     #[test]

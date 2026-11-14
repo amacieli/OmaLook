@@ -47,7 +47,7 @@ pub fn route_name(request_line: &str) -> String {
     if !target.starts_with('/') {
         return format!("{} ?", method);
     }
-    let path = target.split(|c| c == '?' || c == '#').next().unwrap_or("");
+    let path = target.split(['?', '#']).next().unwrap_or("");
     let mut route = String::new();
     for seg in path.split('/').skip(1) {
         route.push('/');

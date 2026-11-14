@@ -362,6 +362,12 @@ pub struct GoogleRefresher {
     config_dir: PathBuf,
 }
 
+impl Default for GoogleRefresher {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl GoogleRefresher {
     pub fn new() -> Self {
         Self { config_dir: default_config_dir() }

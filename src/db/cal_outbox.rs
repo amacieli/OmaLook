@@ -6,6 +6,7 @@ impl Database {
 
     // ── calendar outbox (same claim / undo discipline as the mail outbox) ───────────────────────
 
+    #[allow(clippy::too_many_arguments)] // flat column list of one outbox row; callers pass each field by name
     pub fn cal_outbox_enqueue(&self, id: &str, account_id: &str, op: &str, payload_json: &str, attendees: usize, tx: &str, due_ms: i64) -> Result<()> {
         let now = Self::now_ms();
         self.conn.execute(

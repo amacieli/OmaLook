@@ -85,6 +85,12 @@ fn tag_map(f: &Value) -> std::collections::HashMap<String, String> {
 }
 
 #[cfg(test)]
+impl Database {
+    /// Raw connection for tests in other modules that need to seed rows.
+    pub(crate) fn conn_for_tests(&self) -> &rusqlite::Connection { &self.conn }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::local_rules::{Actions, Pred};
@@ -160,10 +166,4 @@ mod tests {
         let s = d.filter_summaries("g1");
         assert_eq!((s.len(), s[0].editable), (1, false));
     }
-}
-
-#[cfg(test)]
-impl Database {
-    /// Raw connection for tests in other modules that need to seed rows.
-    pub(crate) fn conn_for_tests(&self) -> &rusqlite::Connection { &self.conn }
 }

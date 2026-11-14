@@ -247,7 +247,7 @@ fn messages_list(c: &Ctx) -> Response {
 /// Invitation lookup of a message as JSON (see `InviteInfo::to_json`), or `{"error":"..."}`.
 /// Ordinary mail is cached for good; calendar mail for a few minutes, because the answer can
 /// change elsewhere (Outlook, phone) and the event can be cancelled or deleted.
-fn invite_info_json(config_dir: &PathBuf, id: &str) -> String {
+fn invite_info_json(config_dir: &std::path::Path, id: &str) -> String {
     use crate::invites::{cache_ttl_secs, InviteInfo};
     let err = |m: &str| format!("{{\"error\":{}}}", serde_json::to_string(m).unwrap());
     if id.is_empty() {
@@ -294,7 +294,7 @@ fn invite_info_json(config_dir: &PathBuf, id: &str) -> String {
 /// List lookup of a message for reply-to-list (OL-053): `{is_list, list_id, post, no_post}` plus a `refusal`
 /// sentence when a reply cannot go to the list, or `{"error"}`. The headers are fetched from the provider once
 /// per message (the cache keeps no List-* headers) and the answer is cached for good in `list_info`.
-fn list_info_json(config_dir: &PathBuf, id: &str) -> String {
+fn list_info_json(config_dir: &std::path::Path, id: &str) -> String {
     use crate::list_headers::{refusal, ListInfo};
     let err = |m: &str| format!("{{\"error\":{}}}", serde_json::to_string(m).unwrap());
     if id.is_empty() {
@@ -343,7 +343,7 @@ fn list_info_json(config_dir: &PathBuf, id: &str) -> String {
 /// whose meeting is no longer on the calendar succeeds without touching anything, so the caller
 /// can still mark the mail read. Returns the lookup JSON plus `"ok":true`, `"removed":bool`,
 /// `"series":bool`, `"calendar":...`, or `{"error":...}`.
-fn remove_cancelled_json(config_dir: &PathBuf, id: &str) -> String {
+fn remove_cancelled_json(config_dir: &std::path::Path, id: &str) -> String {
     use crate::invites::status_of;
     let err = |m: &str| format!("{{\"error\":{}}}", serde_json::to_string(m).unwrap());
     let db_path = config_dir.join("messages.db");
@@ -408,7 +408,7 @@ fn remove_cancelled_json(config_dir: &PathBuf, id: &str) -> String {
 /// refresh the calendar so the change shows at once. Returns the new `InviteInfo` JSON plus
 /// `"ok":true` and `"calendar":"refreshed"|"not refreshed: ..."`, or `{"error":...}`.
 /// A 403 means the account has not granted Calendars.ReadWrite yet.
-fn respond_invite_json(config_dir: &PathBuf, id: &str, choice: &str) -> String {
+fn respond_invite_json(config_dir: &std::path::Path, id: &str, choice: &str) -> String {
     use crate::invites::{response_op, status_of};
     let err = |m: &str| format!("{{\"error\":{}}}", serde_json::to_string(m).unwrap());
     if id.is_empty() {
@@ -522,7 +522,7 @@ fn render_adopt_json(c: &Ctx) -> String {
 
 /// JSON for GET /messages/body: `{"type":"html"|"text","content":"..."}`, or
 /// `{"error":"..."}` when the body cannot be had.
-pub(crate) fn message_body_json(config_dir: &PathBuf, id: &str) -> String {
+pub(crate) fn message_body_json(config_dir: &std::path::Path, id: &str) -> String {
     let err = |m: &str| format!("{{\"error\":{}}}", serde_json::to_string(m).unwrap());
     if id.is_empty() {
         return err("missing id");
@@ -583,7 +583,7 @@ pub(crate) fn graph_for_message(db: &Database, id: &str) -> Result<GraphEmailPro
 
 /// The attachment list of a message: cached, else fetched (and cached). The HTML body is
 /// consulted so pictures embedded in it are not listed as attachments.
-pub(crate) fn attachment_list(config_dir: &PathBuf, db: &Database, id: &str) -> Result<Vec<crate::attachments::Attachment>, String> {
+pub(crate) fn attachment_list(config_dir: &std::path::Path, db: &Database, id: &str) -> Result<Vec<crate::attachments::Attachment>, String> {
     if let Ok(Some(list)) = db.cached_attachments(id) {
         return Ok(list);
     }
@@ -607,7 +607,7 @@ pub(crate) fn attachment_list(config_dir: &PathBuf, db: &Database, id: &str) -> 
 }
 
 /// JSON for GET /messages/attachments?id=ID: `{"attachments":[...],"dir":"~/Downloads"}` or `{"error":"..."}`.
-fn message_attachments_json(config_dir: &PathBuf, id: &str) -> String {
+fn message_attachments_json(config_dir: &std::path::Path, id: &str) -> String {
     let err = |m: &str| format!("{{\"error\":{}}}", serde_json::to_string(m).unwrap());
     if id.is_empty() { return err("missing id"); }
     let db = match Database::open(config_dir.join("messages.db").to_str().unwrap_or("messages.db")) {
@@ -626,7 +626,7 @@ fn message_attachments_json(config_dir: &PathBuf, id: &str) -> String {
 /// JSON for POST /messages/attachments/save?id=ID&att=ATT (one) or no `att` (every attachment
 /// that is not inline): `{"saved":[{"id","name","path"}],"failed":[{"id","name","error"}],"dir":"~/Downloads"}`.
 /// One failure never stops the others.
-fn save_attachments_json(config_dir: &PathBuf, id: &str, att: Option<&str>) -> String {
+fn save_attachments_json(config_dir: &std::path::Path, id: &str, att: Option<&str>) -> String {
     let err = |m: &str| format!("{{\"error\":{}}}", serde_json::to_string(m).unwrap());
     if id.is_empty() { return err("missing id"); }
     let db = match Database::open(config_dir.join("messages.db").to_str().unwrap_or("messages.db")) {
@@ -813,7 +813,7 @@ fn messages_response(c: &Ctx, req_t: std::time::Instant) -> Response {
                     let folder_id: Option<String> = first_line
                         .split_once("folder_id=")
                         .map(|(_, rest)| {
-                            let raw = rest.split(|c| c == ' ' || c == '&' || c == '\r' || c == '\n')
+                            let raw = rest.split([' ', '&', '\r', '\n'])
                                 .next()
                                 .unwrap_or("");
                             // URL-decode: folder IDs contain = and / which QML encodeURIComponent encodes

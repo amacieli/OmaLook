@@ -3,7 +3,7 @@
 use crate::errors::{OmarchyError, Result};
 use crate::models::{DeviceFlowResponse, TokenResponse};
 use crate::keyring_mgr;
-use crate::token_store::{self, KeyringStore, RefreshOutcome, Refresher, TokenBroker, DEFAULT_ACCOUNT};
+use crate::token_store::{self, RefreshOutcome, Refresher, TokenBroker, DEFAULT_ACCOUNT};
 use log::{info, debug, warn, error};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -49,6 +49,7 @@ struct MsRefresher {
 }
 
 impl MsRefresher {
+    #[cfg(not(test))]
     fn new(account_id: &str) -> Self {
         Self::with_marker(crate::google_auth::default_config_dir().join(format!("token_scope_{}", account_id)))
     }
@@ -180,7 +181,7 @@ pub fn broker_for(account_id: &str) -> Arc<TokenBroker> {
         (Arc::new(token_store::MemoryStore::default()), Arc::new(OfflineRefresher));
     #[cfg(not(test))]
     let (store, refresher): (Arc<dyn token_store::TokenStore>, Arc<dyn Refresher>) = (
-        Arc::new(KeyringStore),
+        Arc::new(token_store::KeyringStore),
         if crate::accounts::provider_of(account_id) == "gmail" {
             Arc::new(crate::google_auth::GoogleRefresher::new())
         } else {
@@ -495,7 +496,7 @@ impl AuthManager {
         
         let state_file = config_dir.join("auth_state.json");
         let json_str = serde_json::to_string_pretty(&state)
-            .map_err(|e| OmarchyError::JsonError(e))?;
+            .map_err(OmarchyError::JsonError)?;
         
         fs::write(&state_file, json_str)
             .map_err(OmarchyError::from)?;
@@ -515,7 +516,7 @@ impl AuthManager {
         
         let state_file = config_dir.join("auth_state.json");
         let json_str = serde_json::to_string_pretty(&error_state)
-            .map_err(|e| OmarchyError::JsonError(e))?;
+            .map_err(OmarchyError::JsonError)?;
         
         fs::write(&state_file, json_str)
             .map_err(OmarchyError::from)?;
@@ -559,7 +560,7 @@ impl AuthManager {
         });
         
         let json_str = serde_json::to_string_pretty(&device_code_data)
-            .map_err(|e| OmarchyError::JsonError(e))?;
+            .map_err(OmarchyError::JsonError)?;
         std::fs::write(&device_code_file, json_str).map_err(OmarchyError::from)?;
         
         info!("Device code written to {}", device_code_file.display());

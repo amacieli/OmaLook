@@ -8,6 +8,7 @@ use crate::http::router::{Ctx, Lock, Pattern, Response, Route};
 use crate::providers::graph::GraphEmailProvider;
 use crate::{AuthManager, Database};
 use log::{info, warn};
+#[cfg(test)]
 use std::path::PathBuf;
 use std::sync::Arc;
 use super::messages::attachment_list;
@@ -124,7 +125,6 @@ fn compose_send_answer(c: &Ctx) -> String {
     // Copy the attached files aside so the message goes out with exactly these bytes, whatever
     // happens to the originals during the undo window (docs/PLAN-compose-attachments.md 3.2).
     let spool_root = crate::attach_spool::default_root();
-    let mut msg = msg;
     msg.attachments = match crate::attach_spool::snapshot(&spool_root, &id, &msg.attachments) {
         Ok(a) => a,
         Err(e) => return err(&e),
@@ -337,7 +337,7 @@ fn drafts_adopt(c: &Ctx) -> Response {
     answer(drafts_adopt_answer(c.config_dir, c.query("id")))
 }
 
-fn drafts_adopt_answer(config_dir: &PathBuf, mid: Option<String>) -> String {
+fn drafts_adopt_answer(config_dir: &std::path::Path, mid: Option<String>) -> String {
     let err = |m: &str| serde_json::json!({ "ok": false, "error": m }).to_string();
     let Some(mid) = mid else { return err("missing id") };
     let db_path = config_dir.join("messages.db");
@@ -481,7 +481,7 @@ fn identities_for(db: &Database, account: &str, force: bool) -> Vec<crate::ident
 /// GET /compose/originals?id=MESSAGE — the files attached to the message being forwarded, for the
 /// forward's chips: `{"originals":[{"id","name","size"}]}` (ids: Graph attachment id, Gmail MIME part
 /// id) or `{"error"}`. Pictures embedded in the HTML are left out: they were never the user's to pick.
-fn compose_originals_json(config_dir: &PathBuf, id: &str) -> String {
+fn compose_originals_json(config_dir: &std::path::Path, id: &str) -> String {
     let err = |m: &str| serde_json::json!({ "error": m }).to_string();
     if id.is_empty() { return err("missing id"); }
     let db = match Database::open(config_dir.join("messages.db").to_str().unwrap_or("messages.db")) {

@@ -26,7 +26,7 @@ pub fn handle(ctx: &Ctx, req: &Value) -> Option<Value> {
         return Some(error(id.unwrap_or(Value::Null), -32600, "invalid request"));
     };
     // A request without an id is a notification: act on it, never answer.
-    let Some(id) = id else { return None };
+    let id = id?;
     let params = req.get("params").cloned().unwrap_or(Value::Null);
 
     Some(match method {
