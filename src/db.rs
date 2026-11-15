@@ -166,3 +166,7 @@ pub(crate) fn account_in(col: &str, accounts: &[String], args: &mut Vec<rusqlite
     let marks: Vec<String> = accounts.iter().map(|a| { args.push(a.clone().into()); format!("?{}", args.len()) }).collect();
     format!("{} IN ({})", col, marks.join(","))
 }
+
+#[cfg(test)]
+#[path = "db/review_sec012.rs"]
+mod review_sec012;
