@@ -1,0 +1,4 @@
+[["GET","/sync/health",null],["GET","/sync/serial",null],["POST","/perf?m=probe",null],
+ ["GET","/folders",null],["GET","/folders?account=x",null],["GET","/accounts",null],
+ ["GET","/tasks",null],["GET","/tasks?account=x",null],["POST","/tasks/abc/complete",null],
+ ["POST","/folders",null],["GET","/contacts",null],["GET","/nope",null]]

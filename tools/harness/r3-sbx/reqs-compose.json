@@ -1,0 +1,436 @@
+[
+ [
+  "GET",
+  "/attach/limits?account=acct-a",
+  null
+ ],
+ [
+  "GET",
+  "/attach/limits?account=acct-b",
+  null
+ ],
+ [
+  "GET",
+  "/attach/limits",
+  null
+ ],
+ [
+  "GET",
+  "/compose/identities?account=acct-a",
+  null
+ ],
+ [
+  "GET",
+  "/compose/identities?account=acct-a&refresh=1",
+  null
+ ],
+ [
+  "GET",
+  "/compose/identities",
+  null
+ ],
+ [
+  "POST",
+  "/compose/identity_default?account=acct-a&email=a@example.com",
+  null
+ ],
+ [
+  "GET",
+  "/compose/identities?account=acct-a",
+  null
+ ],
+ [
+  "POST",
+  "/compose/identity_default?account=acct-a&email=nobody@example.com",
+  null
+ ],
+ [
+  "POST",
+  "/compose/identity_default?account=acct-a&email=",
+  null
+ ],
+ [
+  "GET",
+  "/compose/identities?account=acct-a",
+  null
+ ],
+ [
+  "POST",
+  "/compose/identity_default?account=acct-a",
+  null
+ ],
+ [
+  "GET",
+  "/drafts",
+  null
+ ],
+ [
+  "GET",
+  "/drafts?account=acct-a",
+  null
+ ],
+ [
+  "GET",
+  "/drafts?account=nobody",
+  null
+ ],
+ [
+  "GET",
+  "/drafts/get?id=draft-local-1",
+  null
+ ],
+ [
+  "GET",
+  "/drafts/get?id=nope",
+  null
+ ],
+ [
+  "GET",
+  "/drafts/get",
+  null
+ ],
+ [
+  "POST",
+  "/drafts/save?state=saved",
+  {
+   "kind": "new",
+   "account_id": "acct-a",
+   "in_reply_to": "",
+   "to": [
+    {
+     "email": "bob@example.com",
+     "name": "Bob Builder"
+    }
+   ],
+   "cc": [],
+   "bcc": [],
+   "subject": "Sandbox G4 draft",
+   "from": "",
+   "mode": "system",
+   "body": {
+    "format": "text",
+    "content": "hello from the sandbox"
+   },
+   "attachments": [],
+   "draft_id": "draft-sbx-1"
+  }
+ ],
+ [
+  "GET",
+  "/drafts?account=acct-a",
+  null
+ ],
+ [
+  "GET",
+  "/drafts/get?id=draft-sbx-1",
+  null
+ ],
+ [
+  "POST",
+  "/drafts/save?state=editing",
+  {
+   "kind": "new",
+   "account_id": "acct-a",
+   "in_reply_to": "",
+   "to": [
+    {
+     "email": "bob@example.com",
+     "name": "Bob Builder"
+    }
+   ],
+   "cc": [],
+   "bcc": [],
+   "subject": "Sandbox G4 draft, edited",
+   "from": "",
+   "mode": "system",
+   "body": {
+    "format": "text",
+    "content": "edited"
+   },
+   "attachments": [],
+   "draft_id": "draft-sbx-1"
+  }
+ ],
+ [
+  "GET",
+  "/drafts/get?id=draft-sbx-1",
+  null
+ ],
+ [
+  "POST",
+  "/drafts/save?state=saved",
+  "{not json"
+ ],
+ [
+  "POST",
+  "/drafts/save?state=saved",
+  {
+   "kind": "new",
+   "account_id": "",
+   "in_reply_to": "",
+   "to": [
+    {
+     "email": "bob@example.com",
+     "name": "Bob Builder"
+    }
+   ],
+   "cc": [],
+   "bcc": [],
+   "subject": "Sandbox G4 draft",
+   "from": "",
+   "mode": "system",
+   "body": {
+    "format": "text",
+    "content": "hello from the sandbox"
+   },
+   "attachments": []
+  }
+ ],
+ [
+  "POST",
+  "/drafts/save?state=saved",
+  {
+   "kind": "new",
+   "account_id": "acct-a",
+   "in_reply_to": "",
+   "to": [
+    {
+     "email": "bob@example.com",
+     "name": "Bob Builder"
+    }
+   ],
+   "cc": [],
+   "bcc": [],
+   "subject": "Sandbox G4 draft",
+   "from": "",
+   "mode": "system",
+   "body": {
+    "format": "text",
+    "content": "hello from the sandbox"
+   },
+   "attachments": [
+    {
+     "path": "/home/adam/never-picked-g4.txt",
+     "name": "never-picked-g4.txt",
+     "size": 3,
+     "content_type": "text/plain",
+     "source_path": ""
+    }
+   ],
+   "draft_id": "draft-sbx-2"
+  }
+ ],
+ [
+  "POST",
+  "/drafts/discard?id=draft-sbx-1",
+  null
+ ],
+ [
+  "GET",
+  "/drafts?account=acct-a",
+  null
+ ],
+ [
+  "POST",
+  "/drafts/discard?id=nope",
+  null
+ ],
+ [
+  "POST",
+  "/drafts/discard",
+  null
+ ],
+ [
+  "GET",
+  "/compose/originals?id=msg-a1",
+  null
+ ],
+ [
+  "GET",
+  "/compose/originals?id=msg-b1",
+  null
+ ],
+ [
+  "GET",
+  "/compose/originals?id=nope",
+  null
+ ],
+ [
+  "GET",
+  "/compose/originals",
+  null
+ ],
+ [
+  "POST",
+  "/compose/send",
+  {
+   "kind": "new",
+   "account_id": "acct-a",
+   "in_reply_to": "",
+   "to": [
+    {
+     "email": "bob@example.com",
+     "name": "Bob Builder"
+    }
+   ],
+   "cc": [],
+   "bcc": [],
+   "subject": "Sandbox G4 draft",
+   "from": "",
+   "mode": "system",
+   "body": {
+    "format": "text",
+    "content": "hello from the sandbox"
+   },
+   "attachments": [
+    {
+     "path": "/home/adam/never-picked-g4.txt",
+     "name": "never-picked-g4.txt",
+     "size": 3,
+     "content_type": "text/plain",
+     "source_path": ""
+    }
+   ]
+  }
+ ],
+ [
+  "POST",
+  "/compose/send",
+  "{bad"
+ ],
+ [
+  "POST",
+  "/compose/send",
+  ""
+ ],
+ [
+  "POST",
+  "/compose/send",
+  {
+   "kind": "new",
+   "account_id": "acct-a",
+   "in_reply_to": "",
+   "to": [
+    {
+     "email": "bob@example.com",
+     "name": "Bob Builder"
+    }
+   ],
+   "cc": [],
+   "bcc": [],
+   "subject": "Sandbox G4 draft",
+   "from": "nobody@example.com",
+   "mode": "system",
+   "body": {
+    "format": "text",
+    "content": "hello from the sandbox"
+   },
+   "attachments": []
+  }
+ ],
+ [
+  "POST",
+  "/compose/send",
+  {
+   "kind": "new",
+   "account_id": "",
+   "in_reply_to": "",
+   "to": [
+    {
+     "email": "bob@example.com",
+     "name": "Bob Builder"
+    }
+   ],
+   "cc": [],
+   "bcc": [],
+   "subject": "Sandbox G4 draft",
+   "from": "",
+   "mode": "system",
+   "body": {
+    "format": "text",
+    "content": "hello from the sandbox"
+   },
+   "attachments": []
+  }
+ ],
+ [
+  "POST",
+  "/compose/send",
+  {
+   "kind": "new",
+   "account_id": "acct-a",
+   "in_reply_to": "",
+   "to": [
+    {
+     "email": "bob@example.com",
+     "name": "Bob Builder"
+    }
+   ],
+   "cc": [],
+   "bcc": [],
+   "subject": "Sandbox G4 draft",
+   "from": "",
+   "mode": "system",
+   "body": {
+    "format": "text",
+    "content": "hello from the sandbox"
+   },
+   "attachments": []
+  }
+ ],
+ [
+  "GET",
+  "/compose/status?id=ob-sbx-none",
+  null
+ ],
+ [
+  "POST",
+  "/compose/cancel?id=ob-sbx-none",
+  null
+ ],
+ [
+  "POST",
+  "/compose/cancel",
+  null
+ ],
+ [
+  "GET",
+  "/compose/status",
+  null
+ ],
+ [
+  "POST",
+  "/drafts/adopt?id=msg-a1",
+  null
+ ],
+ [
+  "POST",
+  "/drafts/adopt?id=msg-a1",
+  null
+ ],
+ [
+  "POST",
+  "/drafts/adopt?id=nope",
+  null
+ ],
+ [
+  "POST",
+  "/drafts/adopt",
+  null
+ ],
+ [
+  "GET",
+  "/drafts?account=acct-a",
+  null
+ ],
+ [
+  "GET",
+  "/compose/send",
+  null
+ ],
+ [
+  "GET",
+  "/drafts/save",
+  null
+ ]
+]

@@ -1,0 +1,11 @@
+[["GET","/sms/threads",null],["GET","/sms/threads?device=dev-1&limit=10",null],["GET","/sms/contacts",null],["GET","/sms/contacts?device=dev-1",null],
+ ["GET","/sms/messages?thread=101&device=dev-1&limit=50",null],["GET","/sms/messages?thread=101&device=dev-1&before=1794579000000",null],["GET","/sms/messages",null],
+ ["GET","/sms/attachment?device=dev-1&uid=1001&part=1",null],["GET","/sms/attachment",null],["GET","/sms/unread",null],
+ ["POST","/sms/read?thread=102&read=true&device=dev-1",null],["GET","/sms/unread",null],["GET","/sms/threads?device=dev-1",null],
+ ["POST","/sms/read?thread=101&read=false&uid=1002&device=dev-1",null],["GET","/sms/messages?thread=101&device=dev-1",null],
+ ["POST","/sms/retry?id=nope",null],["POST","/sms/retry",null],["POST","/sms/sync",null],
+ ["POST","/sms/send",{"device":"dev-1","addresses":["+15550100101"],"body":"hi"}],["POST","/sms/send","not json"],
+ ["POST","/search/history?q=hello",null],["POST","/search/history?q=from%3Aalice",null],["GET","/search/history",null],["POST","/search/history",null],
+ ["POST","/files/register",{"purpose":"attach","paths":["/etc/hostname"]}],["POST","/files/register",{"purpose":"root","paths":["/etc/hostname"]}],
+ ["POST","/files/register",{"purpose":"attach","paths":"x"}],["POST","/files/register","garbage"],
+ ["GET","/fs/list",null],["GET","/fs/list?path=/etc",null],["GET","/fs/list?path=/nonexistent",null],["GET","/fs/list?path=/etc&hidden=1",null]]

@@ -1,0 +1,602 @@
+[
+ [
+  "POST",
+  "/files/register",
+  {
+   "purpose": "import",
+   "paths": [
+    "/etc/hostname"
+   ]
+  }
+ ],
+ [
+  "POST",
+  "/files/register",
+  {
+   "purpose": "photo",
+   "paths": [
+    "/etc/hostname"
+   ]
+  }
+ ],
+ [
+  "GET",
+  "/contacts",
+  null
+ ],
+ [
+  "GET",
+  "/contacts?view=all&sort=first",
+  null
+ ],
+ [
+  "GET",
+  "/contacts?view=all&sort=last",
+  null
+ ],
+ [
+  "GET",
+  "/contacts?view=all&sort=company",
+  null
+ ],
+ [
+  "GET",
+  "/contacts?view=all&sort=recent",
+  null
+ ],
+ [
+  "GET",
+  "/contacts?view=favorites",
+  null
+ ],
+ [
+  "GET",
+  "/contacts?view=lists",
+  null
+ ],
+ [
+  "GET",
+  "/contacts?view=duplicates",
+  null
+ ],
+ [
+  "GET",
+  "/contacts?view=duplicates&sort=company",
+  null
+ ],
+ [
+  "GET",
+  "/contacts?q=alice",
+  null
+ ],
+ [
+  "GET",
+  "/contacts?q=contoso&sort=company",
+  null
+ ],
+ [
+  "GET",
+  "/contacts?folder=cf-a-contacts",
+  null
+ ],
+ [
+  "GET",
+  "/contacts?category=Project%20X",
+  null
+ ],
+ [
+  "GET",
+  "/contacts?account=acct-a",
+  null
+ ],
+ [
+  "GET",
+  "/contacts?account=b@example.com",
+  null
+ ],
+ [
+  "GET",
+  "/contacts?view=bogus",
+  null
+ ],
+ [
+  "GET",
+  "/contacts/get?id=contact-alice",
+  null
+ ],
+ [
+  "GET",
+  "/contacts/get?id=contact-mom",
+  null
+ ],
+ [
+  "GET",
+  "/contacts/get?id=nope",
+  null
+ ],
+ [
+  "GET",
+  "/contacts/get?id=contact-alice&live=1",
+  null
+ ],
+ [
+  "GET",
+  "/contacts/get",
+  null
+ ],
+ [
+  "GET",
+  "/contacts/folders",
+  null
+ ],
+ [
+  "GET",
+  "/contacts/folders?account=acct-a",
+  null
+ ],
+ [
+  "GET",
+  "/contacts/folders?account=acct-b",
+  null
+ ],
+ [
+  "GET",
+  "/contacts/photo?id=contact-alice",
+  null
+ ],
+ [
+  "GET",
+  "/contacts/photo?id=nope",
+  null
+ ],
+ [
+  "GET",
+  "/contacts/photo",
+  null
+ ],
+ [
+  "GET",
+  "/contacts/directory?account=acct-a&q=bob",
+  null
+ ],
+ [
+  "GET",
+  "/contacts/directory?q=bob",
+  null
+ ],
+ [
+  "GET",
+  "/addresses",
+  null
+ ],
+ [
+  "POST",
+  "/contacts/favorite?id=contact-bob&value=true",
+  null
+ ],
+ [
+  "GET",
+  "/contacts?view=favorites",
+  null
+ ],
+ [
+  "POST",
+  "/contacts/favorite?id=contact-bob&value=false",
+  null
+ ],
+ [
+  "POST",
+  "/contacts/favorite?value=true",
+  null
+ ],
+ [
+  "POST",
+  "/contacts/favorite?id=nope&value=true",
+  null
+ ],
+ [
+  "GET",
+  "/contacts?view=favorites",
+  null
+ ],
+ [
+  "POST",
+  "/contacts/save",
+  {
+   "id": "contact-bob",
+   "fields": {
+    "jobTitle": "Builder",
+    "businessPhones": [
+     "+1 555 0150"
+    ]
+   }
+  }
+ ],
+ [
+  "POST",
+  "/contacts/save",
+  {
+   "account_id": "acct-a",
+   "folder_id": "cf-a-contacts",
+   "fields": {
+    "givenName": "Nina",
+    "surname": "Newton",
+    "companyName": "Newton Ltd",
+    "emailAddresses": [
+     {
+      "name": "Nina Newton",
+      "address": "nina@example.com"
+     }
+    ]
+   }
+  }
+ ],
+ [
+  "POST",
+  "/contacts/save",
+  {
+   "account_id": "acct-a",
+   "fields": {}
+  }
+ ],
+ [
+  "POST",
+  "/contacts/save",
+  "{bad json"
+ ],
+ [
+  "GET",
+  "/contacts?q=nina",
+  null
+ ],
+ [
+  "GET",
+  "/contacts?q=bob",
+  null
+ ],
+ [
+  "POST",
+  "/contacts/categories",
+  {
+   "ids": [
+    "contact-alice"
+   ],
+   "add": [
+    "Team"
+   ],
+   "remove": []
+  }
+ ],
+ [
+  "POST",
+  "/contacts/categories",
+  {
+   "ids": [],
+   "add": [
+    "X"
+   ],
+   "remove": []
+  }
+ ],
+ [
+  "POST",
+  "/contacts/move",
+  {
+   "ids": [
+    "contact-alice"
+   ],
+   "folder_id": "cf-b-contacts"
+  }
+ ],
+ [
+  "POST",
+  "/contacts/move",
+  {
+   "ids": [
+    "contact-mom"
+   ],
+   "folder_id": "cf-b-contacts"
+  }
+ ],
+ [
+  "POST",
+  "/contacts/move",
+  {
+   "ids": [
+    "contact-alice"
+   ],
+   "folder_id": "nope"
+  }
+ ],
+ [
+  "POST",
+  "/contacts/folder/create",
+  {
+   "account_id": "acct-a",
+   "name": "Clients",
+   "parent_id": null
+  }
+ ],
+ [
+  "POST",
+  "/contacts/folder/create",
+  {
+   "account_id": "",
+   "name": "Clients"
+  }
+ ],
+ [
+  "POST",
+  "/contacts/folder/rename",
+  {
+   "account_id": "acct-a",
+   "id": "cf-a-contacts",
+   "name": "People"
+  }
+ ],
+ [
+  "POST",
+  "/contacts/folder/rename",
+  {
+   "account_id": "acct-a",
+   "id": "",
+   "name": "X"
+  }
+ ],
+ [
+  "POST",
+  "/contacts/folder/delete",
+  {
+   "account_id": "acct-b",
+   "id": "cf-b-contacts"
+  }
+ ],
+ [
+  "POST",
+  "/contacts/folder/delete",
+  {
+   "account_id": "acct-a"
+  }
+ ],
+ [
+  "POST",
+  "/contacts/delete",
+  {
+   "ids": [
+    "contact-dan"
+   ],
+   "permanent": false
+  }
+ ],
+ [
+  "POST",
+  "/contacts/delete",
+  {
+   "ids": [
+    "contact-alice",
+    "contact-mom"
+   ],
+   "permanent": true
+  }
+ ],
+ [
+  "POST",
+  "/contacts/delete",
+  {
+   "ids": []
+  }
+ ],
+ [
+  "POST",
+  "/contacts/undo",
+  null
+ ],
+ [
+  "POST",
+  "/contacts/undo",
+  null
+ ],
+ [
+  "POST",
+  "/contacts/retry?id=nope",
+  null
+ ],
+ [
+  "POST",
+  "/contacts/retry",
+  null
+ ],
+ [
+  "POST",
+  "/contacts/discard?id=contact-alice",
+  null
+ ],
+ [
+  "POST",
+  "/contacts/discard?id=nope",
+  null
+ ],
+ [
+  "POST",
+  "/contacts/merge",
+  {
+   "ids": [
+    "contact-alice",
+    "contact-dan"
+   ]
+  }
+ ],
+ [
+  "POST",
+  "/contacts/merge",
+  {}
+ ],
+ [
+  "POST",
+  "/contacts/merge",
+  "not json"
+ ],
+ [
+  "POST",
+  "/contacts/quick",
+  {
+   "account_id": "acct-a",
+   "name": "Eve",
+   "address": "eve@example.com"
+  }
+ ],
+ [
+  "POST",
+  "/contacts/quick",
+  {
+   "account_id": "acct-a",
+   "name": "Alice",
+   "address": "alice@contoso.com"
+  }
+ ],
+ [
+  "POST",
+  "/contacts/quick",
+  {
+   "account_id": "acct-a",
+   "name": "x",
+   "address": "nope"
+  }
+ ],
+ [
+  "POST",
+  "/contacts/quick",
+  "{bad"
+ ],
+ [
+  "POST",
+  "/contacts/export",
+  {
+   "ids": [
+    "contact-alice",
+    "contact-bob"
+   ],
+   "format": "vcf"
+  }
+ ],
+ [
+  "POST",
+  "/contacts/export",
+  {
+   "ids": [
+    "contact-alice"
+   ],
+   "format": "csv"
+  }
+ ],
+ [
+  "POST",
+  "/contacts/export",
+  {
+   "ids": []
+  }
+ ],
+ [
+  "POST",
+  "/contacts/export",
+  "not json"
+ ],
+ [
+  "POST",
+  "/contacts/import",
+  {
+   "path": "/etc/passwd",
+   "account_id": "acct-a",
+   "folder_id": "cf-a-contacts"
+  }
+ ],
+ [
+  "POST",
+  "/contacts/import",
+  {
+   "path": "~/unregistered.vcf",
+   "account_id": "acct-a",
+   "folder_id": "cf-a-contacts"
+  }
+ ],
+ [
+  "POST",
+  "/contacts/import",
+  {
+   "path": "/etc/hostname",
+   "account_id": "acct-a",
+   "folder_id": "cf-a-contacts"
+  }
+ ],
+ [
+  "POST",
+  "/contacts/import",
+  {
+   "path": "/etc/hostname",
+   "account_id": "",
+   "folder_id": ""
+  }
+ ],
+ [
+  "POST",
+  "/contacts/import",
+  {
+   "path": "",
+   "account_id": "acct-a"
+  }
+ ],
+ [
+  "POST",
+  "/contacts/import",
+  "{bad"
+ ],
+ [
+  "POST",
+  "/contacts/photo/set",
+  {
+   "id": "contact-alice",
+   "path": "/etc/passwd"
+  }
+ ],
+ [
+  "POST",
+  "/contacts/photo/set",
+  {
+   "id": "contact-alice",
+   "path": "/etc/hostname"
+  }
+ ],
+ [
+  "POST",
+  "/contacts/photo/set",
+  {
+   "id": "nope",
+   "path": "/etc/hostname"
+  }
+ ],
+ [
+  "POST",
+  "/contacts/photo/set",
+  "{"
+ ],
+ [
+  "GET",
+  "/contacts?view=all&sort=first",
+  null
+ ],
+ [
+  "GET",
+  "/contacts/get?id=contact-alice",
+  null
+ ],
+ [
+  "GET",
+  "/contacts/folders?account=acct-a",
+  null
+ ],
+ [
+  "GET",
+  "/contacts/bogus",
+  null
+ ]
+]

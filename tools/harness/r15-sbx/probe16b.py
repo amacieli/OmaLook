@@ -1,0 +1,7 @@
+exec(open("/mnt/d/r15-sbx/probe16.py").read().split("req(\"GET\",\"/accounts\")")[0])
+req("GET","/accounts")
+print(req("POST","/settings/background",{"enabled":True})[1])
+s,j=req("POST","/settings/mcp/enabled",{"value":True}); print("enable:",j.get("pending"),j.get("error"))
+s,j=req("POST","/settings/mcp/confirm",{"id":j["pending"]["id"]}); print("confirm:",j["enabled"],j["active"],j["domains"],j.get("error"))
+s,j=req("POST","/settings/mcp/domain",{"domain":"mail","level":"read"}); print("mail read:",j["domains"],j.get("pending"),j.get("error"))
+print(open(CFG+"/settings.toml").read().split("[mcp]")[-1][:400])

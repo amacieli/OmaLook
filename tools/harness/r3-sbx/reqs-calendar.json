@@ -1,0 +1,422 @@
+[
+[
+"GET",
+"/calendar/events?month=2026-11",
+null
+],
+[
+"GET",
+"/calendar/events?month=2026-11&account=acct-a",
+null
+],
+[
+"GET",
+"/calendar/events?month=2026-11&account=acct-b",
+null
+],
+[
+"GET",
+"/calendar/events?month=2026-11&tag=Family",
+null
+],
+[
+"GET",
+"/calendar/events?month=2026-11&tag=none",
+null
+],
+[
+"GET",
+"/calendar/events?month=2027-03",
+null
+],
+[
+"GET",
+"/calendar/events",
+null
+],
+[
+"GET",
+"/calendar/outbox",
+null
+],
+[
+"GET",
+"/calendar/event/status?id=nope",
+null
+],
+[
+"GET",
+"/calendar/event/status",
+null
+],
+[
+"POST",
+"/calendar/event",
+{
+"account_id": "acct-a",
+"subject": "Lunch",
+"start": "2026-11-18T12:00:00",
+"end": "2026-11-18T13:00:00",
+"time_zone": "America/New_York",
+"transaction_id": "tx-fixed-1",
+"attendees": []
+}
+],
+[
+"GET",
+"/calendar/outbox",
+null
+],
+[
+"POST",
+"/calendar/event?dry_run=1",
+{
+"account_id": "acct-a",
+"subject": "Lunch",
+"start": "2026-11-18T12:00:00",
+"end": "2026-11-18T13:00:00",
+"time_zone": "America/New_York",
+"transaction_id": "tx-fixed-1",
+"attendees": []
+}
+],
+[
+"POST",
+"/calendar/event",
+{
+"subject": "x"
+}
+],
+[
+"POST",
+"/calendar/event",
+"{not json"
+],
+[
+"POST",
+"/calendar/event",
+null
+],
+[
+"POST",
+"/calendar/event?dry_run=1",
+{
+"account_id": "acct-a",
+"subject": "Lunch",
+"start": "2026-11-18T12:00:00",
+"end": "2026-11-18T13:00:00",
+"time_zone": "America/New_York",
+"transaction_id": "tx-fixed-1",
+"attendees": [
+{
+"email": "alice@contoso.com"
+}
+]
+}
+],
+[
+"PATCH",
+"/calendar/event?id=evt-review&dry_run=1",
+{
+"account_id": "acct-a",
+"subject": "Design review v2",
+"start": "2026-11-18T12:00:00",
+"end": "2026-11-18T13:00:00",
+"time_zone": "America/New_York",
+"transaction_id": "tx-fixed-1",
+"attendees": []
+}
+],
+[
+"PATCH",
+"/calendar/event?id=evt-review",
+{
+"account_id": "acct-a",
+"subject": "Design review v2",
+"start": "2026-11-18T12:00:00",
+"end": "2026-11-18T13:00:00",
+"time_zone": "America/New_York",
+"transaction_id": "tx-fixed-1",
+"attendees": []
+}
+],
+[
+"PATCH",
+"/calendar/event?id=evt-standup-1116&scope=series&dry_run=1",
+{
+"account_id": "acct-a",
+"subject": "Standup!",
+"start": "2026-11-18T12:00:00",
+"end": "2026-11-18T13:00:00",
+"time_zone": "America/New_York",
+"transaction_id": "tx-fixed-1",
+"attendees": []
+}
+],
+[
+"PATCH",
+"/calendar/event?id=evt-standup-1116&scope=following&dry_run=1",
+{
+"account_id": "acct-a",
+"subject": "Standup!",
+"start": "2026-11-18T12:00:00",
+"end": "2026-11-18T13:00:00",
+"time_zone": "America/New_York",
+"transaction_id": "tx-fixed-1",
+"attendees": []
+}
+],
+[
+"PATCH",
+"/calendar/event?id=missing",
+{
+"account_id": "acct-a",
+"subject": "Lunch",
+"start": "2026-11-18T12:00:00",
+"end": "2026-11-18T13:00:00",
+"time_zone": "America/New_York",
+"transaction_id": "tx-fixed-1",
+"attendees": []
+}
+],
+[
+"PATCH",
+"/calendar/event",
+{
+"account_id": "acct-a",
+"subject": "Lunch",
+"start": "2026-11-18T12:00:00",
+"end": "2026-11-18T13:00:00",
+"time_zone": "America/New_York",
+"transaction_id": "tx-fixed-1",
+"attendees": []
+}
+],
+[
+"PATCH",
+"/calendar/event?id=evt-review",
+"{bad"
+],
+[
+"GET",
+"/calendar/outbox",
+null
+],
+[
+"POST",
+"/calendar/event/undo?id=nope",
+null
+],
+[
+"POST",
+"/calendar/event/undo",
+null
+],
+[
+"POST",
+"/calendar/event/cancel?id=evt-review&kind=cancel&dry_run=1",
+{
+"account_id": "acct-a",
+"comment": "sorry"
+}
+],
+[
+"POST",
+"/calendar/event/cancel?id=evt-review&kind=cancel",
+{
+"account_id": "acct-a",
+"comment": "sorry"
+}
+],
+[
+"POST",
+"/calendar/event/cancel?id=evt-birthday&kind=delete&dry_run=1",
+{
+"account_id": "acct-b"
+}
+],
+[
+"POST",
+"/calendar/event/cancel?id=evt-standup-1116&kind=decline&scope=series&dry_run=1",
+{
+"account_id": "acct-a"
+}
+],
+[
+"POST",
+"/calendar/event/cancel?id=evt-review&kind=bogus",
+{
+"account_id": "acct-a"
+}
+],
+[
+"POST",
+"/calendar/event/cancel?id=evt-review",
+{}
+],
+[
+"POST",
+"/calendar/event/cancel",
+{
+"account_id": "acct-a"
+}
+],
+[
+"POST",
+"/calendar/event/cancel?id=nope",
+{
+"account_id": "acct-a"
+}
+],
+[
+"GET",
+"/calendar/outbox",
+null
+],
+[
+"POST",
+"/calendar/tags?account=acct-a&id=evt-review&tags=%5B%22Project%20X%22%2C%22Q4%22%5D&dry_run=1",
+null
+],
+[
+"POST",
+"/calendar/tags?account=acct-a&id=evt-review&tags=%5B%22Q4%22%5D",
+null
+],
+[
+"POST",
+"/calendar/tags?account=acct-a&id=evt-standup-1116&tags=%5B%22Weekly%22%5D&dry_run=1",
+null
+],
+[
+"POST",
+"/calendar/tags?account=acct-a&id=nope&tags=%5B%22A%22%5D&dry_run=1",
+null
+],
+[
+"POST",
+"/calendar/tags?account=acct-a&id=evt-review&tags=notjson",
+null
+],
+[
+"POST",
+"/calendar/tags?account=acct-a",
+null
+],
+[
+"POST",
+"/calendar/tags",
+null
+],
+[
+"GET",
+"/calendar/events?month=2026-11&tag=Q4",
+null
+],
+[
+"GET",
+"/calendar/meeting-options?account=acct-a",
+null
+],
+[
+"GET",
+"/calendar/meeting-options?account=acct-b",
+null
+],
+[
+"GET",
+"/calendar/meeting-options",
+null
+],
+[
+"GET",
+"/settings/meetings",
+null
+],
+[
+"POST",
+"/settings/meetings",
+{
+"teams_enabled": false,
+"personal_enabled": true,
+"personal_label": "My room",
+"personal_link": "https://meet.example/adam",
+"jitsi_server": "https://jitsi.example",
+"default_provider": {
+"acct-a": "personal"
+}
+}
+],
+[
+"GET",
+"/settings/meetings",
+null
+],
+[
+"GET",
+"/calendar/meeting-options?account=acct-a",
+null
+],
+[
+"POST",
+"/settings/meetings",
+"{bad"
+],
+[
+"POST",
+"/settings/meetings",
+{
+"meet_enabled": false
+}
+],
+[
+"GET",
+"/settings/meetings",
+null
+],
+[
+"GET",
+"/calendar/find?account=acct-a&attendees=alice%40contoso.com,dan%40contoso.com&from=2026-11-16&to=2026-11-17&duration=30",
+null
+],
+[
+"GET",
+"/calendar/find?account=acct-a&attendees=alice%40contoso.com&optional=dan%40contoso.com&accounts=acct-b&from=2026-11-16&to=2026-11-18&duration=60&limit=3",
+null
+],
+[
+"GET",
+"/calendar/find?account=acct-a&from=2026-11-16&to=2026-11-17&duration=30",
+null
+],
+[
+"GET",
+"/calendar/find?account=acct-a&attendees=a%40x.com&from=bad&to=2026-11-17&duration=30",
+null
+],
+[
+"GET",
+"/calendar/find?account=acct-a&attendees=a%40x.com&from=2026-11-16&to=2026-11-17",
+null
+],
+[
+"GET",
+"/calendar/find?attendees=a%40x.com&from=2026-11-16&to=2026-11-17&duration=30",
+null
+],
+[
+"PUT",
+"/calendar/event",
+null
+],
+[
+"DELETE",
+"/calendar/outbox",
+null
+],
+[
+"GET",
+"/calendar/event",
+null
+]
+]
